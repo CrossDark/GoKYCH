@@ -1,13 +1,16 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, Suspense } from "react";
 import Link from "next/link";
-import { getCsrf, listArticles, createArticle, updateArticle, deleteArticle } from "@/lib/api";
+import { useSearchParams, useRouter } from "next/navigation";
+import { getCsrf, listArticles, getArticle, createArticle, updateArticle, deleteArticle } from "@/lib/api";
 import type { Article, ArticleListResult } from "@/lib/types";
 
 const TYPES = ["md", "wikidot", "html", "bbcode", "typst"];
 
-export default function AdminArticles() {
+function AdminArticlesInner() {
+  const searchParams = useSearchParams();
+  const router = useRouter();
   const [csrf, setCsrf] = useState("");
   const [result, setResult] = useState<ArticleListResult | null>(null);
   const [page, setPage] = useState(1);
@@ -15,6 +18,7 @@ export default function AdminArticles() {
   const [editing, setEditing] = useState<Article | null>(null);
   const [form, setForm] = useState({ type: "md", slug: "", title: "", content: "", tags: "" });
   const [msg, setMsg] = useState("");
+  const [initialEditLoaded, setInitialEditLoaded] = useState(false);
 
   const load = (p: number, t: string) => {
     listArticles(t || undefined, p).then(setResult).catch(() => {});
@@ -28,6 +32,31 @@ export default function AdminArticles() {
   }, []);
 
   useEffect(() => { load(page, filterType); }, [page, filterType]);
+
+  // Handle direct edit link from article page
+  useEffect(() => {
+    if (initialEditLoaded || !csrf) return;
+    const editType = searchParams.get("editType");
+    const editSlug = searchParams.get("editSlug");
+    if (editType && editSlug) {
+      getArticle(editType, editSlug).then((detail) => {
+        const a = detail.article;
+        setEditing(a);
+        setForm({ type: a.type, slug: a.slug, title: a.title, content: a.content, tags: (a.tags || []).join(", ") });
+        setFilterType(a.type);
+        setPage(1);
+        setInitialEditLoaded(true);
+        // Open the form section
+        setTimeout(() => {
+          const details = document.querySelector(".admin-form-section") as HTMLDetailsElement;
+          if (details) details.open = true;
+        }, 100);
+        // Clean URL
+        router.replace("/admin/articles");
+      }).catch(() => {});
+    }
+    setInitialEditLoaded(true);
+  }, [csrf, searchParams, initialEditLoaded, router]);
 
   const handleCreate = () => {
     setEditing(null);
@@ -158,5 +187,13 @@ export default function AdminArticles() {
         </div>
       )}
     </div>
+  );
+}
+
+export default function AdminArticles() {
+  return (
+    <Suspense fallback={<div className="admin-articles"><p>加载中…</p></div>}>
+      <AdminArticlesInner />
+    </Suspense>
   );
 }

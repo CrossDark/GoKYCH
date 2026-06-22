@@ -144,7 +144,7 @@ export function ArticleView({ data, articleType, articleSlug }: Props) {
         <h1 className="article-title">{article.title}</h1>
         <div className="article-meta"><time>发布于 {new Date(article.created_at).toLocaleDateString("zh-CN")}</time>
           {article.created_at !== article.updated_at && <time className="updated-at">· 更新于 {new Date(article.updated_at).toLocaleDateString("zh-CN")}</time>}
-          {can_edit && <Link href={`/admin/articles`} className="edit-link">编辑</Link>}</div>
+          {can_edit && <Link href={`/admin/articles?editType=${article.type}&editSlug=${article.slug}`} className="edit-link">✏️ 编辑</Link>}</div>
       </header>
       <div className="content-body" ref={contentRef} onClick={handleContentClick} dangerouslySetInnerHTML={{ __html: html ?? "" }} />
       <div className="line-comments-container"><div className="line-comments-panel">
