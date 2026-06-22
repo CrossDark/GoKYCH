@@ -42,7 +42,7 @@ func SeedAdmin(db *sql.DB, username, password string) {
 			log.Printf("[schema] error: seed admin: %v", err)
 			return
 		}
-		log.Printf("[schema] seeded admin user %q (password: %s)", username, password)
+		log.Printf("[schema] seeded admin user %q", username)
 	} else {
 		// Promote admin → owner if needed.
 		res, err := db.Exec(

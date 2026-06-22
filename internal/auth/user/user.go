@@ -18,13 +18,13 @@ var ValidRoles = []string{RoleUser, RoleAdmin, RoleOwner}
 
 // User represents a user record without the password hash.
 type User struct {
-	ID        int           `json:"id"`
-	Username  string        `json:"username"`
-	Nickname  string        `json:"nickname"`
-	Role      string        `json:"role"`
-	Avatar    string        `json:"avatar"`
-	Bio       string        `json:"bio"`
-	CreatedAt time.Time     `json:"created_at"`
+	ID        int       `json:"id"`
+	Username  string    `json:"username"`
+	Nickname  string    `json:"nickname"`
+	Role      string    `json:"role"`
+	Avatar    string    `json:"avatar"`
+	Bio       string    `json:"bio"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // Exists reports whether an error is sql.ErrNoRows (user not found).
@@ -81,7 +81,7 @@ func GetByID(db *sql.DB, id int) (*User, error) {
 // GetWithPassword loads the password_hash alongside user fields (login flow only).
 type UserWithPassword struct {
 	User
-	PasswordHash string
+	PasswordHash string `json:"-"`
 }
 
 func GetWithPassword(db *sql.DB, username string) (*UserWithPassword, error) {

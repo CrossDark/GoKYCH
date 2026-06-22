@@ -33,7 +33,7 @@ func (s *Server) listUsers(c *gin.Context) {
 		return
 	}
 	defer rows.Close()
-		var users = make([]userSummary, 0)
+	var users = make([]userSummary, 0)
 	for rows.Next() {
 		var u userSummary
 		if err := rows.Scan(&u.ID, &u.Username, &u.Nickname, &u.Role, &u.CreatedAt); err != nil {
@@ -68,6 +68,11 @@ func (s *Server) createUser(c *gin.Context) {
 	}
 	if !user.IsValidRole(in.Role) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的角色。"})
+		return
+	}
+	// admin 不得创建 owner 账户（防止垂直提权）。owner 仅由 seed 或现有 owner 提权产生。
+	if in.Role == user.RoleOwner {
+		c.JSON(http.StatusForbidden, gin.H{"error": "不能创建 owner 账户。"})
 		return
 	}
 	hash, err := password.Hash(in.Password)
@@ -147,7 +152,7 @@ func (s *Server) listAdminNotifications(c *gin.Context) {
 		return
 	}
 	defer rows.Close()
-		var out = make([]notif, 0)
+	var out = make([]notif, 0)
 	for rows.Next() {
 		var n notif
 		var imp, act int
@@ -179,7 +184,7 @@ func (s *Server) createNotification(c *gin.Context) {
 	if in.IsImportant {
 		imp = 1
 	}
-		act := 1 // always active on creation (toggle via update)
+	act := 1 // always active on creation (toggle via update)
 	res, err := s.DB.Exec(
 		`INSERT INTO notifications (title, content, is_important, is_active) VALUES (?, ?, ?, ?)`,
 		in.Title, in.Content, imp, act)
@@ -412,7 +417,7 @@ func (s *Server) listFiles(c *gin.Context) {
 		return
 	}
 	defer rows.Close()
-		var out = make([]fileInfo, 0)
+	var out = make([]fileInfo, 0)
 	for rows.Next() {
 		var f fileInfo
 		if err := rows.Scan(&f.ID, &f.Filename, &f.OriginalName, &f.FileSize, &f.MimeType, &f.CreatedAt); err != nil {
