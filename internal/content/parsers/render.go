@@ -19,8 +19,9 @@ const (
 	TypeTypst    ArticleType = "typst"
 )
 
-// Render converts raw source of the given type into safe HTML.
-func Render(at ArticleType, source string) template.HTML {
+// Render converts raw source of the given type into safe HTML. articleID is
+// used only by the typst renderer to key its DB cache (see renderTypst).
+func Render(at ArticleType, articleID int, source string) template.HTML {
 	var html string
 	switch at {
 	case TypeMarkdown:
@@ -32,7 +33,7 @@ func Render(at ArticleType, source string) template.HTML {
 	case TypeHTML:
 		html = source // trusted admin content
 	case TypeTypst:
-		html = renderTypst(source)
+		html = renderTypst(articleID, source)
 	default:
 		html = "<p>不支持的格式。</p>"
 	}
@@ -41,14 +42,20 @@ func Render(at ArticleType, source string) template.HTML {
 
 // RenderLine breaks a multi-line source into lines that match the original
 // source line numbering (for line comments). It returns rendered HTML for
-// the full source plus a per-line HTML slice. Each line is individually
-// rendered (important for inline-only contexts in wikidot/bbcode).
-func RenderLines(at ArticleType, source string) (full template.HTML, lines []template.HTML) {
-	full = Render(at, source)
+// the full source plus a per-line HTML slice. For wikidot/bbcode each line is
+// rendered individually (inline-only contexts). typst lines compile standalone
+// WITHOUT touching the whole-article cache, so a single line can't overwrite
+// the cached full-document HTML keyed on articleID.
+func RenderLines(at ArticleType, articleID int, source string) (full template.HTML, lines []template.HTML) {
+	full = Render(at, articleID, source)
 	rawLines := strings.Split(source, "\n")
 	lines = make([]template.HTML, len(rawLines))
 	for i, l := range rawLines {
-		lines[i] = Render(at, l)
+		if at == TypeTypst {
+			lines[i] = template.HTML(renderTypstUncached(l))
+		} else {
+			lines[i] = Render(at, articleID, l)
+		}
 	}
 	return
 }
@@ -66,15 +73,31 @@ func IsValidType(t string) bool {
 // Currently a no-op because admin-authored HTML is trusted.
 func sanitizeHTML(s string) string { return s }
 
-// renderTypst compiles typst source to HTML via the typst CLI.
-// Falls back to a placeholder if compilation fails or CLI is missing.
-func renderTypst(source string) string {
+// renderTypst compiles typst source to HTML via the typst CLI, consulting the
+// typst_cache table keyed on articleID. Falls back to a placeholder if
+// compilation fails or CLI is missing.
+func renderTypst(articleID int, source string) string {
+	if !typst.Available() {
+		return "<p><em>Typst 编译器未安装。</em></p>"
+	}
+	body, err := typst.CompileHTMLCached(articleID, source)
+	if err != nil {
+		log.Printf("[render] typst compile error: %v", err)
+		return "<p><em>Typst 编译失败：" + err.Error() + "</em></p>"
+	}
+	return body
+}
+
+// renderTypstUncached compiles a single line of typst without the DB cache,
+// used by RenderLines so per-line output never overwrites the cached
+// full-document HTML.
+func renderTypstUncached(source string) string {
 	if !typst.Available() {
 		return "<p><em>Typst 编译器未安装。</em></p>"
 	}
 	body, err := typst.CompileHTML(source)
 	if err != nil {
-		log.Printf("[render] typst compile error: %v", err)
+		log.Printf("[render] typst line compile error: %v", err)
 		return "<p><em>Typst 编译失败：" + err.Error() + "</em></p>"
 	}
 	return body

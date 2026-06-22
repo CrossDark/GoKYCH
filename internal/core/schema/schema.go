@@ -115,24 +115,29 @@ var allTables = [...]string{
 		id          INT AUTO_INCREMENT PRIMARY KEY,
 		article_id  INT NOT NULL,
 		line_number INT DEFAULT NULL,
+		user_id     INT DEFAULT NULL,
 		author_name VARCHAR(128) NOT NULL DEFAULT '匿名',
 		content     VARCHAR(500) NOT NULL,
 		created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		FOREIGN KEY (article_id) REFERENCES articles(id) ON DELETE CASCADE,
-		INDEX idx_article_line (article_id, line_number)
+		INDEX idx_article_line (article_id, line_number),
+		INDEX idx_comment_user (user_id)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 
 	// ═══ 6. ratings ═══
 	`CREATE TABLE IF NOT EXISTS ratings (
 		id          INT AUTO_INCREMENT PRIMARY KEY,
 		article_id  INT NOT NULL,
+		user_id     INT DEFAULT NULL,
 		author_name VARCHAR(128) NOT NULL,
-		score       DECIMAL(4,2) NOT NULL,
+		voter_key   VARCHAR(141) NOT NULL,
+		score       DECIMAL(4,2) NOT NULL CHECK (score BETWEEN -1.00 AND 1.00),
 		created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-		UNIQUE KEY uq_user_article (article_id, author_name),
+		UNIQUE KEY uq_user_article (article_id, voter_key),
 		FOREIGN KEY (article_id) REFERENCES articles(id) ON DELETE CASCADE,
-		INDEX idx_author_name (author_name)
+		INDEX idx_author_name (author_name),
+		INDEX idx_rating_user (user_id)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 
 	// ═══ 7. webauthn_credentials ═══

@@ -2,6 +2,7 @@ package content
 
 import (
 	"database/sql"
+	"log"
 	"math"
 	"time"
 )
@@ -138,7 +139,17 @@ func UpdateArticle(db *sql.DB, atype, slug, title, content string) (*Article, er
 	if err != nil {
 		return nil, err
 	}
-	return GetArticle(db, atype, slug)
+	a, err := GetArticle(db, atype, slug)
+	if err != nil {
+		return nil, err
+	}
+	// Invalidate the typst cache: the source changed, so any cached HTML is
+	// stale. (Article deletion is handled by the ON DELETE CASCADE fk on
+	// typst_cache, so DeleteArticle needs no extra step.)
+	if _, derr := db.Exec(`DELETE FROM typst_cache WHERE article_id = ?`, a.ID); derr != nil {
+		log.Printf("[content] warn: failed to invalidate typst_cache for article %d: %v", a.ID, derr)
+	}
+	return a, nil
 }
 
 // DeleteArticle removes an article and all associated data (CASCADE handles

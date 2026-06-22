@@ -48,7 +48,17 @@ func (s *Server) addComment(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "评论内容不能为空。"})
 		return
 	}
-	cm, err := content.AddComment(s.DB, articleID, in.AuthorName, in.Content)
+	// Logged-in users: bind to session id and use the session username as the
+	// display name (ignoring any client-supplied author_name, which would
+	// otherwise allow impersonation). Anonymous users keep the supplied name.
+	var userID *int
+	authorName := in.AuthorName
+	if u := CurrentUserFromContext(c); u != nil {
+		uid := u.ID
+		userID = &uid
+		authorName = u.Username
+	}
+	cm, err := content.AddComment(s.DB, articleID, userID, authorName, in.Content)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "添加评论失败。"})
 		return
@@ -109,7 +119,14 @@ func (s *Server) addLineComment(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "内容不能为空。"})
 		return
 	}
-	cm, err := content.AddLineComment(s.DB, articleID, in.LineNumber, in.AuthorName, in.Content)
+	var userID *int
+	authorName := in.AuthorName
+	if u := CurrentUserFromContext(c); u != nil {
+		uid := u.ID
+		userID = &uid
+		authorName = u.Username
+	}
+	cm, err := content.AddLineComment(s.DB, articleID, in.LineNumber, userID, authorName, in.Content)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "添加行评论失败。"})
 		return

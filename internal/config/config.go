@@ -35,12 +35,13 @@ type PoolConfig struct {
 
 // AppConfig holds application-level settings.
 type AppConfig struct {
-	Port          int
-	GinMode       string
-	SessionSecret string
-	AdminUsername string
-	AdminPassword string
-	DataDir       string
+	Port            int
+	GinMode         string
+	SessionSecret   string
+	AdminUsername   string
+	AdminPassword   string
+	DataDir         string
+	TrustedProxies  []string // trusted reverse-proxy CIDRs/IPs for c.ClientIP(); empty = trust none (RemoteAddr only)
 }
 
 // mysqlYAML is the YAML file structure (top-level key "mysql").
@@ -143,6 +144,7 @@ func (c *Config) applyEnvOverrides() {
 	c.App.AdminUsername = envOr("ADMIN_USERNAME", c.App.AdminUsername)
 	c.App.AdminPassword = envOr("ADMIN_PASSWORD", c.App.AdminPassword)
 	c.App.DataDir = envOr("DATA_DIR", c.App.DataDir)
+	c.App.TrustedProxies = envListOr("TRUSTED_PROXIES", c.App.TrustedProxies)
 }
 
 // DataRoot returns the absolute path to the data directory.
@@ -184,4 +186,22 @@ func envIntOr(key string, fallback int) int {
 		log.Printf("[config] warning: %s=%q is not a valid int, using default %d", key, v, fallback)
 	}
 	return fallback
+}
+
+// envListOr parses a comma-separated env var into a trimmed string slice.
+// Empty/unset yields nil, so callers can distinguish "not configured" from
+// a configured empty list.
+func envListOr(key string, fallback []string) []string {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	parts := strings.Split(v, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if t := strings.TrimSpace(p); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
 }

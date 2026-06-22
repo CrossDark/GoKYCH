@@ -2,6 +2,8 @@ package typst
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -20,6 +22,15 @@ const (
 // compileSem bounds the number of concurrent typst compilations to avoid
 // fork-bomb / disk exhaustion under load.
 var compileSem = make(chan struct{}, maxConcurrent)
+
+// db holds an optional DB connection used by CompileHTMLCached to look up /
+// store the typst_cache table. nil = caching disabled (degrades to plain
+// CompileHTML).
+var db *sql.DB
+
+// SetDB wires a database connection for compile-result caching. Must be
+// called once at startup (after the pool is ready) for the cache to take effect.
+func SetDB(d *sql.DB) { db = d }
 
 // Path returns the full path to the typst CLI binary, or empty string.
 // Searches: TYPST_PATH env, then $PATH, then common locations.
@@ -122,6 +133,42 @@ func CompileHTML(source string) (string, error) {
 	fullHTML := string(htmlBytes)
 	// Extract body content from the full HTML document.
 	body := extractBody(fullHTML)
+	return body, nil
+}
+
+// CompileHTMLCached is CompileHTML wrapped with a DB-backed cache keyed on
+// articleID (the typst_cache table). On a cache miss it compiles and writes
+// the result back. With no DB configured (SetDB not called) it degrades to a
+// plain CompileHTML. Cache I/O errors are best-effort: lookups that fail fall
+// through to compilation, write failures only log.
+func CompileHTMLCached(articleID int, source string) (string, error) {
+	if db == nil || articleID <= 0 {
+		return CompileHTML(source)
+	}
+	var html string
+	err := db.QueryRow(
+		`SELECT html_content FROM typst_cache WHERE article_id = ?`, articleID,
+	).Scan(&html)
+	if err == nil && html != "" {
+		return html, nil
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		log.Printf("[typst] cache lookup error for article %d: %v", articleID, err)
+	}
+	body, err := CompileHTML(source)
+	if err != nil {
+		return "", err
+	}
+	// pdf_content is NOT NULL in the schema; we only cache HTML here so store
+	// an empty blob. ON DUPLICATE KEY UPDATE refreshes html + compiled_at.
+	if _, werr := db.Exec(
+		`INSERT INTO typst_cache (article_id, html_content, pdf_content)
+		 VALUES (?, ?, ?)
+		 ON DUPLICATE KEY UPDATE html_content = VALUES(html_content), compiled_at = CURRENT_TIMESTAMP`,
+		articleID, body, []byte{},
+	); werr != nil {
+		log.Printf("[typst] cache write error for article %d: %v", articleID, werr)
+	}
 	return body, nil
 }
 

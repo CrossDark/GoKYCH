@@ -2,7 +2,6 @@ package api
 
 import (
 	"net/http"
-	"strings"
 
 	"github.com/gin-gonic/gin"
 
@@ -117,14 +116,10 @@ func requireOwner(c *gin.Context) {
 	c.Next()
 }
 
-// clientIP extracts the client IP (X-Forwarded-For first, matching PyKYCH).
+// clientIP reports the request's IP using gin's c.ClientIP(), which honours
+// the TrustedProxies configured in router.Setup. Untrusted forwarded headers
+// are ignored, so a client can't spoof X-Forwarded-For to bypass rate
+// limiting (the old hand-rolled XFF/X-Real-IP reader trusted them by default).
 func clientIP(c *gin.Context) string {
-	if xff := c.GetHeader("X-Forwarded-For"); xff != "" {
-		parts := strings.SplitN(xff, ",", 2)
-		return strings.TrimSpace(parts[0])
-	}
-	if rip := c.GetHeader("X-Real-IP"); rip != "" {
-		return strings.TrimSpace(rip)
-	}
 	return c.ClientIP()
 }

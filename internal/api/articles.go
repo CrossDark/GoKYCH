@@ -60,24 +60,24 @@ func (s *Server) getArticle(c *gin.Context) {
 		return
 	}
 
-	html := parsers.Render(parsers.ArticleType(atype), a.Content)
+	html := parsers.Render(parsers.ArticleType(atype), a.ID, a.Content)
 
 	comments, _ := content.GetComments(s.DB, a.ID)
 	lineComments, _ := content.GetLineComments(s.DB, a.ID)
 	lineCounts, _ := content.GetLineCommentCounts(s.DB, a.ID)
 
 	currentUser := CurrentUserFromContext(c)
-	var userName string
+	voterKey := ""
 	canEdit := false
 	if currentUser != nil {
-		userName = currentUser.Username
+		voterKey = content.VoterKey(&currentUser.ID, currentUser.Username)
 		// Admin/owner can edit; author can edit their own.
 		if currentUser.Role == "admin" || currentUser.Role == "owner" ||
 			(a.AuthorID != nil && *a.AuthorID == currentUser.ID) {
 			canEdit = true
 		}
 	}
-	rating, _ := content.GetRatingSummary(s.DB, a.ID, userName)
+	rating, _ := content.GetRatingSummary(s.DB, a.ID, voterKey)
 
 	c.JSON(http.StatusOK, ArticleDetail{
 		Article:           a,

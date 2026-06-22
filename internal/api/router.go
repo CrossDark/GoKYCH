@@ -1,11 +1,28 @@
 package api
 
 import (
+	"log"
+
 	"github.com/gin-gonic/gin"
 )
 
 // Setup registers all API routes on the Gin engine.
 func (s *Server) Setup(r *gin.Engine) {
+	// Configure trusted proxies for c.ClientIP().
+	//  - TRUSTED_PROXIES unset/empty → trust NONE: gin uses RemoteAddr only,
+	//    so spoofed X-Forwarded-For can't bypass rate limiting / IP checks.
+	//  - TRUSTED_PROXIES=10.0.0.0/8,127.0.0.1 → trust those proxies, real
+	//    client IP is read from X-Forwarded-For when the request came through one.
+	// Note: passing nil to SetTrustedProxies means "trust ALL" in gin, so we
+	// explicitly pass an empty (non-nil) slice for the trust-none case.
+	tp := s.trustedProxies
+	if len(tp) == 0 {
+		tp = []string{}
+	}
+	if err := r.SetTrustedProxies(tp); err != nil {
+		log.Printf("[api] warning: SetTrustedProxies failed: %v", err)
+	}
+
 	r.Use(s.sessionMiddleware())
 	r.Use(s.loadUserMiddleware())
 

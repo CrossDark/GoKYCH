@@ -19,6 +19,7 @@ import (
 	coredb "gokych/internal/core/db"
 	"gokych/internal/core/schema"
 	"gokych/internal/core/settings"
+	"gokych/internal/typst"
 )
 
 func main() {
@@ -53,7 +54,9 @@ func main() {
 	secure := cfg.App.GinMode == "release"
 	sess := session.New(db, cfg.App.SessionSecret, secure)
 	limiter := ratelimit.New()
-	srv := api.NewServer(db, sess, limiter, cfg.App.DataDir)
+	// typst.SetDB lets typst.CompileHTMLCached consult typst_cache.
+	typst.SetDB(db)
+	srv := api.NewServer(db, sess, limiter, cfg.App.DataDir, cfg.App.TrustedProxies)
 
 	// 7. Set up Gin.
 	gin.SetMode(cfg.App.GinMode)

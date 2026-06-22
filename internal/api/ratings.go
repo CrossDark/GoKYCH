@@ -15,11 +15,11 @@ func (s *Server) getRating(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "文章不存在。"})
 		return
 	}
-	userName := ""
+	voterKey := ""
 	if u := CurrentUserFromContext(c); u != nil {
-		userName = u.Username
+		voterKey = content.VoterKey(&u.ID, u.Username)
 	}
-	rs, err := content.GetRatingSummary(s.DB, articleID, userName)
+	rs, err := content.GetRatingSummary(s.DB, articleID, voterKey)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载评分失败。"})
 		return
@@ -45,11 +45,17 @@ func (s *Server) setRating(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "评分范围需在 -1 到 1 之间。"})
 		return
 	}
-	userName := "匿名"
+	// Logged-in raters are keyed on their session user id (authorName is just
+	// a display name set from the session, so it can't be spoofed). Anonymous
+	// raters share the "匿名" display name and the "n:匿名" voter key.
+	var userID *int
+	authorName := "匿名"
 	if u := CurrentUserFromContext(c); u != nil {
-		userName = u.Username
+		uid := u.ID
+		userID = &uid
+		authorName = u.Username
 	}
-	rs, err := content.SetRating(s.DB, articleID, userName, in.Score)
+	rs, err := content.SetRating(s.DB, articleID, userID, authorName, in.Score)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "评分失败。"})
 		return
@@ -64,15 +70,15 @@ func (s *Server) deleteRating(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "文章不存在。"})
 		return
 	}
-	userName := ""
+	voterKey := ""
 	if u := CurrentUserFromContext(c); u != nil {
-		userName = u.Username
+		voterKey = content.VoterKey(&u.ID, u.Username)
 	}
-	if userName == "" {
+	if voterKey == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "需要登录。"})
 		return
 	}
-	ok, err := content.DeleteRating(s.DB, articleID, userName)
+	ok, err := content.DeleteRating(s.DB, articleID, voterKey)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "取消评分失败。"})
 		return
@@ -82,7 +88,7 @@ func (s *Server) deleteRating(c *gin.Context) {
 		return
 	}
 	// Return updated summary
-	rs, err := content.GetRatingSummary(s.DB, articleID, userName)
+	rs, err := content.GetRatingSummary(s.DB, articleID, voterKey)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 		return
