@@ -27,6 +27,20 @@ export default function AdminSettings() {
     });
   };
 
+  const handleTextChange = (section: string, key: string, originalValue: any, newValue: string) => {
+    if (!settings) return;
+    // Preserve original type: numbers stay numbers, others become strings
+    let converted: any = newValue;
+    if (typeof originalValue === "number") {
+      const n = parseInt(newValue, 10);
+      converted = isNaN(n) ? originalValue : n;
+    }
+    setSettings({
+      ...settings,
+      [section]: { ...settings[section], [key]: converted },
+    });
+  };
+
   const handleSave = async () => {
     if (!settings) return;
     setMsg("");
@@ -62,7 +76,7 @@ export default function AdminSettings() {
                 <input
                   type="text"
                   value={String(value ?? "")}
-                  onChange={(e) => handleChange(section, key, e.target.value)}
+                  onChange={(e) => handleTextChange(section, key, value, e.target.value)}
                 />
               )}
             </label>

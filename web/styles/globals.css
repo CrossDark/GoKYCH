@@ -1302,6 +1302,23 @@ hr {
     max-width: none !important;
 }
 
+/* Hide public header/footer on admin pages */
+body:has(.admin-layout) > header,
+body:has(.admin-layout) > .site-header,
+body:has(.admin-layout) > footer,
+body:has(.admin-layout) > .site-footer {
+    display: none;
+}
+
+/* Reset main container on admin pages */
+body:has(.admin-layout) > main,
+body:has(.admin-layout) > .container {
+    max-width: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    min-height: auto;
+}
+
 /* Admin Sidebar */
 .admin-sidebar {
     width: 200px;

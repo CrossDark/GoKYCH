@@ -32,11 +32,23 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   };
 
   if (loading) {
-    return <div className="page"><p>加载中…</p></div>;
+    return (
+      <div className="admin-layout">
+        <div className="admin-content">
+          <p>加载中…</p>
+        </div>
+      </div>
+    );
   }
 
   if (!user) {
-    return <div className="page"><p>请先登录。</p></div>;
+    return (
+      <div className="admin-layout">
+        <div className="admin-content">
+          <p>请先登录，正在跳转…</p>
+        </div>
+      </div>
+    );
   }
 
   const links = [
