@@ -179,10 +179,7 @@ func (s *Server) createNotification(c *gin.Context) {
 	if in.IsImportant {
 		imp = 1
 	}
-	act := 1
-	if !in.IsActive {
-		act = 0
-	}
+		act := 1 // always active on creation (toggle via update)
 	res, err := s.DB.Exec(
 		`INSERT INTO notifications (title, content, is_important, is_active) VALUES (?, ?, ?, ?)`,
 		in.Title, in.Content, imp, act)

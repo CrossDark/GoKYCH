@@ -15,44 +15,42 @@ export default async function HomePage() {
   return (
     <div className="home-page">
       {/* 通知 */}
-      {home.notifications.length > 0 && (
-        <section className="notifications">
-          {home.notifications.map((n) => (
+      <section className="home-notifications">
+        {home.notifications.length > 0 ? (
+          home.notifications.map((n) => (
             <div
               key={n.id}
-              className={`notification ${n.is_important ? "important" : ""}`}
+              className={`home-notification ${n.is_important ? "important" : ""}`}
             >
               <strong>{n.title}</strong>
               <span>{n.content}</span>
             </div>
-          ))}
-        </section>
-      )}
+          ))
+        ) : (
+          <p className="home-empty-hint">📢 暂无通知</p>
+        )}
+      </section>
 
-      {/* 子站点链接 */}
-      {home.subsite_links.length > 0 && (
-        <section className="subsite-links">
-          <div className="subsite-grid">
-            {home.subsite_links.map((link) => (
-              <a
-                key={link.name}
-                href={link.url}
-                className="subsite-card"
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                <h3>{link.name}</h3>
-                {link.description && <p>{link.description}</p>}
-              </a>
-            ))}
-          </div>
-        </section>
-      )}
+      {/* 搜索栏 */}
+      <section className="home-search">
+        <form action="/search" method="GET" className="home-search-form">
+          <input
+            type="search"
+            name="q"
+            className="home-search-input"
+            placeholder="搜索文章…"
+            aria-label="搜索"
+          />
+          <button type="submit" className="btn btn-primary home-search-btn">
+            🔍 搜索
+          </button>
+        </form>
+      </section>
 
       {/* 推荐文章 */}
-      {home.featured_articles.length > 0 && (
-        <section className="section featured-section">
-          <h2 className="section-title">推荐文章</h2>
+      <section className="home-featured">
+        <h2 className="home-section-title">⭐ 推荐文章</h2>
+        {home.featured_articles.length > 0 ? (
           <div className="featured-grid">
             {home.featured_articles.map((a) => (
               <Link
@@ -60,22 +58,26 @@ export default async function HomePage() {
                 href={`/${a.type}/${a.slug}`}
                 className="featured-card"
               >
-                <div className="featured-type">{a.type}</div>
+                <span className="featured-type">{a.type}</span>
                 <h3>{a.title}</h3>
+                <span className="featured-arrow">→</span>
               </Link>
             ))}
           </div>
-        </section>
-      )}
-
-      {/* 最近文章 */}
-      <section className="section recent-section">
-        <h2 className="section-title">最近更新</h2>
-        {home.recent_articles.length === 0 ? (
-          <p className="empty-message">暂无文章。</p>
         ) : (
+          <p className="home-empty-hint">
+            暂无推荐文章。
+            <Link href="/md" className="home-browse-link">浏览全部文章</Link>
+          </p>
+        )}
+      </section>
+
+      {/* 最近更新 */}
+      {home.recent_articles.length > 0 && (
+        <section className="home-recent">
+          <h2 className="home-section-title">📝 最近更新</h2>
           <div className="article-list">
-            {home.recent_articles.map((a) => (
+            {home.recent_articles.slice(0, 5).map((a) => (
               <Link
                 key={a.id}
                 href={`/${a.type}/${a.slug}`}
@@ -85,23 +87,28 @@ export default async function HomePage() {
                 <div className="article-info">
                   <h3>{a.title}</h3>
                   <div className="article-meta">
-                  <time>
-                    {new Date(a.updated_at).toLocaleDateString("zh-CN")}
-                  </time>
-                  {a.tags && a.tags.length > 0 && (
-                    <span className="article-tags">
-                      {a.tags.map((tag: string) => (
-                        <span key={tag} className="tag-badge">{tag}</span>
-                      ))}
-                    </span>
-                  )}
+                    <time>
+                      {new Date(a.updated_at).toLocaleDateString("zh-CN")}
+                    </time>
+                    {a.tags && a.tags.length > 0 && (
+                      <span className="article-tags">
+                        {a.tags.map((tag: string) => (
+                          <span key={tag} className="tag-badge">{tag}</span>
+                        ))}
+                      </span>
+                    )}
                   </div>
                 </div>
               </Link>
             ))}
           </div>
-        )}
-      </section>
+          {home.recent_articles.length > 5 && (
+            <Link href="/md" className="home-more-link">
+              查看更多 →
+            </Link>
+          )}
+        </section>
+      )}
     </div>
   );
 }
