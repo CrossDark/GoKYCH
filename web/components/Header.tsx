@@ -53,9 +53,6 @@ export function Header() {
             跨越晨昏
           </Link>
           <nav className="site-nav">
-            <Link href="/md" className="nav-link">
-              文章
-            </Link>
             <button
               onClick={openSidebar}
               className="nav-link sidebar-toggle-btn"
@@ -64,8 +61,8 @@ export function Header() {
             >
               🏷️
             </button>
-            <Link href="/search" className="nav-link">
-              搜索
+            <Link href="/search" className="nav-link" title="搜索">
+              🔍
             </Link>
             <Link href="/about" className="nav-link">
               关于
