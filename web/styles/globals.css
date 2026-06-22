@@ -1107,6 +1107,151 @@ hr {
     font-size: 0.95rem;
 }
 
+/* ===== Tag Sidebar (slide-in from right) ===== */
+.sidebar-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.3);
+    z-index: 200;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.3s ease, visibility 0.3s ease;
+}
+
+.sidebar-overlay.open {
+    opacity: 1;
+    visibility: visible;
+}
+
+.sidebar {
+    position: fixed;
+    top: 0;
+    right: -300px;
+    width: 280px;
+    height: 100%;
+    background: var(--bg-card);
+    box-shadow: -2px 0 12px rgba(0, 0, 0, 0.08);
+    z-index: 201;
+    transition: right 0.3s ease;
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+}
+
+.sidebar.open {
+    right: 0;
+}
+
+.sidebar-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 1.25rem 1.5rem;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+}
+
+.sidebar-header h3 {
+    margin: 0;
+    font-size: 1.1rem;
+}
+
+.sidebar-close {
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 1.3rem;
+    color: var(--text-muted);
+    padding: 0.25rem;
+    line-height: 1;
+    border-radius: 4px;
+    transition: color 0.2s, background 0.2s;
+}
+
+.sidebar-close:hover {
+    color: var(--text);
+    background: var(--code-bg);
+}
+
+.sidebar-body {
+    padding: 1rem 1.5rem;
+    flex: 1;
+    overflow-y: auto;
+}
+
+.sidebar-empty {
+    text-align: center;
+    color: var(--text-muted);
+    padding: 2rem 0;
+    font-size: 0.9rem;
+}
+
+.sidebar-tag {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.45rem 0.75rem;
+    border-radius: 6px;
+    color: var(--text-secondary);
+    text-decoration: none;
+    font-size: 0.92rem;
+    transition: background 0.15s, color 0.15s;
+    margin-bottom: 0.15rem;
+}
+
+.sidebar-tag:hover {
+    background: var(--code-bg);
+    color: var(--accent);
+    text-decoration: none;
+}
+
+.sidebar-tag-count {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    background: var(--code-bg);
+    padding: 0.1rem 0.5rem;
+    border-radius: 1rem;
+}
+
+.sidebar-tag:hover .sidebar-tag-count {
+    background: var(--accent);
+    color: #fff;
+}
+
+.sidebar-footer {
+    padding: 1rem 1.5rem;
+    border-top: 1px solid var(--border);
+    flex-shrink: 0;
+}
+
+.sidebar-footer a {
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+    text-decoration: none;
+    transition: color 0.2s;
+}
+
+.sidebar-footer a:hover {
+    color: var(--accent);
+}
+
+/* Sidebar toggle button in nav */
+.sidebar-toggle-btn {
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 1.1rem;
+    padding: 0;
+    line-height: 1;
+}
+
+.sidebar-toggle-btn:hover {
+    color: var(--accent);
+}
+
 /* ═══════════════════════════════════════════════════════════════════════════
    ADMIN PANEL (WordPress-style, matching PyKYCH admin_base.html)
    ═══════════════════════════════════════════════════════════════════════════ */
