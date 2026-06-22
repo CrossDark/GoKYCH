@@ -17,7 +17,7 @@ func Init(cfg config.Config) (*sql.DB, error) {
 	mysql := cfg.MySQL
 
 	// Step 1: connect without database to auto-create it.
-	dsnNoDB := fmt.Sprintf("%s:%s@tcp(%s:%d)/?charset=%s&parseTime=true&timeout=10s",
+	dsnNoDB := fmt.Sprintf("%s:%s@tcp(%s:%d)/?charset=%s&parseTime=true&timeout=10s&readTimeout=30s&writeTimeout=30s",
 		mysql.User, mysql.Password, mysql.Host, mysql.Port, mysql.Charset)
 	dbNoDB, err := sql.Open("mysql", dsnNoDB)
 	if err != nil {
@@ -35,7 +35,7 @@ func Init(cfg config.Config) (*sql.DB, error) {
 	log.Printf("[db] ensured database %q exists", mysql.Database)
 
 	// Step 2: connect with database.
-	dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?charset=%s&parseTime=true&timeout=10s",
+	dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?charset=%s&parseTime=true&timeout=10s&readTimeout=30s&writeTimeout=30s",
 		mysql.User, mysql.Password, mysql.Host, mysql.Port, mysql.Database, mysql.Charset)
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
@@ -46,6 +46,9 @@ func Init(cfg config.Config) (*sql.DB, error) {
 	db.SetMaxOpenConns(mysql.Pool.MaxSize)
 	db.SetMaxIdleConns(mysql.Pool.MinSize)
 	db.SetConnMaxLifetime(time.Duration(mysql.Pool.PoolRecycle) * time.Second)
+	// Reclaim idle connections so closed-behind-NAT or DB-restarted conns are
+	// dropped before a lazy query trips over them.
+	db.SetConnMaxIdleTime(5 * time.Minute)
 
 	if err := db.Ping(); err != nil {
 		db.Close()

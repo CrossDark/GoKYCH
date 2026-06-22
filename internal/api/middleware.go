@@ -1,6 +1,7 @@
 package api
 
 import (
+	"log"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -31,8 +32,11 @@ func (s *Server) loadUserMiddleware() gin.HandlerFunc {
 			c.Set(ctxUserKey, u)
 		}
 		c.Next()
-		// Persist any session mutations (e.g. last_activity refresh).
-		_ = s.sessions.PersistSession(c.Writer, c.Request)
+		// Persist any session mutations (e.g. last_activity refresh). Surface
+		// failures so "莫名掉登录" is debuggable instead of silently swallowed.
+		if err := s.sessions.PersistSession(c.Writer, c.Request); err != nil {
+			log.Printf("[session] PersistSession error: %v", err)
+		}
 	}
 }
 

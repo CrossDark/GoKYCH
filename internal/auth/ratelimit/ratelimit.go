@@ -13,6 +13,11 @@ const (
 	windowSeconds        = 60
 	lockoutThreshold     = 10
 	lockoutDuration      = 15 * 60 // 900s
+	// cleanupInterval is how often the background sweeper runs. Without it,
+	// failures/lockouts for one-shot (username, ip) pairs are only ever
+	// reaped when that exact key is accessed again, so an attacker spraying
+	// random keys could grow the maps unbounded (memory DoS).
+	cleanupInterval = 5 * time.Minute
 )
 
 type record struct {
@@ -28,12 +33,17 @@ type Limiter struct {
 	lockouts       map[string]float64
 }
 
-// New creates a new in-memory Limiter.
+// New creates a new in-memory Limiter and starts a background sweeper that
+// reaps expired failure records and lockouts. The sweeper runs for the
+// lifetime of the process; without it, entries for (username, ip) pairs that
+// are never revisited would accumulate indefinitely.
 func New() *Limiter {
-	return &Limiter{
+	l := &Limiter{
 		failures: make(map[string][]record),
 		lockouts: make(map[string]float64),
 	}
+	go l.cleanupLoop()
+	return l
 }
 
 func userKey(username, ip string) string  { return "user:" + username + ":" + ip }
@@ -124,4 +134,36 @@ func (l *Limiter) Reset(username, ip string) {
 func cleanOldAppend(recs []record, now float64) []record {
 	recs, _ = cleanOld(recs, now)
 	return append(recs, record{ts: now, count: 1})
+}
+
+// cleanupLoop periodically drops expired entries so maps don't grow unbounded
+// under a spray of distinct (username, ip) keys.
+func (l *Limiter) cleanupLoop() {
+	t := time.NewTicker(cleanupInterval)
+	defer t.Stop()
+	for range t.C {
+		l.cleanup()
+	}
+}
+
+// cleanup removes all expired failure records (and keys that become empty as a
+// result) plus expired lockouts. Called under l.mu.
+func (l *Limiter) cleanup() {
+	now := float64(time.Now().Unix())
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	for k, recs := range l.failures {
+		kept, _ := cleanOld(recs, now)
+		if len(kept) == 0 {
+			delete(l.failures, k)
+		} else {
+			l.failures[k] = kept
+		}
+	}
+	for k, lockEnd := range l.lockouts {
+		if now >= lockEnd {
+			delete(l.lockouts, k)
+		}
+	}
 }

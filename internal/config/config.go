@@ -121,7 +121,36 @@ func (c *Config) loadYAML() {
 		log.Printf("[config] warning: failed to parse %s: %v", path, err)
 		return
 	}
-	c.MySQL = raw.MySQL
+	// Merge field-by-field instead of c.MySQL = raw.MySQL: a whole-struct
+	// assignment would zero out Pool (and any other yaml-omitted field),
+	// leaving MinSize=MaxSize=0 and effectively disabling the pool.
+	if raw.MySQL.Host != "" {
+		c.MySQL.Host = raw.MySQL.Host
+	}
+	if raw.MySQL.Port != 0 {
+		c.MySQL.Port = raw.MySQL.Port
+	}
+	if raw.MySQL.User != "" {
+		c.MySQL.User = raw.MySQL.User
+	}
+	if raw.MySQL.Password != "" {
+		c.MySQL.Password = raw.MySQL.Password
+	}
+	if raw.MySQL.Database != "" {
+		c.MySQL.Database = raw.MySQL.Database
+	}
+	if raw.MySQL.Charset != "" {
+		c.MySQL.Charset = raw.MySQL.Charset
+	}
+	if raw.MySQL.Pool.MaxSize > 0 {
+		c.MySQL.Pool.MaxSize = raw.MySQL.Pool.MaxSize
+	}
+	if raw.MySQL.Pool.MinSize > 0 {
+		c.MySQL.Pool.MinSize = raw.MySQL.Pool.MinSize
+	}
+	if raw.MySQL.Pool.PoolRecycle > 0 {
+		c.MySQL.Pool.PoolRecycle = raw.MySQL.Pool.PoolRecycle
+	}
 }
 
 // applyEnvOverrides lets environment variables override all settings.

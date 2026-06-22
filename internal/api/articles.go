@@ -2,6 +2,7 @@ package api
 
 import (
 	"database/sql"
+	"log"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -62,9 +63,18 @@ func (s *Server) getArticle(c *gin.Context) {
 
 	html := parsers.Render(parsers.ArticleType(atype), a.ID, a.Content)
 
-	comments, _ := content.GetComments(s.DB, a.ID)
-	lineComments, _ := content.GetLineComments(s.DB, a.ID)
-	lineCounts, _ := content.GetLineCommentCounts(s.DB, a.ID)
+	comments, err := content.GetComments(s.DB, a.ID)
+	if err != nil {
+		log.Printf("[api] getArticle %d: load comments failed: %v", a.ID, err)
+	}
+	lineComments, err := content.GetLineComments(s.DB, a.ID)
+	if err != nil {
+		log.Printf("[api] getArticle %d: load line comments failed: %v", a.ID, err)
+	}
+	lineCounts, err := content.GetLineCommentCounts(s.DB, a.ID)
+	if err != nil {
+		log.Printf("[api] getArticle %d: load line comment counts failed: %v", a.ID, err)
+	}
 
 	currentUser := CurrentUserFromContext(c)
 	voterKey := ""
@@ -77,7 +87,10 @@ func (s *Server) getArticle(c *gin.Context) {
 			canEdit = true
 		}
 	}
-	rating, _ := content.GetRatingSummary(s.DB, a.ID, voterKey)
+	rating, err := content.GetRatingSummary(s.DB, a.ID, voterKey)
+	if err != nil {
+		log.Printf("[api] getArticle %d: load rating failed: %v", a.ID, err)
+	}
 
 	c.JSON(http.StatusOK, ArticleDetail{
 		Article:           a,
@@ -128,7 +141,7 @@ func (s *Server) createArticle(c *gin.Context) {
 	}
 	a, err := content.CreateArticle(s.DB, atype, in.Slug, in.Title, in.Content, authorID)
 	if err != nil {
-		if strings.Contains(err.Error(), "Duplicate") {
+		if isDuplicateEntry(err) {
 			c.JSON(http.StatusConflict, gin.H{"error": "该 slug 已存在。"})
 			return
 		}

@@ -4,7 +4,6 @@ import (
 	"net/http"
 	"os"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -82,7 +81,7 @@ func (s *Server) createUser(c *gin.Context) {
 	}
 	id, err := user.Create(s.DB, in.Username, hash, in.Nickname, in.Role)
 	if err != nil {
-		if strings.Contains(err.Error(), "Duplicate") {
+		if isDuplicateEntry(err) {
 			c.JSON(http.StatusConflict, gin.H{"error": "用户名已存在。"})
 			return
 		}

@@ -1,9 +1,11 @@
 package api
 
 import (
+	"crypto/subtle"
 	"database/sql"
 	"math/rand"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -56,7 +58,7 @@ func (s *Server) generateCaptcha(c *gin.Context) captchaQA {
 	if !ok {
 		return false
 	}
-	return strings.TrimSpace(input) == stored
+	return subtle.ConstantTimeCompare([]byte(strings.TrimSpace(input)), []byte(stored)) == 1
 }
 
 // ─── Handlers ────────────────────────────────────────────────────────────
@@ -179,13 +181,28 @@ func (s *Server) postLogout(c *gin.Context) {
 
 // ─── helpers ────────────────────────────────────────────────────────────
 
-// sanitizeNext guards against open redirects: must start with "/", must not
-// start with "//", must not contain "@". Falls back to "/admin".
+// sanitizeNext guards against open redirects: only same-origin relative paths
+// are allowed. It rejects anything with a scheme/host/userinfo (e.g.
+// //evil.com, http://evil.com, user@host) and backslash/control-char tricks
+// (/\evil.com, %2F%2fevil.com) that some browsers interpret as absolute.
+// Falls back to "/admin" on any rejection.
 func sanitizeNext(next string) string {
-	if next == "" || !strings.HasPrefix(next, "/") || strings.HasPrefix(next, "//") || strings.Contains(next, "@") {
+	if next == "" || !strings.HasPrefix(next, "/") || strings.HasPrefix(next, "//") {
 		return "/admin"
 	}
-	return next
+	u, err := url.Parse(next)
+	if err != nil {
+		return "/admin"
+	}
+	if u.Scheme != "" || u.Host != "" || u.User != nil || u.Opaque != "" {
+		return "/admin"
+	}
+	// Reject backslashes: url.Parse leaves them in Path, but browsers may
+	// treat /\evil.com as protocol-relative.
+	if strings.Contains(u.Path, "\\") {
+		return "/admin"
+	}
+	return u.Path
 }
 
 // setSessionValue stores a value in the session and persists it.

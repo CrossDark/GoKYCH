@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"log"
 	"math"
+	"strings"
 	"time"
 )
 
@@ -47,8 +48,8 @@ func ListArticles(db *sql.DB, atype string, page, perPage int) (*ArticleListResu
 			return nil, err
 		}
 		rows, err = db.Query(
-			`SELECT id, type, slug, title, content, author_id, created_at, updated_at
-			 FROM articles ORDER BY created_at DESC LIMIT ? OFFSET ?`,
+			`SELECT id, type, slug, title, LEFT(content, 200) AS content, author_id, created_at, updated_at
+		 FROM articles ORDER BY created_at DESC LIMIT ? OFFSET ?`,
 			perPage, offset)
 	} else {
 		err = db.QueryRow(`SELECT COUNT(*) FROM articles WHERE type = ?`, atype).Scan(&total)
@@ -56,8 +57,8 @@ func ListArticles(db *sql.DB, atype string, page, perPage int) (*ArticleListResu
 			return nil, err
 		}
 		rows, err = db.Query(
-			`SELECT id, type, slug, title, content, author_id, created_at, updated_at
-			 FROM articles WHERE type = ? ORDER BY created_at DESC LIMIT ? OFFSET ?`,
+			`SELECT id, type, slug, title, LEFT(content, 200) AS content, author_id, created_at, updated_at
+		 FROM articles WHERE type = ? ORDER BY created_at DESC LIMIT ? OFFSET ?`,
 			atype, perPage, offset)
 	}
 	if err != nil {
@@ -166,7 +167,7 @@ func DeleteArticle(db *sql.DB, atype, slug string) (bool, error) {
 // ListRecentArticles returns the most recently updated articles across all types.
 func ListRecentArticles(db *sql.DB, limit int) ([]Article, error) {
 	rows, err := db.Query(
-		`SELECT id, type, slug, title, content, author_id, created_at, updated_at
+		`SELECT id, type, slug, title, LEFT(content, 200) AS content, author_id, created_at, updated_at
 		 FROM articles ORDER BY updated_at DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
@@ -201,12 +202,24 @@ func SearchArticles(db *sql.DB, q string, page, perPage int) (*ArticleListResult
 	if perPage <= 0 {
 		perPage = 10
 	}
-	keyword := q + "*"
+	// NATURAL LANGUAGE MODE: no boolean operators to escape (P2-16), and rows
+	// rank by relevance so we ORDER BY the MATCH score (P2-21). An empty query
+	// would error in MySQL, so short-circuit to an empty page.
+	keyword := strings.TrimSpace(q)
 	offset := (page - 1) * perPage
+	if keyword == "" {
+		return &ArticleListResult{
+			Articles:   make([]Article, 0),
+			Total:      0,
+			Page:       page,
+			PerPage:    perPage,
+			TotalPages: 1,
+		}, nil
+	}
 
 	var total int
 	err := db.QueryRow(
-		`SELECT COUNT(*) FROM articles WHERE MATCH(title, content) AGAINST(? IN BOOLEAN MODE)`,
+		`SELECT COUNT(*) FROM articles WHERE MATCH(title, content) AGAINST(?)`,
 		keyword,
 	).Scan(&total)
 	if err != nil {
@@ -214,10 +227,10 @@ func SearchArticles(db *sql.DB, q string, page, perPage int) (*ArticleListResult
 	}
 
 	rows, err := db.Query(
-		`SELECT id, type, slug, title, content, author_id, created_at, updated_at
-		 FROM articles WHERE MATCH(title, content) AGAINST(? IN BOOLEAN MODE)
-		 ORDER BY created_at DESC LIMIT ? OFFSET ?`,
-		keyword, perPage, offset,
+		`SELECT id, type, slug, title, LEFT(content, 200) AS content, author_id, created_at, updated_at
+		 FROM articles WHERE MATCH(title, content) AGAINST(?)
+		 ORDER BY MATCH(title, content) AGAINST(?) DESC, updated_at DESC LIMIT ? OFFSET ?`,
+		keyword, keyword, perPage, offset,
 	)
 	if err != nil {
 		return nil, err

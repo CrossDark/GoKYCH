@@ -35,7 +35,8 @@ var (
 // Returns the first failing error message, or "" if the password is valid.
 // Rules (checked in order, matching PyKYCH):
 //  1. non-empty
-//  2. 8-128 chars
+//  2. 8-72 bytes (bcrypt silently truncates at 72 bytes, so allowing longer
+//     would let two different passwords share a hash — cap at the real limit)
 //  3. no whitespace
 //  4. ≥1 uppercase
 //  5. ≥1 lowercase
@@ -47,8 +48,8 @@ func ValidateStrength(pw string) string {
 	if len(pw) < 8 {
 		return "密码长度至少需要 8 个字符。"
 	}
-	if len(pw) > 128 {
-		return "密码长度不能超过 128 个字符。"
+	if len(pw) > 72 {
+		return "密码长度不能超过 72 个字符。"
 	}
 	if reWhitespace.MatchString(pw) {
 		return "密码不能包含空格或空白字符。"
