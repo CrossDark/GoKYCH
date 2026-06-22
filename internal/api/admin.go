@@ -33,7 +33,7 @@ func (s *Server) listUsers(c *gin.Context) {
 		return
 	}
 	defer rows.Close()
-	var users []userSummary
+		var users = make([]userSummary, 0)
 	for rows.Next() {
 		var u userSummary
 		if err := rows.Scan(&u.ID, &u.Username, &u.Nickname, &u.Role, &u.CreatedAt); err != nil {
@@ -147,7 +147,7 @@ func (s *Server) listAdminNotifications(c *gin.Context) {
 		return
 	}
 	defer rows.Close()
-	var out []notif
+		var out = make([]notif, 0)
 	for rows.Next() {
 		var n notif
 		var imp, act int
@@ -413,7 +413,7 @@ func (s *Server) listFiles(c *gin.Context) {
 		return
 	}
 	defer rows.Close()
-	var out []fileInfo
+		var out = make([]fileInfo, 0)
 	for rows.Next() {
 		var f fileInfo
 		if err := rows.Scan(&f.ID, &f.Filename, &f.OriginalName, &f.FileSize, &f.MimeType, &f.CreatedAt); err != nil {

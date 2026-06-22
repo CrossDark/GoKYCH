@@ -161,7 +161,7 @@ func ListRecentArticles(db *sql.DB, limit int) ([]Article, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	var articles []Article
+	var articles = make([]Article, 0)
 	for rows.Next() {
 		var a Article
 		if err := rows.Scan(&a.ID, &a.Type, &a.Slug, &a.Title, &a.Content, &a.AuthorID, &a.CreatedAt, &a.UpdatedAt); err != nil {

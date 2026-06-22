@@ -107,7 +107,7 @@ func List(db *sql.DB) ([]User, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []User
+	var out = make([]User, 0)
 	for rows.Next() {
 		var u User
 		if err := rows.Scan(&u.ID, &u.Username, &u.Nickname, &u.Role, &u.CreatedAt); err != nil {

@@ -122,7 +122,7 @@ func DeleteComment(db *sql.DB, commentID int) (bool, error) {
 // ── helpers ──────────────────────────────────────────────────────────
 
 func scanComments(rows *sql.Rows) ([]Comment, error) {
-	var out []Comment
+	var out = make([]Comment, 0)
 	for rows.Next() {
 		var c Comment
 		if err := rows.Scan(&c.ID, &c.ArticleID, &c.LineNumber, &c.AuthorName, &c.Content, &c.CreatedAt); err != nil {

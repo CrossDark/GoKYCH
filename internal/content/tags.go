@@ -42,7 +42,7 @@ func GetAllTagsWithCounts(db *sql.DB) ([]TagWithCount, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []TagWithCount
+	var out = make([]TagWithCount, 0)
 	for rows.Next() {
 		var t TagWithCount
 		if err := rows.Scan(&t.ID, &t.Name, &t.Count); err != nil {
