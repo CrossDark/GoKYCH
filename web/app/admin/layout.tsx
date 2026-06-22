@@ -12,6 +12,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const [csrfToken, setCsrfToken] = useState("");
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   useEffect(() => {
     getMe().then((r) => {
@@ -33,60 +34,107 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
 
   if (loading) {
     return (
-      <div className="admin-layout">
-        <div className="admin-content">
-          <p>加载中…</p>
-        </div>
+      <div className="wp-admin-wrap">
+        <div className="wp-admin-main"><p>加载中…</p></div>
       </div>
     );
   }
 
   if (!user) {
     return (
-      <div className="admin-layout">
-        <div className="admin-content">
-          <p>请先登录，正在跳转…</p>
-        </div>
+      <div className="wp-admin-wrap">
+        <div className="wp-admin-main"><p>请先登录，正在跳转…</p></div>
       </div>
     );
   }
 
-  const links = [
-    { href: "/admin", label: "仪表盘" },
-    { href: "/admin/articles", label: "文章管理" },
-    { href: "/admin/users", label: "用户管理" },
-    { href: "/admin/notifications", label: "通知管理" },
-    { href: "/admin/home", label: "首页管理" },
-    { href: "/admin/settings", label: "站点设置" },
-    { href: "/admin/profile", label: "个人资料" },
+  const menuGroups = [
+    {
+      label: "内容",
+      items: [
+        { href: "/admin", label: "📊 仪表盘" },
+        { href: "/admin/articles", label: "📝 文章管理" },
+      ],
+    },
+    {
+      label: "管理",
+      items: [
+        { href: "/admin/home", label: "🏠 首页管理" },
+        { href: "/admin/notifications", label: "🔔 通知管理" },
+        { href: "/admin/users", label: "👥 用户管理" },
+      ],
+    },
+    {
+      label: "设置",
+      items: [
+        { href: "/admin/settings", label: "⚙️ 站点设置" },
+        { href: "/admin/profile", label: "👤 个人资料" },
+      ],
+    },
   ];
 
   return (
-    <div className="admin-layout">
-      <aside className="admin-sidebar">
-        <h2 className="admin-sidebar-title">后台管理</h2>
-        <nav className="admin-nav">
-          {links.map((l) => (
-            <Link
-              key={l.href}
-              href={l.href}
-              className={`admin-nav-link ${pathname === l.href ? "active" : ""}`}
-            >
-              {l.label}
-            </Link>
+    <div className="wp-admin-wrap">
+      {/* Mobile hamburger */}
+      <button
+        className="wp-admin-hamburger"
+        onClick={() => setSidebarOpen(!sidebarOpen)}
+        aria-label="菜单"
+      >
+        {sidebarOpen ? "✕" : "☰"}
+      </button>
+
+      {/* Sidebar overlay for mobile */}
+      {sidebarOpen && (
+        <div className="wp-admin-overlay" onClick={() => setSidebarOpen(false)} />
+      )}
+
+      {/* Sidebar */}
+      <aside className={`wp-admin-sidebar ${sidebarOpen ? "open" : ""}`}>
+        <div className="wp-admin-brand">
+          <div className="wp-admin-brand-icon">KY</div>
+          <div>
+            <div className="wp-admin-brand-name">跨越晨昏</div>
+            <div className="wp-admin-brand-desc">管理后台</div>
+          </div>
+        </div>
+
+        <nav className="wp-admin-nav">
+          {menuGroups.map((group) => (
+            <div key={group.label} className="wp-admin-nav-group">
+              <div className="wp-admin-nav-label">{group.label}</div>
+              {group.items.map((item) => (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  className={`wp-admin-nav-link ${pathname === item.href ? "active" : ""}`}
+                  onClick={() => setSidebarOpen(false)}
+                >
+                  {item.label}
+                </Link>
+              ))}
+            </div>
           ))}
         </nav>
-        <div className="admin-sidebar-footer">
-          <span className="admin-user-info">
-            {user.nickname || user.username}
-            <span className="admin-user-role">{user.role}</span>
-          </span>
-          <button onClick={handleLogout} className="btn btn-small">
-            退出
+
+        <div className="wp-admin-sidebar-footer">
+          <div className="wp-admin-user">
+            <span className="wp-admin-user-avatar">
+              {user.nickname?.[0] || user.username[0]}
+            </span>
+            <div>
+              <div className="wp-admin-user-name">{user.nickname || user.username}</div>
+              <div className="wp-admin-user-role">{user.role}</div>
+            </div>
+          </div>
+          <button onClick={handleLogout} className="wp-admin-logout-btn">
+            退出登录
           </button>
         </div>
       </aside>
-      <main className="admin-content">{children}</main>
+
+      {/* Main content */}
+      <main className="wp-admin-main">{children}</main>
     </div>
   );
 }
