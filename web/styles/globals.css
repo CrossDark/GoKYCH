@@ -735,6 +735,20 @@ hr {
     font-size: 0.85rem;
 }
 
+.comment-login-prompt,
+.rating-login-prompt {
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 0.9rem;
+    padding: 0.75rem 0;
+}
+
+.comment-login-prompt a,
+.rating-login-prompt a {
+    color: var(--accent);
+    font-weight: 500;
+}
+
 /* ===== Pagination ===== */
 .pagination {
     display: flex;

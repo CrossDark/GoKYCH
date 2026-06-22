@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { addComment } from "@/lib/api";
+import Link from "next/link";
 import type { Comment } from "@/lib/types";
 
 interface Props {
@@ -65,32 +66,41 @@ export function CommentSection({
         </div>
       )}
 
-      <form className="comment-form" onSubmit={handleSubmit}>
-        <input
-          type="text"
-          className="comment-name-input"
-          placeholder="昵称（选填，匿名）"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          maxLength={64}
-        />
-        <textarea
-          className="comment-content-input"
-          placeholder="写下你的评论…"
-          value={content}
-          onChange={(e) => setContent(e.target.value)}
-          rows={3}
-          required
-        />
-        {error && <p className="comment-error">{error}</p>}
-        <button
-          type="submit"
-          className="btn btn-primary"
-          disabled={submitting}
-        >
-          {submitting ? "提交中…" : "发表评论"}
-        </button>
-      </form>
+      {csrfToken ? (
+        <form className="comment-form" onSubmit={handleSubmit}>
+          <input
+            type="text"
+            className="comment-name-input"
+            placeholder="昵称（选填，匿名）"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            maxLength={64}
+          />
+          <textarea
+            className="comment-content-input"
+            placeholder="写下你的评论…"
+            value={content}
+            onChange={(e) => setContent(e.target.value)}
+            rows={3}
+            required
+          />
+          {error && <p className="comment-error">{error}</p>}
+          <button
+            type="submit"
+            className="btn btn-primary"
+            disabled={submitting}
+          >
+            {submitting ? "提交中…" : "发表评论"}
+          </button>
+        </form>
+      ) : (
+        <p className="comment-login-prompt">
+          <Link href={`/auth/login?next=${encodeURIComponent(`/${articleType}/${articleSlug}`)}`}>
+            登录
+          </Link>
+          后可以发表评论。
+        </p>
+      )}
     </section>
   );
 }
