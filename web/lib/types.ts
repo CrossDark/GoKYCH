@@ -72,6 +72,14 @@ export interface RatingSummary {
   user_score: number | null;
 }
 
+export interface RatingDetail {
+  id: number;
+  article_id: number;
+  author_name: string;
+  score: number;
+  created_at: string;
+}
+
 // ── Home ─────────────────────────────────────────────────────────────
 export interface HomeData {
   subsite_links: SubsiteLink[];

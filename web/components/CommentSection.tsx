@@ -23,12 +23,15 @@ export function CommentSection({
   const [error, setError] = useState("");
   const [csrfToken, setCsrfToken] = useState("");
   const [authChecked, setAuthChecked] = useState(false);
-  const [isLoggedIn, setIsLoggedIn] = useState(true); // optimistic: show form until proven otherwise
+  const [isLoggedIn, setIsLoggedIn] = useState(true);
+  const [currentUser, setCurrentUser] = useState<{ nickname?: string; username: string } | null>(null);
 
   useEffect(() => {
     getMe().then((r) => {
       if (r.user) {
         setIsLoggedIn(true);
+        setCurrentUser(r.user);
+        setName(r.user.nickname || r.user.username);
         getCsrf().then((c) => setCsrfToken(c.csrf_token)).catch(() => {});
       } else {
         setIsLoggedIn(false);
@@ -68,13 +71,18 @@ export function CommentSection({
         <div className="comment-list">
           {comments.map((cm) => (
             <div key={cm.id} className="comment-item">
-              <div className="comment-header">
-                <span className="comment-author">{cm.author_name}</span>
-                <time className="comment-time">
-                  {new Date(cm.created_at).toLocaleString("zh-CN")}
-                </time>
+              <div className="comment-avatar">
+                {(cm.author_name || "匿")[0]}
               </div>
-              <div className="comment-content">{cm.content}</div>
+              <div className="comment-body-wrap">
+                <div className="comment-header">
+                  <span className="comment-author">{cm.author_name}</span>
+                  <time className="comment-time">
+                    {new Date(cm.created_at).toLocaleString("zh-CN")}
+                  </time>
+                </div>
+                <div className="comment-content">{cm.content}</div>
+              </div>
             </div>
           ))}
         </div>
@@ -82,14 +90,6 @@ export function CommentSection({
 
       {isLoggedIn ? (
         <form className="comment-form" onSubmit={handleSubmit}>
-          <input
-            type="text"
-            className="comment-name-input"
-            placeholder="昵称（选填，匿名）"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            maxLength={64}
-          />
           <textarea
             className="comment-content-input"
             placeholder="写下你的评论…"

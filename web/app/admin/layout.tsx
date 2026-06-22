@@ -91,13 +91,13 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
 
       {/* Sidebar */}
       <aside className={`wp-admin-sidebar ${sidebarOpen ? "open" : ""}`}>
-        <div className="wp-admin-brand">
+        <Link href="/" className="wp-admin-brand">
           <div className="wp-admin-brand-icon">KY</div>
           <div>
             <div className="wp-admin-brand-name">跨越晨昏</div>
             <div className="wp-admin-brand-desc">管理后台</div>
           </div>
-        </div>
+        </Link>
 
         <nav className="wp-admin-nav">
           {menuGroups.map((group) => (

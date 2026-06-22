@@ -11,6 +11,7 @@ type Rating struct {
 	ArticleID  int     `json:"article_id"`
 	AuthorName string  `json:"author_name"`
 	Score      float64 `json:"score"`
+	CreatedAt  string  `json:"created_at"`
 }
 
 // RatingSummary is the aggregate rating info for an article.
@@ -83,4 +84,28 @@ func DeleteRating(db *sql.DB, articleID int, authorName string) (bool, error) {
 	}
 	n, _ := res.RowsAffected()
 	return n > 0, nil
+}
+
+// ListRatings returns all ratings for an article, ordered by most recent.
+func ListRatings(db *sql.DB, articleID int) ([]Rating, error) {
+	rows, err := db.Query(
+		`SELECT id, article_id, author_name, score, COALESCE(created_at, '') FROM ratings
+		 WHERE article_id = ? ORDER BY created_at DESC`,
+		articleID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var ratings []Rating
+	for rows.Next() {
+		var r Rating
+		if err := rows.Scan(&r.ID, &r.ArticleID, &r.AuthorName, &r.Score, &r.CreatedAt); err != nil {
+			return nil, err
+		}
+		r.Score = math.Round(r.Score*100) / 100
+		ratings = append(ratings, r)
+	}
+	return ratings, rows.Err()
 }

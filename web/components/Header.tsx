@@ -3,8 +3,8 @@
 import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 import { useTheme } from "next-themes";
-import type { User } from "@/lib/types";
-import { getMe, listLabels } from "@/lib/api";
+import type { User, SubsiteLink } from "@/lib/types";
+import { getMe, listLabels, getHome } from "@/lib/api";
 import type { TagWithCount } from "@/lib/types";
 
 export function Header() {
@@ -16,6 +16,9 @@ export function Header() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [tags, setTags] = useState<TagWithCount[]>([]);
 
+  // Subsite links (admin-editable nav links)
+  const [subsiteLinks, setSubsiteLinks] = useState<SubsiteLink[]>([]);
+
   useEffect(() => {
     setMounted(true);
     getMe()
@@ -24,6 +27,10 @@ export function Header() {
     // Preload tags
     listLabels()
       .then(setTags)
+      .catch(() => {});
+    // Load subsite links for navigation
+    getHome()
+      .then((d) => setSubsiteLinks(d.subsite_links ?? []))
       .catch(() => {});
   }, []);
 
@@ -52,7 +59,23 @@ export function Header() {
           <Link href="/" className="site-title">
             跨越晨昏
           </Link>
-          <nav className="site-nav">
+          {/* Middle: admin-editable subsite links */}
+          <nav className="header-subsites">
+            {subsiteLinks.map((link) => (
+              <a
+                key={link.url}
+                href={link.url}
+                className="nav-link subsite-link"
+                title={link.description || link.name}
+                target={link.url.startsWith("http") ? "_blank" : undefined}
+                rel={link.url.startsWith("http") ? "noopener noreferrer" : undefined}
+              >
+                {link.name}
+              </a>
+            ))}
+          </nav>
+          {/* Right: tags, search, theme, user */}
+          <div className="header-actions">
             <button
               onClick={openSidebar}
               className="nav-link sidebar-toggle-btn"
@@ -64,11 +87,6 @@ export function Header() {
             <Link href="/search" className="nav-link" title="搜索">
               🔍
             </Link>
-            <Link href="/about" className="nav-link">
-              关于
-            </Link>
-          </nav>
-          <div className="header-actions">
             {mounted && (
               <button
                 onClick={toggleTheme}

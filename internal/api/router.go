@@ -25,6 +25,7 @@ func (s *Server) Setup(r *gin.Engine) {
 		apiG.GET("/articles/:type/:slug/comments", s.listComments)
 		apiG.GET("/articles/:type/:slug/line-comments", s.listLineComments)
 		apiG.GET("/articles/:type/:slug/rating", s.getRating)
+		apiG.GET("/articles/:type/:slug/ratings", s.listRatings)
 
 		// Auth (public + CSRF-gated).
 		authG := apiG.Group("/auth")

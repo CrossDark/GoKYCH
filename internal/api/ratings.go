@@ -81,5 +81,29 @@ func (s *Server) deleteRating(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "未找到评分记录。"})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	// Return updated summary
+	rs, err := content.GetRatingSummary(s.DB, articleID, userName)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+		return
+	}
+	c.JSON(http.StatusOK, rs)
+}
+
+// GET /api/articles/{type}/{slug}/ratings
+func (s *Server) listRatings(c *gin.Context) {
+	articleID, err := s.articleIDFromParams(c)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "文章不存在。"})
+		return
+	}
+	ratings, err := content.ListRatings(s.DB, articleID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载评分记录失败。"})
+		return
+	}
+	if ratings == nil {
+		ratings = []content.Rating{}
+	}
+	c.JSON(http.StatusOK, gin.H{"ratings": ratings})
 }

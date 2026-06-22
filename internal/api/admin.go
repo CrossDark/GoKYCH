@@ -303,18 +303,20 @@ func (s *Server) getAdminHome(c *gin.Context) {
 		ID        int    `json:"id"`
 		ArticleID int    `json:"article_id"`
 		Title     string `json:"title"`
+		Type      string `json:"type"`
+		Slug      string `json:"slug"`
 		SortOrder int    `json:"sort_order"`
 	}
 	feat := []featured{}
 	rows2, _ := s.DB.Query(
-		`SELECT fa.id, fa.article_id, a.title, fa.sort_order
+		`SELECT fa.id, fa.article_id, a.title, a.type, a.slug, fa.sort_order
 		 FROM featured_articles fa JOIN articles a ON fa.article_id = a.id
 		 ORDER BY fa.sort_order`)
 	if rows2 != nil {
 		defer rows2.Close()
 		for rows2.Next() {
 			var f featured
-			if err := rows2.Scan(&f.ID, &f.ArticleID, &f.Title, &f.SortOrder); err == nil {
+			if err := rows2.Scan(&f.ID, &f.ArticleID, &f.Title, &f.Type, &f.Slug, &f.SortOrder); err == nil {
 				feat = append(feat, f)
 			}
 		}
