@@ -1,0 +1,187 @@
+package config
+
+import (
+	"log"
+	"os"
+	"strconv"
+	"strings"
+
+	"gopkg.in/yaml.v3"
+)
+
+// Config holds all application configuration.
+type Config struct {
+	MySQL MySQLConfig
+	App   AppConfig
+}
+
+// MySQLConfig holds database connection parameters.
+type MySQLConfig struct {
+	Host     string `yaml:"host"`
+	Port     int    `yaml:"port"`
+	User     string `yaml:"user"`
+	Password string `yaml:"password"`
+	Database string `yaml:"database"`
+	Charset  string `yaml:"charset"`
+	Pool     PoolConfig `yaml:"pool"`
+}
+
+// PoolConfig holds connection pool settings.
+type PoolConfig struct {
+	MinSize     int `yaml:"minsize"`
+	MaxSize     int `yaml:"maxsize"`
+	PoolRecycle int `yaml:"pool_recycle"` // seconds
+}
+
+// AppConfig holds application-level settings.
+type AppConfig struct {
+	Port          int
+	GinMode       string
+	SessionSecret string
+	AdminUsername string
+	AdminPassword string
+	DataDir       string
+}
+
+// mysqlYAML is the YAML file structure (top-level key "mysql").
+type mysqlYAML struct {
+	MySQL MySQLConfig `yaml:"mysql"`
+}
+
+// Load reads configuration from env vars and optional YAML file.
+// Priority (highest wins): environment variables > YAML file > defaults.
+func Load() Config {
+	cfg := Config{}
+	cfg.applyDefaults()
+	cfg.loadEnvFile()
+	cfg.loadYAML()
+	cfg.applyEnvOverrides()
+	return cfg
+}
+
+// applyDefaults sets baseline values.
+func (c *Config) applyDefaults() {
+	c.MySQL = MySQLConfig{
+		Host:     "localhost",
+		Port:     3306,
+		User:     "gokych",
+		Password: "gokych",
+		Database: "gokych",
+		Charset:  "utf8mb4",
+		Pool: PoolConfig{
+			MinSize:     2,
+			MaxSize:     10,
+			PoolRecycle: 3600,
+		},
+	}
+	c.App = AppConfig{
+		Port:          8000,
+		GinMode:       "debug",
+		SessionSecret: "change-me-to-a-random-string",
+		AdminUsername: "admin",
+		AdminPassword: "admin123",
+		DataDir:       "data",
+	}
+}
+
+// loadEnvFile parses a simple .env file (KEY=VALUE lines, ignores comments and blanks).
+func (c *Config) loadEnvFile() {
+	data, err := os.ReadFile(".env")
+	if err != nil {
+		return
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		// Don't override vars already set (command line / container takes priority).
+		if _, exists := os.LookupEnv(key); !exists {
+			os.Setenv(key, value)
+		}
+	}
+}
+
+// loadYAML reads data/settings/db.yaml if it exists.
+func (c *Config) loadYAML() {
+	path := c.DataRoot() + "/settings/db.yaml"
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	var raw mysqlYAML
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		log.Printf("[config] warning: failed to parse %s: %v", path, err)
+		return
+	}
+	c.MySQL = raw.MySQL
+}
+
+// applyEnvOverrides lets environment variables override all settings.
+func (c *Config) applyEnvOverrides() {
+	// MySQL
+	c.MySQL.Host = envOr("DB_HOST", c.MySQL.Host)
+	c.MySQL.Port = envIntOr("DB_PORT", c.MySQL.Port)
+	c.MySQL.User = envOr("DB_USER", c.MySQL.User)
+	c.MySQL.Password = envOr("DB_PASSWORD", c.MySQL.Password)
+	c.MySQL.Database = envOr("DB_NAME", c.MySQL.Database)
+	c.MySQL.Charset = envOr("DB_CHARSET", c.MySQL.Charset)
+	c.MySQL.Pool.MinSize = envIntOr("DB_POOL_MIN", c.MySQL.Pool.MinSize)
+	c.MySQL.Pool.MaxSize = envIntOr("DB_POOL_MAX", c.MySQL.Pool.MaxSize)
+	c.MySQL.Pool.PoolRecycle = envIntOr("DB_POOL_RECYCLE", c.MySQL.Pool.PoolRecycle)
+
+	// App
+	c.App.Port = envIntOr("APP_PORT", c.App.Port)
+	c.App.GinMode = envOr("GIN_MODE", c.App.GinMode)
+	c.App.SessionSecret = envOr("SESSION_SECRET", c.App.SessionSecret)
+	c.App.AdminUsername = envOr("ADMIN_USERNAME", c.App.AdminUsername)
+	c.App.AdminPassword = envOr("ADMIN_PASSWORD", c.App.AdminPassword)
+	c.App.DataDir = envOr("DATA_DIR", c.App.DataDir)
+}
+
+// DataRoot returns the absolute path to the data directory.
+func (c *Config) DataRoot() string {
+	return c.App.DataDir
+}
+
+// EnsureDataDirs creates required subdirectories under DataRoot.
+func (c *Config) EnsureDataDirs() {
+	dirs := []string{
+		c.DataRoot(),
+		c.DataRoot() + "/settings",
+		c.DataRoot() + "/avatars",
+		c.DataRoot() + "/plugins",
+		c.DataRoot() + "/themes",
+		c.DataRoot() + "/typst",
+	}
+	for _, dir := range dirs {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			log.Printf("[config] warning: failed to create dir %s: %v", dir, err)
+		}
+	}
+}
+
+// --- helpers ---
+
+func envOr(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
+
+func envIntOr(key string, fallback int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+		log.Printf("[config] warning: %s=%q is not a valid int, using default %d", key, v, fallback)
+	}
+	return fallback
+}

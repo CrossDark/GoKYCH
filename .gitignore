@@ -36,8 +36,8 @@ PyKYCH_ref/
 data/
 
 # 数据库配置 (保留模板)
-settings/db.yaml
-settings/settings.yml
+data/settings/db.yaml
+data/settings/settings.yml
 
 # 编译产物
 gokych

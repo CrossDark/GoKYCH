@@ -1,0 +1,13 @@
+# GoKYCH 数据库配置模板
+# 也可用环境变量覆盖 (DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME)
+mysql:
+  host: localhost
+  port: 3306
+  user: gokych
+  password: gokych
+  database: gokych
+  charset: utf8mb4
+  pool:
+    minsize: 2
+    maxsize: 10
+    pool_recycle: 3600
