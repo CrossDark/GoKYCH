@@ -3,17 +3,36 @@ const BASE =
     ? process.env.API_BASE_URL || "http://localhost:8000"
     : "";
 
+async function getServerCookies(): Promise<string> {
+  if (typeof window !== "undefined") return "";
+  try {
+    const { cookies } = await import("next/headers");
+    const jar = await cookies();
+    return jar.getAll().map((c) => `${c.name}=${c.value}`).join("; ");
+  } catch {
+    return "";
+  }
+}
+
 async function request<T>(
   path: string,
   options?: RequestInit
 ): Promise<T> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...(options?.headers as Record<string, string>),
+  };
+
+  // Forward session cookie on server-side so Go API can identify the user
+  if (typeof window === "undefined") {
+    const cookieStr = await getServerCookies();
+    if (cookieStr) headers["Cookie"] = cookieStr;
+  }
+
   const res = await fetch(`${BASE}/api${path}`, {
     ...(typeof window !== "undefined" ? { credentials: "include" } : {}),
     ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...options?.headers,
-    },
+    headers,
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
