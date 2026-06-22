@@ -1,0 +1,130 @@
+package api
+
+import (
+	"net/http"
+	"strings"
+
+	"github.com/gin-gonic/gin"
+
+	"gokych/internal/auth/session"
+	"gokych/internal/auth/user"
+)
+
+// key for stashing the current user in gin.Context.
+const ctxUserKey = "currentUser"
+const ctxSessionKey = "sessionMgr"
+
+// registerSessionMgr stores the Manager on the engine for handlers to access.
+func (s *Server) sessionMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Set(ctxSessionKey, s.sessions)
+		c.Next()
+	}
+}
+
+// loadUserMiddleware resolves the current user (if any) and stashes it in the
+// context under ctxUserKey. It also refreshes the session idle timer and
+// persists the session after the handler runs.
+func (s *Server) loadUserMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		u, err := s.sessions.CurrentUser(c.Request)
+		if err == nil && u != nil {
+			c.Set(ctxUserKey, u)
+		}
+		c.Next()
+		// Persist any session mutations (e.g. last_activity refresh).
+		_ = s.sessions.PersistSession(c.Writer, c.Request)
+	}
+}
+
+// CurrentUserFromContext returns the authenticated user, or nil.
+func CurrentUserFromContext(c *gin.Context) *user.User {
+	v, ok := c.Get(ctxUserKey)
+	if !ok {
+		return nil
+	}
+	u, _ := v.(*user.User)
+	return u
+}
+
+// sessionMgrFromContext returns the session manager.
+func sessionMgrFromContext(c *gin.Context) *session.Manager {
+	v, _ := c.Get(ctxSessionKey)
+	m, _ := v.(*session.Manager)
+	return m
+}
+
+// csrfMiddleware checks the X-CSRF-Token header (or form field) against the
+// session token for all mutating requests (POST/PUT/PATCH/DELETE).
+func (s *Server) csrfMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		method := c.Request.Method
+		if method != http.MethodPost && method != http.MethodPut &&
+			method != http.MethodPatch && method != http.MethodDelete {
+			c.Next()
+			return
+		}
+		token := c.GetHeader("X-CSRF-Token")
+		if token == "" {
+			token = c.PostForm("csrf_token")
+		}
+		if !s.sessions.VerifyCSRF(c.Request, token) {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+				"error": "安全验证失败，请刷新页面后重试。",
+			})
+			return
+		}
+		c.Next()
+	}
+}
+
+// requireLogin aborts with 401 if the user is not authenticated.
+func requireLogin(c *gin.Context) {
+	if CurrentUserFromContext(c) == nil {
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+			"error": "请先登录。",
+		})
+		return
+	}
+	c.Next()
+}
+
+// requireAdmin aborts with 401/403 if the user is not an admin/owner.
+func requireAdmin(c *gin.Context) {
+	u := CurrentUserFromContext(c)
+	if u == nil {
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "请先登录。"})
+		return
+	}
+	if !user.IsAdmin(u.Role) {
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "权限不足。"})
+		return
+	}
+	c.Next()
+}
+
+// requireOwner aborts with 401/403 if the user is not the owner.
+func requireOwner(c *gin.Context) {
+	u := CurrentUserFromContext(c)
+	if u == nil {
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "请先登录。"})
+		return
+	}
+	if !user.IsOwner(u.Role) {
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "权限不足。"})
+		return
+	}
+	c.Next()
+}
+
+// clientIP extracts the client IP (X-Forwarded-For first, matching PyKYCH).
+func clientIP(c *gin.Context) string {
+	if xff := c.GetHeader("X-Forwarded-For"); xff != "" {
+		parts := strings.SplitN(xff, ",", 2)
+		return strings.TrimSpace(parts[0])
+	}
+	if rip := c.GetHeader("X-Real-IP"); rip != "" {
+		return strings.TrimSpace(rip)
+	}
+	return c.ClientIP()
+}

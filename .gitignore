@@ -44,5 +44,16 @@ gokych
 gokych-server
 
 # Editor/IDE
-# .idea/
-# .vscode/
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+
+# ── Web 前端 ──────────────────────────────────────────────────
+web/node_modules/
+web/.next/
+web/*.log
