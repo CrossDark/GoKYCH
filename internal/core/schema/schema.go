@@ -2,19 +2,22 @@ package schema
 
 import (
 	"database/sql"
+	"fmt"
 	"log"
 
 	"golang.org/x/crypto/bcrypt"
 )
 
-// Init creates all tables (idempotent). Errors are logged but don't halt startup.
-func Init(db *sql.DB) {
+// Init creates all tables (idempotent). Returns an error on the first DDL
+// failure so the caller can halt startup instead of running with a broken schema.
+func Init(db *sql.DB) error {
 	for _, ddl := range allTables {
 		if _, err := db.Exec(ddl); err != nil {
-			log.Printf("[schema] warning: %v", err)
+			return fmt.Errorf("[schema] create table failed: %w", err)
 		}
 	}
 	log.Println("[schema] all tables initialized")
+	return nil
 }
 
 // SeedAdmin inserts the default admin user if the users table is empty.

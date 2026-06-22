@@ -51,13 +51,17 @@ func (m *Manager) Login(w http.ResponseWriter, r *http.Request, userID int, user
 	if err != nil {
 		return err
 	}
-	s.Options.MaxAge = sessionMaxAge // reset (clear() sets -1)
+	s.Options.MaxAge = sessionMaxAge         // reset (clear() sets -1)
 	s.Values = map[interface{}]interface{}{} // wipe pre-login state (fixation protection)
 	s.Values["user_id"] = int64(userID)
 	s.Values["username"] = username
 	s.Values["login_time"] = time.Now().Unix()
 	s.Values["last_activity"] = time.Now().Unix()
-	s.Values["csrf_token"] = generateToken()
+	tok, err := generateToken()
+	if err != nil {
+		return err
+	}
+	s.Values["csrf_token"] = tok
 	return s.Save(r, w)
 }
 
@@ -126,7 +130,10 @@ func (m *Manager) CSRFToken(w http.ResponseWriter, r *http.Request) (string, err
 	if tok, ok := s.Values["csrf_token"].(string); ok && tok != "" {
 		return tok, nil
 	}
-	tok := generateToken()
+	tok, err := generateToken()
+	if err != nil {
+		return "", err
+	}
 	s.Values["csrf_token"] = tok
 	return tok, s.Save(r, w)
 }

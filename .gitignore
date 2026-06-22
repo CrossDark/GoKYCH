@@ -39,9 +39,9 @@ data/
 data/settings/db.yaml
 data/settings/settings.yml
 
-# 编译产物
-gokych
-gokych-server
+# 编译产物（锚定根目录，避免误伤 cmd/gokych/ 源码目录）
+/gokych
+/gokych-server
 
 # Editor/IDE
 .idea/

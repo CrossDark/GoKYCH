@@ -1,6 +1,7 @@
 package typst
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -8,7 +9,17 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 )
+
+const (
+	compileTimeout = 30 * time.Second
+	maxConcurrent  = 4
+)
+
+// compileSem bounds the number of concurrent typst compilations to avoid
+// fork-bomb / disk exhaustion under load.
+var compileSem = make(chan struct{}, maxConcurrent)
 
 // Path returns the full path to the typst CLI binary, or empty string.
 // Searches: TYPST_PATH env, then $PATH, then common locations.
@@ -37,13 +48,41 @@ func Path() string {
 // Available reports whether the typst CLI is installed.
 func Available() bool { return Path() != "" }
 
+// envWhitelist returns a minimal environment for the typst subprocess, avoiding
+// leakage of parent-process secrets (SESSION_SECRET, DB_PASSWORD, ...) via env.
+func envWhitelist() []string {
+	full := os.Environ()
+	keep := make([]string, 0, 8)
+	for _, kv := range full {
+		key, _, ok := strings.Cut(kv, "=")
+		if !ok {
+			continue
+		}
+		switch key {
+		case "PATH", "HOME", "USER", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TYPST_PATH":
+			keep = append(keep, kv)
+		}
+	}
+	return keep
+}
+
 // CompileHTML compiles a typst source string to HTML body content.
-// Uses a temporary file for input and output.
+// Uses a temporary file for input and output. The subprocess is bounded by a
+// 30s timeout and a concurrency semaphore (maxConcurrent) to prevent a
+// pathological document from pinning goroutines or exhausting resources.
 func CompileHTML(source string) (string, error) {
 	bin := Path()
 	if bin == "" {
 		return "", fmt.Errorf("typst: CLI not found")
 	}
+
+	// Limit concurrent compilations.
+	compileSem <- struct{}{}
+	defer func() { <-compileSem }()
+
+	// Bound the subprocess lifetime so a hang can't pin a goroutine forever.
+	ctx, cancel := context.WithTimeout(context.Background(), compileTimeout)
+	defer cancel()
 
 	// Write source to a temp .typ file.
 	dir, err := os.MkdirTemp("", "gokych-typst-")
@@ -53,22 +92,25 @@ func CompileHTML(source string) (string, error) {
 	defer os.RemoveAll(dir)
 
 	inputPath := filepath.Join(dir, "input.typ")
-	if err := os.WriteFile(inputPath, []byte(source), 0644); err != nil {
+	if err := os.WriteFile(inputPath, []byte(source), 0600); err != nil {
 		return "", fmt.Errorf("typst: write temp input: %w", err)
 	}
 
 	outputPath := filepath.Join(dir, "output.html")
 
-	cmd := exec.Command(bin, "compile",
+	cmd := exec.CommandContext(ctx, bin, "compile",
 		"--format", "html",
 		"--features", "html",
 		inputPath, outputPath,
 	)
-	cmd.Env = os.Environ()
+	cmd.Env = envWhitelist()
 	cmd.Dir = dir
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return "", fmt.Errorf("typst: compile timed out after %s", compileTimeout)
+		}
 		return "", fmt.Errorf("typst: compile failed: %w\n%s", err, string(output))
 	}
 
