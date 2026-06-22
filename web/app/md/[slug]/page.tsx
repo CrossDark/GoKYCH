@@ -24,11 +24,7 @@ export default async function DetailPage({ params }: Props) {
   try {
     const data = await getArticle("md", slug);
     // Extract CSRF token from cookies for the client components.
-    const cookieStore = await cookies();
-    const csrfRaw = cookieStore.get("gokych_session")?.value || "";
-    // CSRF token is generated server-side on demand.
-    // For now, pass an empty token — the client will fetch a fresh one.
-    return <ArticleView data={data} csrfToken="" articleType="md" articleSlug={slug} />;
+    return <ArticleView data={data} articleType="md" articleSlug={slug} />;
   } catch {
     return (
       <div className="page">

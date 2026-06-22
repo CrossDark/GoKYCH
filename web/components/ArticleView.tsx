@@ -1,6 +1,5 @@
 "use client";
 
-import { useState, useEffect } from "react";
 import Link from "next/link";
 import type { ArticleDetail } from "@/lib/types";
 import { RatingWidget } from "./RatingWidget";
@@ -8,17 +7,15 @@ import { CommentSection } from "./CommentSection";
 
 interface Props {
   data: ArticleDetail;
-  csrfToken: string;
   articleType: string;
   articleSlug: string;
 }
 
 function splitLines(html: string): string[] {
-  // Naive line-splitting on block-level boundaries. Works well enough.
   return html.split(/\n|<br\s*\/?>/i);
 }
 
-export function ArticleView({ data, csrfToken, articleType, articleSlug }: Props) {
+export function ArticleView({ data, articleType, articleSlug }: Props) {
   const { article, html, rating, comments: rawComments, line_comment_counts: rawLineCounts, can_edit } = data;
   const comments = rawComments ?? [];
   const line_comment_counts = rawLineCounts ?? {};
@@ -61,7 +58,6 @@ export function ArticleView({ data, csrfToken, articleType, articleSlug }: Props
         <RatingWidget
           articleType={articleType}
           articleSlug={articleSlug}
-          csrfToken={csrfToken}
           initialAvg={rating.average_score}
           initialVoters={rating.total_voters}
           initialUserScore={rating.user_score}
@@ -93,7 +89,6 @@ export function ArticleView({ data, csrfToken, articleType, articleSlug }: Props
       <CommentSection
         articleType={articleType}
         articleSlug={articleSlug}
-        csrfToken={csrfToken}
         initialComments={comments}
       />
     </article>

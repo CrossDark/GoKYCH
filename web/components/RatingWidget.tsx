@@ -1,13 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Link from "next/link";
-import { setRating } from "@/lib/api";
+import { setRating, getCsrf, getMe } from "@/lib/api";
 
 interface Props {
   articleType: string;
   articleSlug: string;
-  csrfToken: string;
   initialAvg: number;
   initialVoters: number;
   initialUserScore: number | null;
@@ -16,7 +15,6 @@ interface Props {
 export function RatingWidget({
   articleType,
   articleSlug,
-  csrfToken,
   initialAvg,
   initialVoters,
   initialUserScore,
@@ -25,6 +23,21 @@ export function RatingWidget({
   const [voters, setVoters] = useState(initialVoters);
   const [userScore, setUserScore] = useState<number | null>(initialUserScore);
   const [loading, setLoading] = useState(false);
+  const [csrfToken, setCsrfToken] = useState("");
+  const [isLoggedIn, setIsLoggedIn] = useState(true); // optimistic: show buttons until proven otherwise
+
+  useEffect(() => {
+    getMe().then((r) => {
+      if (r.user) {
+        setIsLoggedIn(true);
+        getCsrf().then((c) => setCsrfToken(c.csrf_token)).catch(() => {});
+      } else {
+        setIsLoggedIn(false);
+      }
+    }).catch(() => {
+      setIsLoggedIn(false);
+    });
+  }, []);
 
   const handleRate = async (score: number) => {
     setLoading(true);
@@ -57,7 +70,7 @@ export function RatingWidget({
         <span className="rating-voters">({voters} 人评分)</span>
       </div>
       <div className="rating-buttons">
-        {csrfToken ? (
+        {isLoggedIn ? (
           [-1, 0, 1].map((score) => (
             <button
               key={score}
