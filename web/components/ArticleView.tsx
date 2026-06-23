@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef, useLayoutEffect, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { createPortal } from "react-dom";
 import Link from "next/link";
 import type { ArticleDetail, Comment } from "@/lib/types";
@@ -55,11 +55,42 @@ export function ArticleView({ data, articleType, articleSlug }: Props) {
     setCommentedLines(Object.keys(d).map(Number).sort((a, b) => a - b));
   }, [data]);
 
-  // Set innerHTML manually (avoids dangerouslySetInnerHTML wiping DOM on re-renders)
-  useLayoutEffect(() => {
-    const container = contentRef.current;
-    if (!container) return;
-    container.innerHTML = html ?? "";
+  // Set innerHTML manually (avoids dangerouslySetInnerHTML wiping DOM on
+// re-renders). DOMPurify is loaded dynamically inside the effect so its
+// browser-only `window` dep never runs during SSR. useEffect (not
+// useLayoutEffect) is fine here — there's no DOM-write we need to land
+// before paint, and React 18 emits a deprecation warning for
+// useLayoutEffect during SSR.
+useEffect(() => {
+  const container = contentRef.current;
+  if (!container) return;
+
+  let cancelled = false;
+  (async () => {
+    const DOMPurify = (await import("dompurify")).default;
+    if (cancelled) return;
+    // Backend parsers (markdown / bbcode / wikidot / typst) already
+    // sanitise href/src/style; this is a defense-in-depth pass on the
+    // client. ALLOWED_TAGS mirrors the article content surface area;
+    // ALLOWED_URI_SCHEMES matches the backend's allowlist (bbcode +
+    // wikidot parsers).
+    const safe = DOMPurify.sanitize(html ?? "", {
+      ALLOWED_TAGS: [
+        "a", "abbr", "b", "blockquote", "br", "cite", "code", "details",
+        "div", "em", "figcaption", "figure", "h1", "h2", "h3", "h4", "h5",
+        "h6", "hr", "i", "img", "ins", "kbd", "li", "mark", "ol", "p",
+        "pre", "s", "small", "span", "strong", "sub", "summary", "sup",
+        "table", "tbody", "td", "th", "thead", "tr", "u", "ul",
+      ],
+      ALLOWED_ATTR: [
+        "href", "title", "alt", "src", "class", "style", "id", "target",
+        "rel", "colspan", "rowspan", "data-line",
+      ],
+      ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto):|[#/])/i,
+      FORBID_TAGS: ["script", "iframe", "object", "embed", "form"],
+      FORBID_ATTR: ["onerror", "onload", "onclick", "onmouseover", "onfocus", "onblur"],
+    });
+    container.innerHTML = safe;
 
     // Create bubble portal host
     let host = container.querySelector(".line-bubble-host") as HTMLDivElement | null;
@@ -89,7 +120,11 @@ export function ArticleView({ data, articleType, articleSlug }: Props) {
       const count = counts[n] || 0;
       block.classList.toggle("has-line-comments", count > 0);
     });
-  }, [html]);
+  })();
+  return () => {
+    cancelled = true;
+  };
+}, [html]);
 
   // Position bubbles after React portal renders + handle resize
   useEffect(() => {

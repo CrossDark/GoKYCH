@@ -2,40 +2,136 @@ package parsers
 
 import (
 	"html"
+	"net/url"
 	"regexp"
 	"strings"
 )
 
+// ── XSS guards (defense-in-depth on top of html.EscapeString) ────────
+//
+// html.EscapeString at the top of RenderBBCode catches `<` and `>`, but it
+// leaves URL schemes like `javascript:` and attribute-breaking characters in
+// user-supplied href/src/style values untouched. Without these guards, BBCode
+// like `[url=javascript:alert(1)]click[/url]` would inject a live `onclick`
+// into the rendered HTML.
+//
+// sanitizeURLForAttr is used for every href / src / cite value. It drops
+// anything that isn't:
+//   - a same-site path (must start with "/", but not "//" or "/\"), OR
+//   - a URL whose scheme is in the allowlist (http / https / mailto).
+//
+// Returns "" on rejection so callers can omit the attribute entirely.
+//
+// Any character that could break out of an HTML attribute (quote, angle
+// bracket, backtick, control char) is rejected BEFORE the path/scheme
+// branches, so a payload like `/wikidot/" onmouseover=...` (where a Wikidot
+// link expands to a path that contains a literal quote) is dropped instead
+// of being treated as a valid internal link.
+func sanitizeURLForAttr(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	for _, r := range raw {
+		if r == '"' || r == '\'' || r == '<' || r == '>' || r == '`' || r < 0x20 || r == 0x7f {
+			return ""
+		}
+	}
+	// Same-site path. Reject protocol-relative ("//evil.com") and backslash
+	// tricks ("/\evil.com") that some browsers normalise into a host change.
+	if raw[0] == '/' {
+		if len(raw) > 1 && (raw[1] == '/' || raw[1] == '\\') {
+			return ""
+		}
+		return raw
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme == "" {
+		return ""
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "http", "https", "mailto":
+		return raw
+	}
+	return ""
+}
+
+// sanitizeCSSValue guards inline style values for BBCode [size]/[color]/
+// [font]/[bg]. Rejects anything that:
+//   - contains CSS metacharacters that allow attribute or rule breaks
+//     ( ; { } ( ) ),
+//   - contains "expression" or "javascript:" / "url(" which enable IE-style
+//     or modern CSS-injection attacks,
+//   - or contains characters outside [A-Za-z0-9_#.,%/\- ] (e.g. quotes that
+//     would let an attacker escape the style attribute).
+func sanitizeCSSValue(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	lower := strings.ToLower(raw)
+	for _, bad := range []string{";", "{", "}", "(", ")", "expression", "javascript:", "url(", "@import"} {
+		if strings.Contains(lower, bad) {
+			return ""
+		}
+	}
+	for _, r := range raw {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') ||
+			r == '_' || r == '#' || r == '.' || r == ',' ||
+			r == '%' || r == '/' || r == '-' || r == ' ') {
+			return ""
+		}
+	}
+	return raw
+}
+
+// sanitizeAnchorID allows only [A-Za-z0-9_-], so an admin can't break out
+// of the id attribute with a quote.
+func sanitizeAnchorID(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	for _, r := range raw {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || r == '_' || r == '-') {
+			return ""
+		}
+	}
+	return raw
+}
+
 // BBCode regex patterns (order-sensitive, matching PyKYCH pipeline).
 var (
-	reCode    = regexp.MustCompile(`(?is)\[code(?:=(\w+))?\](.*?)\[/code\]`)
-	reQuote   = regexp.MustCompile(`(?is)\[quote(?:=(.*?))?\](.*?)\[/quote\]`)
-	reSpoiler = regexp.MustCompile(`(?is)\[spoiler(?:=(.*?))?\](.*?)\[/spoiler\]`)
-	reTable   = regexp.MustCompile(`(?is)\[table\](.*?)\[/table\]`)
-	reHR      = regexp.MustCompile(`(?i)\[hr\]`)
-	reCenter  = regexp.MustCompile(`(?is)\[center\](.*?)\[/center\]`)
-	reRight   = regexp.MustCompile(`(?is)\[right\](.*?)\[/right\]`)
-	reLeft    = regexp.MustCompile(`(?is)\[left\](.*?)\[/left\]`)
-	reBold    = regexp.MustCompile(`(?is)\[b\](.*?)\[/b\]`)
-	reItalic  = regexp.MustCompile(`(?is)\[i\](.*?)\[/i\]`)
-	reUnder   = regexp.MustCompile(`(?is)\[u\](.*?)\[/u\]`)
-	reStrike  = regexp.MustCompile(`(?is)\[s\](.*?)\[/s\]`)
-	reSup     = regexp.MustCompile(`(?is)\[sup\](.*?)\[/sup\]`)
-	reSub     = regexp.MustCompile(`(?is)\[sub\](.*?)\[/sub\]`)
-	reURLText = regexp.MustCompile(`(?is)\[url=([^\]]+)\](.*?)\[/url\]`)
-	reURL     = regexp.MustCompile(`(?is)\[url\](.*?)\[/url\]`)
-	reEmail   = regexp.MustCompile(`(?is)\[email\](.*?)\[/email\]`)
-	reImg     = regexp.MustCompile(`(?is)\[img\](.*?)\[/img\]`)
-	reSize    = regexp.MustCompile(`(?is)\[size=([^\]]+)\](.*?)\[/size\]`)
-	reColor   = regexp.MustCompile(`(?is)\[color=([^\]]+)\](.*?)\[/color\]`)
-	reFont    = regexp.MustCompile(`(?is)\[font=([^\]]+)\](.*?)\[/font\]`)
-	reBG      = regexp.MustCompile(`(?is)\[bg=([^\]]+)\](.*?)\[/bg\]`)
-	reVideo   = regexp.MustCompile(`(?is)\[video\](.*?)\[/video\]`)
-	reAudio   = regexp.MustCompile(`(?is)\[audio\](.*?)\[/audio\]`)
-	reAnchor  = regexp.MustCompile(`(?is)\[anchor\](.*?)\[/anchor\]`)
-	reList    = regexp.MustCompile(`(?is)\[list(?:=(1))?\](.*?)\[/list\]`)
-	reEscLeft = regexp.MustCompile(`\\\[`)
-	reEscRight= regexp.MustCompile(`\\\]`)
+	reCode     = regexp.MustCompile(`(?is)\[code(?:=(\w+))?\](.*?)\[/code\]`)
+	reQuote    = regexp.MustCompile(`(?is)\[quote(?:=(.*?))?\](.*?)\[/quote\]`)
+	reSpoiler  = regexp.MustCompile(`(?is)\[spoiler(?:=(.*?))?\](.*?)\[/spoiler\]`)
+	reTable    = regexp.MustCompile(`(?is)\[table\](.*?)\[/table\]`)
+	reHR       = regexp.MustCompile(`(?i)\[hr\]`)
+	reCenter   = regexp.MustCompile(`(?is)\[center\](.*?)\[/center\]`)
+	reRight    = regexp.MustCompile(`(?is)\[right\](.*?)\[/right\]`)
+	reLeft     = regexp.MustCompile(`(?is)\[left\](.*?)\[/left\]`)
+	reBold     = regexp.MustCompile(`(?is)\[b\](.*?)\[/b\]`)
+	reItalic   = regexp.MustCompile(`(?is)\[i\](.*?)\[/i\]`)
+	reUnder    = regexp.MustCompile(`(?is)\[u\](.*?)\[/u\]`)
+	reStrike   = regexp.MustCompile(`(?is)\[s\](.*?)\[/s\]`)
+	reSup      = regexp.MustCompile(`(?is)\[sup\](.*?)\[/sup\]`)
+	reSub      = regexp.MustCompile(`(?is)\[sub\](.*?)\[/sub\]`)
+	reURLText  = regexp.MustCompile(`(?is)\[url=([^\]]+)\](.*?)\[/url\]`)
+	reURL      = regexp.MustCompile(`(?is)\[url\](.*?)\[/url\]`)
+	reEmail    = regexp.MustCompile(`(?is)\[email\](.*?)\[/email\]`)
+	reImg      = regexp.MustCompile(`(?is)\[img\](.*?)\[/img\]`)
+	reSize     = regexp.MustCompile(`(?is)\[size=([^\]]+)\](.*?)\[/size\]`)
+	reColor    = regexp.MustCompile(`(?is)\[color=([^\]]+)\](.*?)\[/color\]`)
+	reFont     = regexp.MustCompile(`(?is)\[font=([^\]]+)\](.*?)\[/font\]`)
+	reBG       = regexp.MustCompile(`(?is)\[bg=([^\]]+)\](.*?)\[/bg\]`)
+	reVideo    = regexp.MustCompile(`(?is)\[video\](.*?)\[/video\]`)
+	reAudio    = regexp.MustCompile(`(?is)\[audio\](.*?)\[/audio\]`)
+	reAnchor   = regexp.MustCompile(`(?is)\[anchor\](.*?)\[/anchor\]`)
+	reList     = regexp.MustCompile(`(?is)\[list(?:=(1))?\](.*?)\[/list\]`)
+	reEscLeft  = regexp.MustCompile(`\\\[`)
+	reEscRight = regexp.MustCompile(`\\\]`)
 )
 
 // RenderBBCode converts BBCode source to HTML.
@@ -75,17 +171,98 @@ func RenderBBCode(text string) string {
 	out = reStrike.ReplaceAllString(out, `<s>$1</s>`)
 	out = reSup.ReplaceAllString(out, `<sup>$1</sup>`)
 	out = reSub.ReplaceAllString(out, `<sub>$1</sub>`)
-	out = reURLText.ReplaceAllString(out, `<a href="$1" target="_blank" rel="noopener noreferrer">$2</a>`)
-	out = reURL.ReplaceAllString(out, `<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>`)
-	out = reEmail.ReplaceAllString(out, `<a href="mailto:$1">$1</a>`)
-	out = reImg.ReplaceAllString(out, `<img src="$1" alt="" loading="lazy" style="max-width:100%">`)
-	out = reSize.ReplaceAllString(out, `<span style="font-size:$1">$2</span>`)
-	out = reColor.ReplaceAllString(out, `<span style="color:$1">$2</span>`)
-	out = reFont.ReplaceAllString(out, `<span style="font-family:$1">$2</span>`)
-	out = reBG.ReplaceAllString(out, `<span style="background-color:$1">$2</span>`)
-	out = reVideo.ReplaceAllString(out, `<video controls style="max-width:100%"><source src="$1"></video>`)
-	out = reAudio.ReplaceAllString(out, `<audio controls><source src="$1"></audio>`)
-	out = reAnchor.ReplaceAllString(out, `<span id="$1" class="bbcode-anchor"></span>`)
+
+	// URL-bearing tags: route every value through sanitizeURLForAttr so
+	// javascript:/data:/vbscript: payloads are dropped (they'd otherwise
+	// survive html.EscapeString and execute on click).
+	out = reURLText.ReplaceAllStringFunc(out, func(s string) string {
+		m := reURLText.FindStringSubmatch(s)
+		if safe := sanitizeURLForAttr(m[1]); safe != "" {
+			return `<a href="` + safe + `" target="_blank" rel="noopener noreferrer">` + m[2] + `</a>`
+		}
+		return m[2]
+	})
+	out = reURL.ReplaceAllStringFunc(out, func(s string) string {
+		m := reURL.FindStringSubmatch(s)
+		if safe := sanitizeURLForAttr(m[1]); safe != "" {
+			return `<a href="` + safe + `" target="_blank" rel="noopener noreferrer">` + safe + `</a>`
+		}
+		return ""
+	})
+	out = reEmail.ReplaceAllStringFunc(out, func(s string) string {
+		m := reEmail.FindStringSubmatch(s)
+		if safe := sanitizeURLForAttr("mailto:" + m[1]); safe != "" {
+			return `<a href="` + safe + `">` + m[1] + `</a>`
+		}
+		return m[1]
+	})
+	out = reImg.ReplaceAllStringFunc(out, func(s string) string {
+		m := reImg.FindStringSubmatch(s)
+		if safe := sanitizeURLForAttr(m[1]); safe != "" {
+			return `<img src="` + safe + `" alt="" loading="lazy" style="max-width:100%">`
+		}
+		return ""
+	})
+
+	// Style-bearing tags: known tokens (sizeMap / colorNames) pass through
+	// verbatim; everything else is filtered through sanitizeCSSValue which
+	// only permits alphanumerics + a small set of CSS-safe punctuation.
+	out = reSize.ReplaceAllStringFunc(out, func(s string) string {
+		m := reSize.FindStringSubmatch(s)
+		css := m[1]
+		if v, ok := sizeMap[strings.ToLower(css)]; ok {
+			css = v
+		} else if css = sanitizeCSSValue(css); css == "" {
+			return m[2]
+		}
+		return `<span style="font-size:` + css + `">` + m[2] + `</span>`
+	})
+	out = reColor.ReplaceAllStringFunc(out, func(s string) string {
+		m := reColor.FindStringSubmatch(s)
+		css := m[1]
+		if v, ok := colorNames[strings.ToLower(css)]; ok {
+			css = v
+		} else if css = sanitizeCSSValue(css); css == "" {
+			return m[2]
+		}
+		return `<span style="color:` + css + `">` + m[2] + `</span>`
+	})
+	out = reFont.ReplaceAllStringFunc(out, func(s string) string {
+		m := reFont.FindStringSubmatch(s)
+		if css := sanitizeCSSValue(m[1]); css != "" {
+			return `<span style="font-family:` + css + `">` + m[2] + `</span>`
+		}
+		return m[2]
+	})
+	out = reBG.ReplaceAllStringFunc(out, func(s string) string {
+		m := reBG.FindStringSubmatch(s)
+		if css := sanitizeCSSValue(m[1]); css != "" {
+			return `<span style="background-color:` + css + `">` + m[2] + `</span>`
+		}
+		return m[2]
+	})
+
+	out = reVideo.ReplaceAllStringFunc(out, func(s string) string {
+		m := reVideo.FindStringSubmatch(s)
+		if safe := sanitizeURLForAttr(m[1]); safe != "" {
+			return `<video controls style="max-width:100%"><source src="` + safe + `"></video>`
+		}
+		return ""
+	})
+	out = reAudio.ReplaceAllStringFunc(out, func(s string) string {
+		m := reAudio.FindStringSubmatch(s)
+		if safe := sanitizeURLForAttr(m[1]); safe != "" {
+			return `<audio controls><source src="` + safe + `"></audio>`
+		}
+		return ""
+	})
+	out = reAnchor.ReplaceAllStringFunc(out, func(s string) string {
+		m := reAnchor.FindStringSubmatch(s)
+		if safe := sanitizeAnchorID(m[1]); safe != "" {
+			return `<span id="` + safe + `" class="bbcode-anchor"></span>`
+		}
+		return ""
+	})
 
 	// Unescape literal brackets.
 	out = reEscLeft.ReplaceAllString(out, "[")

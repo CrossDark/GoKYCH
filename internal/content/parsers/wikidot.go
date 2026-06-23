@@ -49,7 +49,7 @@ var (
 // ── Size / color lookup tables (matching PyKYCH) ─────────────────────
 
 var sizeMap = map[string]string{
-	"xx-small":  "0.5rem", "x-small": "0.625rem", "smaller": "0.75rem",
+	"xx-small": "0.5rem", "x-small": "0.625rem", "smaller": "0.75rem",
 	"small": "0.8rem", "medium": "1rem", "large": "1.25rem",
 	"x-large": "1.5rem", "xx-large": "2rem", "larger": "2.5rem",
 }
@@ -137,12 +137,20 @@ func (p *wikidotParser) convert(source string) string {
 	out = reWDSpanClass.ReplaceAllStringFunc(out, func(s string) string {
 		m := reWDSpanClass.FindStringSubmatch(s)
 		inner := inlineOnly(p.convert(m[2]))
-		return fmt.Sprintf(`<span class="%s">%s</span>`, m[1], inner)
+		// Class name is an unquoted HTML attribute value — drop anything
+		// that could escape it (quote, space, >, etc.).
+		if cls := sanitizeAnchorID(m[1]); cls != "" {
+			return fmt.Sprintf(`<span class="%s">%s</span>`, cls, inner)
+		}
+		return inner
 	})
 	out = reWDSpanStyle.ReplaceAllStringFunc(out, func(s string) string {
 		m := reWDSpanStyle.FindStringSubmatch(s)
 		inner := inlineOnly(p.convert(m[2]))
-		return fmt.Sprintf(`<span style="%s">%s</span>`, m[1], inner)
+		if css := sanitizeCSSValue(m[1]); css != "" {
+			return fmt.Sprintf(`<span style="%s">%s</span>`, css, inner)
+		}
+		return inner
 	})
 	// 1g. Size / Color
 	out = reWDSize.ReplaceAllStringFunc(out, func(s string) string {
@@ -150,6 +158,8 @@ func (p *wikidotParser) convert(source string) string {
 		css := m[1]
 		if v, ok := sizeMap[strings.ToLower(css)]; ok {
 			css = v
+		} else if css = sanitizeCSSValue(css); css == "" {
+			return inlineOnly(m[2])
 		}
 		return fmt.Sprintf(`<span style="font-size:%s">%s</span>`, css, inlineOnly(m[2]))
 	})
@@ -158,6 +168,8 @@ func (p *wikidotParser) convert(source string) string {
 		css := m[1]
 		if v, ok := colorNames[strings.ToLower(css)]; ok {
 			css = v
+		} else if css = sanitizeCSSValue(css); css == "" {
+			return inlineOnly(m[2])
 		}
 		return fmt.Sprintf(`<span style="color:%s">%s</span>`, css, inlineOnly(m[2]))
 	})
@@ -167,10 +179,9 @@ func (p *wikidotParser) convert(source string) string {
 	out = reWDJustify.ReplaceAllString(out, `<div style="text-align:justify">$1</div>`)
 
 	// Phase 2: Inline formatting (bold, italic, underline, strikethrough, super/sub, code)
-	// Pre-process: replace backslash-escaped slashes with sentinels so // is not
-	// confused with italic markers (Go regex lacks lookbehind).
+	// Pre-process: replace backslash-escaped slashes with a sentinel so //
+	// isn't confused with italic markers (Go regex lacks lookbehind).
 	out = strings.ReplaceAll(out, `\\/`, "\x00SL")
-	out = strings.ReplaceAll(out, `\\/`, "\x00SL") // doubled: `\\//` → `\x00SL\x00SL`
 
 	out = reWDBold.ReplaceAllString(out, `<strong>$1</strong>`)
 	out = reWDItalic.ReplaceAllString(out, `<em>$1</em>`)
@@ -194,9 +205,25 @@ func (p *wikidotParser) convert(source string) string {
 		if !strings.HasPrefix(href, "/") && !strings.HasPrefix(href, "http://") && !strings.HasPrefix(href, "https://") {
 			href = "/wikidot/" + href
 		}
-		return fmt.Sprintf(`<a href="%s">%s</a>`, href, text)
+		// Final guard: even after the prefix normalisation, run the result
+		// through sanitizeURLForAttr so a payload like
+		// `[[[\" onmouseover=...]]]` (whose href becomes "/wikidot/\"...")
+		// still gets dropped.
+		if safe := sanitizeURLForAttr(href); safe != "" {
+			return fmt.Sprintf(`<a href="%s">%s</a>`, safe, html.EscapeString(text))
+		}
+		// Rejected href — surface the link text (escaped, so quotes in the
+		// original payload can't break the surrounding HTML) and drop the
+		// anchor entirely.
+		return html.EscapeString(text)
 	})
-	out = reWDImage.ReplaceAllString(out, `<img src="$1" alt="" loading="lazy" style="max-width:100%">`)
+	out = reWDImage.ReplaceAllStringFunc(out, func(s string) string {
+		m := reWDImage.FindStringSubmatch(s)
+		if safe := sanitizeURLForAttr(m[1]); safe != "" {
+			return fmt.Sprintf(`<img src="%s" alt="" loading="lazy" style="max-width:100%%">`, safe)
+		}
+		return ""
+	})
 
 	// Phase 4: Headings
 	out = reWDH4_.ReplaceAllString(out, `<h4>$1</h4>`)
