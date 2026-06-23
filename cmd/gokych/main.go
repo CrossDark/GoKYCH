@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 	"os/signal"
 	"syscall"
 	"time"
@@ -89,21 +90,24 @@ func main() {
 
 	// 8b. Static resources. Mounted AFTER Setup so the security-headers
 	// middleware (registered inside Setup) still wraps these handlers.
-	// gin.StaticFS uses http.FileServer under the hood, which sanitises
-	// ".." segments — path-traversal attempts resolve to 404.
+	// gin.Static wraps http.FileServer + http.Dir, which sanitises ".."
+	// segments — path-traversal attempts resolve to 404.
 	//
-	// We also stamp a long Cache-Control header on the responses since
-	// uploaded files have content-hashed filenames (sha256[:24] + ext) so
-	// re-uploads replace the file at a different URL — there's no stale-
-	// content problem to worry about.
+	// We stamp a long Cache-Control header on /uploads/* and /avatars/*
+	// since uploaded files have content-hashed filenames (sha256[:24] +
+	// ext); re-uploads land at a new URL, so there's no stale-content
+	// hazard.
 	uploadDir := cfg.App.DataDir + "/uploads"
 	avatarDir := cfg.App.DataDir + "/avatars"
-	cacheableStatic := func(c *gin.Context) {
-		c.Header("Cache-Control", "public, max-age=3600")
+	r.Use(func(c *gin.Context) {
+		if strings.HasPrefix(c.Request.URL.Path, "/uploads/") ||
+			strings.HasPrefix(c.Request.URL.Path, "/avatars/") {
+			c.Header("Cache-Control", "public, max-age=3600")
+		}
 		c.Next()
-	}
-	r.GET("/uploads/*filepath", cacheableStatic, gin.WrapH(http.FileServer(http.Dir(uploadDir))))
-	r.GET("/avatars/*filepath", cacheableStatic, gin.WrapH(http.FileServer(http.Dir(avatarDir))))
+	})
+	r.Static("/uploads", uploadDir)
+	r.Static("/avatars", avatarDir)
 
 	// 9. Start server with graceful shutdown.
 	addr := fmt.Sprintf(":%d", cfg.App.Port)
