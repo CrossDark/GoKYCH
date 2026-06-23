@@ -30,9 +30,9 @@ func VoterKey(userID *int, authorName string) string {
 
 // RatingSummary is the aggregate rating info for an article.
 type RatingSummary struct {
-	Average      float64 `json:"average_score"`
-	TotalVoters  int     `json:"total_voters"`
-	UserScore    *float64 `json:"user_score,omitempty"` // current user's score, if rated
+	Average     float64  `json:"average_score"`
+	TotalVoters int      `json:"total_voters"`
+	UserScore   *float64 `json:"user_score,omitempty"` // current user's score, if rated
 }
 
 // GetRatingSummary returns aggregate rating for an article, optionally

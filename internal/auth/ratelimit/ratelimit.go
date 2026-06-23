@@ -28,9 +28,9 @@ type record struct {
 // Limiter is an in-memory rate limiter for login attempts.
 // It is safe for concurrent use.
 type Limiter struct {
-	mu             sync.Mutex
-	failures       map[string][]record
-	lockouts       map[string]float64
+	mu       sync.Mutex
+	failures map[string][]record
+	lockouts map[string]float64
 }
 
 // New creates a new in-memory Limiter and starts a background sweeper that
@@ -46,8 +46,8 @@ func New() *Limiter {
 	return l
 }
 
-func userKey(username, ip string) string  { return "user:" + username + ":" + ip }
-func ipKey(ip string) string              { return "ip:" + ip }
+func userKey(username, ip string) string    { return "user:" + username + ":" + ip }
+func ipKey(ip string) string                { return "ip:" + ip }
 func lockoutKey(username, ip string) string { return "lockout:" + username + ":" + ip }
 
 // cleanOld removes records older than the window and returns the sum of counts.

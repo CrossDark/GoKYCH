@@ -35,6 +35,20 @@ services:
     volumes:
       - app_data:/app/data
 
+  frontend:
+    build: ./web
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      # The Next.js server calls the backend directly server-side; the
+      # browser hits it via the `/api` rewrite below. Default in
+      # web/lib/api.ts already handles both.
+      API_BASE_URL: http://backend:8000
+      NODE_ENV: production
+    depends_on:
+      - backend
+
 volumes:
   mysql_data:
   app_data:

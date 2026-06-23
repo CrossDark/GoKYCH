@@ -14,7 +14,7 @@ type Server struct {
 	sessions       *session.Manager
 	limiter        *ratelimit.Limiter
 	Metrics        *metrics.Metrics
-	DataDir        string // filesystem path to the runtime data directory
+	DataDir        string   // filesystem path to the runtime data directory
 	trustedProxies []string // trusted reverse-proxy CIDRs/IPs; empty = trust none
 }
 

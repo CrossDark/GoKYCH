@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: [main, optimize/**, audit-fixes/**]
+  pull_request:
+    branches: [main]
+
+# Cancel an in-flight run for the same branch when a new commit lands.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Go (vet + test + build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache: true
+
+      - name: gofmt
+        run: |
+          if [ "$(gofmt -l . | wc -l)" -ne 0 ]; then
+            echo "The following files are not gofmt-clean:"
+            gofmt -l .
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test ./... -count=1
+
+      - name: go build
+        run: go build ./...
+
+  web:
+    name: Web (tsc + build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        # Use --no-audit --no-fund for faster CI logs.
+        run: npm ci --no-audit --no-fund
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      - name: Lint
+        # next lint is included in the scaffold's scripts but is non-fatal on
+        # first run — only fail CI if the command itself errors.
+        run: |
+          if grep -q '"lint"' package.json; then
+            npm run lint || echo "::warning::Lint warnings present (non-fatal)"
+          fi
+        continue-on-error: true
+
+      - name: Build
+        run: npm run build

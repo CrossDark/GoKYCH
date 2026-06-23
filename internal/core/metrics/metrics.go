@@ -11,11 +11,11 @@ import (
 // a basic observability surface (GET /api/admin/metrics); for multi-instance
 // deployments, switch to Prometheus or a similar external collector.
 type Metrics struct {
-	totalRequests    int64
-	latencyCount     int64
-	latencySumNanos  int64
-	mu               sync.Mutex
-	statusCounts     map[int]int64
+	totalRequests   int64
+	latencyCount    int64
+	latencySumNanos int64
+	mu              sync.Mutex
+	statusCounts    map[int]int64
 }
 
 // New creates an empty Metrics collector.
@@ -35,9 +35,9 @@ func (m *Metrics) Record(status int, latency time.Duration) {
 
 // Snapshot is a point-in-time copy of collected metrics.
 type Snapshot struct {
-	TotalRequests int64            `json:"total_requests"`
-	StatusCounts  map[int]int64    `json:"status_counts"`
-	AvgLatencyMs  float64          `json:"avg_latency_ms"`
+	TotalRequests int64         `json:"total_requests"`
+	StatusCounts  map[int]int64 `json:"status_counts"`
+	AvgLatencyMs  float64       `json:"avg_latency_ms"`
 }
 
 // Snapshot returns a copy-safe view of current metrics.
