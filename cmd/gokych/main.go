@@ -29,6 +29,12 @@ func main() {
 		cfg.MySQL.Host, cfg.MySQL.Port, cfg.MySQL.Database,
 		cfg.App.Port, cfg.App.GinMode)
 
+	// Fail fast on insecure defaults in release mode (default session secret
+	// would allow session forgery; default admin password is public).
+	if err := cfg.ValidateProduction(); err != nil {
+		log.Fatalf("[main] insecure config for release mode: %v", err)
+	}
+
 	// 2. Ensure data directories and default settings exist.
 	cfg.EnsureDataDirs()
 	if err := settings.Ensure(cfg.App.DataDir); err != nil {

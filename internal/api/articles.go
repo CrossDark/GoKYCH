@@ -44,20 +44,29 @@ func (s *Server) listArticles(c *gin.Context) {
 // ── Article detail (aggregated: article + comments + line_comments + rating) ─
 
 type ArticleDetail struct {
-	Article          *content.Article        `json:"article"`
-	HTML             string                  `json:"html"`
-	Tags             []string                `json:"tags"`
-	Comments         []content.Comment       `json:"comments"`
-	LineComments     []content.Comment       `json:"line_comments"`
+	Article           *content.Article       `json:"article"`
+	HTML              string                 `json:"html"`
+	Tags              []string               `json:"tags"`
+	Comments          []content.Comment      `json:"comments"`
+	LineComments      []content.Comment      `json:"line_comments"`
 	LineCommentCounts map[int]int            `json:"line_comment_counts"`
-	Rating           *content.RatingSummary  `json:"rating"`
-	CanEdit          bool                    `json:"can_edit"`
+	Rating            *content.RatingSummary `json:"rating"`
+	CanEdit           bool                   `json:"can_edit"`
 }
 
 // GET /api/articles/{type}/{slug}
 func (s *Server) getArticle(c *gin.Context) {
 	atype := c.Param("type")
 	slug := c.Param("slug")
+	// Reject unknown types up front. Without this, a non-existent type would
+	// fall through to GetArticle (returning ErrNoRows → 404) which is fine, but
+	// parsers.Render's default branch would render "不支持的格式。" for any
+	// stray type string that happened to match a row — defending here keeps
+	// the contract explicit.
+	if !parsers.IsValidType(atype) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "不支持的文章类型。"})
+		return
+	}
 
 	a, err := content.GetArticle(s.DB, atype, slug)
 	if err != nil {

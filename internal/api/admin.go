@@ -4,41 +4,23 @@ import (
 	"net/http"
 	"os"
 	"strconv"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"gopkg.in/yaml.v3"
 
 	"gokych/internal/auth/password"
 	"gokych/internal/auth/user"
+	"gokych/internal/content"
 )
 
 // ─── Users ───────────────────────────────────────────────────────────
 
-type userSummary struct {
-	ID        int       `json:"id"`
-	Username  string    `json:"username"`
-	Nickname  string    `json:"nickname"`
-	Role      string    `json:"role"`
-	CreatedAt time.Time `json:"created_at"`
-}
-
 // GET /api/admin/users
 func (s *Server) listUsers(c *gin.Context) {
-	rows, err := s.DB.Query(
-		`SELECT id, username, nickname, role, created_at FROM users ORDER BY created_at DESC`)
+	users, err := content.ListUsers(s.DB)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载用户失败。"})
 		return
-	}
-	defer rows.Close()
-	var users = make([]userSummary, 0)
-	for rows.Next() {
-		var u userSummary
-		if err := rows.Scan(&u.ID, &u.Username, &u.Nickname, &u.Role, &u.CreatedAt); err != nil {
-			continue
-		}
-		users = append(users, u)
 	}
 	c.JSON(http.StatusOK, users)
 }
@@ -135,32 +117,10 @@ func (s *Server) deleteUser(c *gin.Context) {
 
 // GET /api/admin/notifications
 func (s *Server) listAdminNotifications(c *gin.Context) {
-	type notif struct {
-		ID          int       `json:"id"`
-		Title       string    `json:"title"`
-		Content     string    `json:"content"`
-		IsImportant bool      `json:"is_important"`
-		IsActive    bool      `json:"is_active"`
-		UpdatedAt   time.Time `json:"updated_at"`
-	}
-	rows, err := s.DB.Query(
-		`SELECT id, title, content, is_important, is_active, updated_at
-		 FROM notifications ORDER BY updated_at DESC`)
+	out, err := content.ListAdminNotifications(s.DB)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载通知失败。"})
 		return
-	}
-	defer rows.Close()
-	var out = make([]notif, 0)
-	for rows.Next() {
-		var n notif
-		var imp, act int
-		if err := rows.Scan(&n.ID, &n.Title, &n.Content, &imp, &act, &n.UpdatedAt); err != nil {
-			continue
-		}
-		n.IsImportant = imp == 1
-		n.IsActive = act == 1
-		out = append(out, n)
 	}
 	c.JSON(http.StatusOK, out)
 }
@@ -400,29 +360,10 @@ func (s *Server) deleteFeatured(c *gin.Context) {
 
 // GET /api/admin/files
 func (s *Server) listFiles(c *gin.Context) {
-	type fileInfo struct {
-		ID           int       `json:"id"`
-		Filename     string    `json:"filename"`
-		OriginalName string    `json:"original_name"`
-		FileSize     int64     `json:"file_size"`
-		MimeType     string    `json:"mime_type"`
-		CreatedAt    time.Time `json:"created_at"`
-	}
-	rows, err := s.DB.Query(
-		`SELECT id, filename, original_name, file_size, mime_type, created_at
-		 FROM static_files ORDER BY created_at DESC`)
+	out, err := content.ListStaticFiles(s.DB)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载文件列表失败。"})
 		return
-	}
-	defer rows.Close()
-	var out = make([]fileInfo, 0)
-	for rows.Next() {
-		var f fileInfo
-		if err := rows.Scan(&f.ID, &f.Filename, &f.OriginalName, &f.FileSize, &f.MimeType, &f.CreatedAt); err != nil {
-			continue
-		}
-		out = append(out, f)
 	}
 	c.JSON(http.StatusOK, out)
 }

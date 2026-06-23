@@ -1,9 +1,10 @@
 package api
 
 import (
+	"crypto/rand"
 	"crypto/subtle"
 	"database/sql"
-	"math/rand"
+	"math/big"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -15,6 +16,16 @@ import (
 	"gokych/internal/auth/user"
 )
 
+// randIntn returns a crypto-strong random int in [0, n). Used for the captcha
+// so its answer can't be predicted from math/rand's seeded sequence.
+func randIntn(n int) int {
+	r, err := rand.Int(rand.Reader, big.NewInt(int64(n)))
+	if err != nil {
+		panic("crypto/rand failed: " + err.Error())
+	}
+	return int(r.Int64())
+}
+
 // ─── Captcha (math problem, answer stored in session, single-use) ─────────
 
 type captchaQA struct {
@@ -24,11 +35,11 @@ type captchaQA struct {
 // generateCaptcha creates a math captcha, stores the answer in the session,
 // and returns the question. The answer is consumed on verification.
 func (s *Server) generateCaptcha(c *gin.Context) captchaQA {
-	a := rand.Intn(20) + 1
-	b := rand.Intn(20) + 1
+	a := randIntn(20) + 1
+	b := randIntn(20) + 1
 	var op string
 	var answer int
-	switch rand.Intn(3) {
+	switch randIntn(3) {
 	case 0:
 		op = "+"
 		answer = a + b
@@ -43,18 +54,18 @@ func (s *Server) generateCaptcha(c *gin.Context) captchaQA {
 		op = "×"
 		answer = a * b
 	}
-		question := strconv.Itoa(a) + " " + op + " " + strconv.Itoa(b) + " = ?"
-		s.setSessionValue(c, "captcha_answer", answer)
-		return captchaQA{Question: question}
-	}
+	question := strconv.Itoa(a) + " " + op + " " + strconv.Itoa(b) + " = ?"
+	s.setSessionValue(c, "captcha_answer", answer)
+	return captchaQA{Question: question}
+}
 
-	// verifyCaptcha checks the user's answer against the stored one (single-use,
-	// constant-time). Returns false if no captcha is pending.
-	func (s *Server) verifyCaptcha(c *gin.Context, input string) bool {
-		if input == "" {
-			return false
-		}
-		stored, ok := s.popSessionValue(c, "captcha_answer")
+// verifyCaptcha checks the user's answer against the stored one (single-use,
+// constant-time). Returns false if no captcha is pending.
+func (s *Server) verifyCaptcha(c *gin.Context, input string) bool {
+	if input == "" {
+		return false
+	}
+	stored, ok := s.popSessionValue(c, "captcha_answer")
 	if !ok {
 		return false
 	}

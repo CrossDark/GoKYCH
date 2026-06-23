@@ -7,16 +7,21 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"gokych/internal/content"
+	"gokych/internal/core/settings"
 )
 
 // ── Site info ─────────────────────────────────────────────────────────
 
-// GET /api/site
+// GET /api/site — returns site metadata read from settings.yml (data/settings/
+// settings.yml), falling back to defaults on read/parse failure. Replaces the
+// earlier hard-coded title/subtitle/language, which ignored admin edits made
+// via /admin/settings.
 func (s *Server) getSite(c *gin.Context) {
+	cfg := settings.Load(s.DataDir)
 	c.JSON(http.StatusOK, gin.H{
-		"title":    "跨越晨昏",
-		"subtitle": "个人网站",
-		"language": "zh-CN",
+		"title":    settings.SiteValue(cfg, "title", "跨越晨昏"),
+		"subtitle": settings.SiteValue(cfg, "subtitle", "个人网站"),
+		"language": settings.SiteValue(cfg, "language", "zh-CN"),
 	})
 }
 

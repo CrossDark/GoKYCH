@@ -22,24 +22,55 @@ func Default() map[string]interface{} {
 			"icp_number":   "",
 		},
 		"appearance": map[string]interface{}{
-			"font_family":  "system-ui, -apple-system, sans-serif",
+			"font_family":   "system-ui, -apple-system, sans-serif",
 			"primary_color": "#3b82f6",
 			"style_theme":   "sunset",
 			"theme":         "auto",
 		},
 		"features": map[string]interface{}{
-			"enable_comments":    true,
-			"enable_dark_mode":   true,
-			"enable_search":      true,
+			"enable_comments":     true,
+			"enable_dark_mode":    true,
+			"enable_search":       true,
 			"enable_tags_sidebar": true,
-			"posts_per_page":     10,
+			"posts_per_page":      10,
 		},
 		"social": map[string]interface{}{
-			"email":  "",
-			"github": "",
+			"email":   "",
+			"github":  "",
 			"twitter": "",
 		},
 	}
+}
+
+// Load reads the data/settings/settings.yml and returns it as a nested map.
+// On any read/parse error it falls back to Default() so the site still boots
+// (a missing/corrupt settings file is recoverable; a 500 on /api/site is not).
+func Load(dataDir string) map[string]interface{} {
+	path := filepath.Join(dataDir, "settings", "settings.yml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return Default()
+	}
+	out := Default()
+	if err := yaml.Unmarshal(data, out); err != nil {
+		log.Printf("[settings] warning: failed to parse %s: %v (using defaults)", path, err)
+		return Default()
+	}
+	return out
+}
+
+// SiteValue returns a string field from settings.site by key, with a fallback.
+// Keeps callers (e.g. /api/site) free of type-assertion boilerplate.
+func SiteValue(s map[string]interface{}, key, fallback string) string {
+	site, ok := s["site"].(map[string]interface{})
+	if !ok {
+		return fallback
+	}
+	v, ok := site[key].(string)
+	if !ok || v == "" {
+		return fallback
+	}
+	return v
 }
 
 // Ensure creates the settings directory and writes default settings.yml if it

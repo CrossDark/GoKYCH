@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"strconv"
@@ -17,12 +18,12 @@ type Config struct {
 
 // MySQLConfig holds database connection parameters.
 type MySQLConfig struct {
-	Host     string `yaml:"host"`
-	Port     int    `yaml:"port"`
-	User     string `yaml:"user"`
-	Password string `yaml:"password"`
-	Database string `yaml:"database"`
-	Charset  string `yaml:"charset"`
+	Host     string     `yaml:"host"`
+	Port     int        `yaml:"port"`
+	User     string     `yaml:"user"`
+	Password string     `yaml:"password"`
+	Database string     `yaml:"database"`
+	Charset  string     `yaml:"charset"`
 	Pool     PoolConfig `yaml:"pool"`
 }
 
@@ -35,13 +36,13 @@ type PoolConfig struct {
 
 // AppConfig holds application-level settings.
 type AppConfig struct {
-	Port            int
-	GinMode         string
-	SessionSecret   string
-	AdminUsername   string
-	AdminPassword   string
-	DataDir         string
-	TrustedProxies  []string // trusted reverse-proxy CIDRs/IPs for c.ClientIP(); empty = trust none (RemoteAddr only)
+	Port           int
+	GinMode        string
+	SessionSecret  string
+	AdminUsername  string
+	AdminPassword  string
+	DataDir        string
+	TrustedProxies []string // trusted reverse-proxy CIDRs/IPs for c.ClientIP(); empty = trust none (RemoteAddr only)
 }
 
 // mysqlYAML is the YAML file structure (top-level key "mysql").
@@ -58,6 +59,23 @@ func Load() Config {
 	cfg.loadYAML()
 	cfg.applyEnvOverrides()
 	return cfg
+}
+
+// ValidateProduction enforces settings that must be correct when running in
+// release mode. Critically: the default SessionSecret is a known public value,
+// so leaving it unchanged in production lets an attacker forge session
+// cookies. We fail fast rather than boot an insecure server.
+func (c *Config) ValidateProduction() error {
+	if c.App.GinMode != "release" {
+		return nil
+	}
+	if c.App.SessionSecret == "" || c.App.SessionSecret == "change-me-to-a-random-string" {
+		return fmt.Errorf("SESSION_SECRET must be set to a random string in release mode (current value looks like the default)")
+	}
+	if c.App.AdminPassword == "admin123" {
+		return fmt.Errorf("ADMIN_PASSWORD must be changed from the default in release mode")
+	}
+	return nil
 }
 
 // applyDefaults sets baseline values.
