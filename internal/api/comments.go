@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -8,12 +9,23 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"gokych/internal/content"
+	"gokych/internal/content/parsers"
+)
+
+// Max comment lengths, kept in sync with the schema's column widths.
+const (
+	commentContentMaxLen = 500 // schema: comments.content VARCHAR(500)
+	lineCommentMaxLen    = 20  // line comments are 20 chars by design
 )
 
 // GET /api/articles/{type}/{slug}/comments
 func (s *Server) listComments(c *gin.Context) {
 	articleID, err := s.articleIDFromParams(c)
 	if err != nil {
+		if err == errInvalidArticleType {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "无效的文章类型。"})
+			return
+		}
 		c.JSON(http.StatusNotFound, gin.H{"error": "文章不存在。"})
 		return
 	}
@@ -32,6 +44,10 @@ func (s *Server) listComments(c *gin.Context) {
 func (s *Server) addComment(c *gin.Context) {
 	articleID, err := s.articleIDFromParams(c)
 	if err != nil {
+		if err == errInvalidArticleType {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "无效的文章类型。"})
+			return
+		}
 		c.JSON(http.StatusNotFound, gin.H{"error": "文章不存在。"})
 		return
 	}
@@ -46,6 +62,10 @@ func (s *Server) addComment(c *gin.Context) {
 	in.Content = strings.TrimSpace(in.Content)
 	if in.Content == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "评论内容不能为空。"})
+		return
+	}
+	if len([]rune(in.Content)) > commentContentMaxLen {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("评论内容不能超过 %d 个字符。", commentContentMaxLen)})
 		return
 	}
 	// Logged-in users: bind to session id and use the session username as the
@@ -70,6 +90,10 @@ func (s *Server) addComment(c *gin.Context) {
 func (s *Server) listLineComments(c *gin.Context) {
 	articleID, err := s.articleIDFromParams(c)
 	if err != nil {
+		if err == errInvalidArticleType {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "无效的文章类型。"})
+			return
+		}
 		c.JSON(http.StatusNotFound, gin.H{"error": "文章不存在。"})
 		return
 	}
@@ -102,6 +126,10 @@ func (s *Server) listLineComments(c *gin.Context) {
 func (s *Server) addLineComment(c *gin.Context) {
 	articleID, err := s.articleIDFromParams(c)
 	if err != nil {
+		if err == errInvalidArticleType {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "无效的文章类型。"})
+			return
+		}
 		c.JSON(http.StatusNotFound, gin.H{"error": "文章不存在。"})
 		return
 	}
@@ -119,6 +147,10 @@ func (s *Server) addLineComment(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "内容不能为空。"})
 		return
 	}
+	if len([]rune(in.Content)) > lineCommentMaxLen {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("行评论不能超过 %d 个字符。", lineCommentMaxLen)})
+		return
+	}
 	var userID *int
 	authorName := in.AuthorName
 	if u := CurrentUserFromContext(c); u != nil {
@@ -134,10 +166,20 @@ func (s *Server) addLineComment(c *gin.Context) {
 	c.JSON(http.StatusCreated, cm)
 }
 
+// errInvalidArticleType is returned by articleIDFromParams when the {type}
+// path param doesn't match any known article type. Callers should translate
+// this into HTTP 400 (vs the 404 returned for missing articles).
+var errInvalidArticleType = fmt.Errorf("invalid article type")
+
 // articleIDFromParams resolves the article ID from the {type}/{slug} path params.
+// It validates the article type upfront so a malformed type returns a clean 400
+// instead of silently hitting the DB and bouncing back as a 404.
 func (s *Server) articleIDFromParams(c *gin.Context) (int, error) {
 	atype := c.Param("type")
 	slug := c.Param("slug")
+	if !parsers.IsValidType(atype) {
+		return 0, errInvalidArticleType
+	}
 	a, err := content.GetArticle(s.DB, atype, slug)
 	if err != nil {
 		return 0, err

@@ -17,12 +17,12 @@ type Config struct {
 
 // MySQLConfig holds database connection parameters.
 type MySQLConfig struct {
-	Host     string `yaml:"host"`
-	Port     int    `yaml:"port"`
-	User     string `yaml:"user"`
-	Password string `yaml:"password"`
-	Database string `yaml:"database"`
-	Charset  string `yaml:"charset"`
+	Host     string     `yaml:"host"`
+	Port     int        `yaml:"port"`
+	User     string     `yaml:"user"`
+	Password string     `yaml:"password"`
+	Database string     `yaml:"database"`
+	Charset  string     `yaml:"charset"`
 	Pool     PoolConfig `yaml:"pool"`
 }
 
@@ -35,13 +35,13 @@ type PoolConfig struct {
 
 // AppConfig holds application-level settings.
 type AppConfig struct {
-	Port            int
-	GinMode         string
-	SessionSecret   string
-	AdminUsername   string
-	AdminPassword   string
-	DataDir         string
-	TrustedProxies  []string // trusted reverse-proxy CIDRs/IPs for c.ClientIP(); empty = trust none (RemoteAddr only)
+	Port           int
+	GinMode        string
+	SessionSecret  string
+	AdminUsername  string
+	AdminPassword  string
+	DataDir        string
+	TrustedProxies []string // trusted reverse-proxy CIDRs/IPs for c.ClientIP(); empty = trust none (RemoteAddr only)
 }
 
 // mysqlYAML is the YAML file structure (top-level key "mysql").
@@ -186,6 +186,7 @@ func (c *Config) EnsureDataDirs() {
 	dirs := []string{
 		c.DataRoot(),
 		c.DataRoot() + "/settings",
+		c.DataRoot() + "/uploads",
 		c.DataRoot() + "/avatars",
 		c.DataRoot() + "/plugins",
 		c.DataRoot() + "/themes",

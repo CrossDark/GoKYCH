@@ -30,7 +30,7 @@ func (s *Server) Setup(r *gin.Engine) {
 
 	apiG := r.Group("/api")
 	{
-		apiG.GET("/health", healthHandler)
+		apiG.GET("/health", s.healthHandler)
 
 		// Public read endpoints.
 		apiG.GET("/site", s.getSite)
@@ -61,10 +61,12 @@ func (s *Server) Setup(r *gin.Engine) {
 		// CSRF-gated mutations.
 		mutG := apiG.Group("", s.csrfMiddleware())
 		{
-			mutG.POST("/articles/:type/:slug/comments", s.addComment)
-			mutG.POST("/articles/:type/:slug/line-comments", s.addLineComment)
-			mutG.POST("/articles/:type/:slug/rating", s.setRating)
-			mutG.DELETE("/articles/:type/:slug/rating", s.deleteRating)
+			// Comment / line-comment / rating write paths require an authenticated
+			// user. Anonymous read endpoints still exist, but writing is gated.
+			mutG.POST("/articles/:type/:slug/comments", requireLogin, s.addComment)
+			mutG.POST("/articles/:type/:slug/line-comments", requireLogin, s.addLineComment)
+			mutG.POST("/articles/:type/:slug/rating", requireLogin, s.setRating)
+			mutG.DELETE("/articles/:type/:slug/rating", requireLogin, s.deleteRating)
 
 			// Article CRUD (admin+)
 			artAdmin := mutG.Group("/articles", requireAdmin)
@@ -87,6 +89,11 @@ func (s *Server) Setup(r *gin.Engine) {
 				adminG.PUT("/notifications/:id", requireAdmin, s.updateNotification)
 				adminG.DELETE("/notifications/:id", requireAdmin, s.deleteNotification)
 
+				adminG.GET("/tags", requireAdmin, s.listAdminTags)
+				adminG.POST("/tags", requireAdmin, s.createTag)
+				adminG.PUT("/tags/:id", requireAdmin, s.renameTag)
+				adminG.DELETE("/tags/:id", requireAdmin, s.deleteTag)
+
 				adminG.GET("/settings", requireAdmin, s.getSettings)
 				adminG.PUT("/settings", requireOwner, s.updateSettings)
 
@@ -97,6 +104,8 @@ func (s *Server) Setup(r *gin.Engine) {
 				adminG.DELETE("/home/featured/:id", requireAdmin, s.deleteFeatured)
 
 				adminG.GET("/files", requireAdmin, s.listFiles)
+				adminG.POST("/files", requireAdmin, s.uploadFile)
+				adminG.DELETE("/files/:id", requireAdmin, s.deleteFile)
 
 				// Metrics (admin+)
 				adminG.GET("/metrics", requireAdmin, s.getMetrics)
@@ -108,8 +117,24 @@ func (s *Server) Setup(r *gin.Engine) {
 	}
 }
 
-func healthHandler(c *gin.Context) {
-	c.JSON(200, gin.H{"status": "ok"})
+// healthHandler returns a deep health check: it pings the DB so that load
+// balancers / orchestrators can route around a backend whose dependency has
+// gone away. Returns 503 if the DB is unreachable so callers can react.
+//
+// It's a method on *Server rather than a free function so we can reach
+// s.DB directly without stashing a pinger closure in the gin context.
+func (s *Server) healthHandler(c *gin.Context) {
+	if s.DB == nil {
+		// Pre-startup probe — don't pretend we're healthy just because
+		// the pool isn't built yet.
+		c.JSON(503, gin.H{"status": "degraded", "db": "not_initialised"})
+		return
+	}
+	if err := s.DB.PingContext(c.Request.Context()); err != nil {
+		c.JSON(503, gin.H{"status": "degraded", "db": "unreachable", "error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"status": "ok", "db": "ok"})
 }
 
 // GET /api/admin/metrics — returns basic request metrics (total, status

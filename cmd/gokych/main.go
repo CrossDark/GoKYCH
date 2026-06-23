@@ -40,6 +40,13 @@ func main() {
 		"gin_mode", cfg.App.GinMode,
 	)
 
+	// 0b. In release mode, refuse to start with the default SessionSecret —
+	// that would let any attacker forge session cookies. Developers running
+	// locally keep working with the default (debug mode).
+	if cfg.App.GinMode == "release" && cfg.App.SessionSecret == "change-me-to-a-random-string" {
+		log.Fatalf("[main] refusing to start in release mode with the default SESSION_SECRET; set a strong random value via env or config")
+	}
+
 	// 2. Ensure data directories and default settings exist.
 	cfg.EnsureDataDirs()
 	if err := settings.Ensure(cfg.App.DataDir); err != nil {
@@ -80,11 +87,33 @@ func main() {
 	// 8. Register routes.
 	srv.Setup(r)
 
+	// 8b. Static resources. Mounted AFTER Setup so the security-headers
+	// middleware (registered inside Setup) still wraps these handlers.
+	// gin.StaticFS uses http.FileServer under the hood, which sanitises
+	// ".." segments — path-traversal attempts resolve to 404.
+	//
+	// We also stamp a long Cache-Control header on the responses since
+	// uploaded files have content-hashed filenames (sha256[:24] + ext) so
+	// re-uploads replace the file at a different URL — there's no stale-
+	// content problem to worry about.
+	uploadDir := cfg.App.DataDir + "/uploads"
+	avatarDir := cfg.App.DataDir + "/avatars"
+	cacheableStatic := func(c *gin.Context) {
+		c.Header("Cache-Control", "public, max-age=3600")
+		c.Next()
+	}
+	r.GET("/uploads/*filepath", cacheableStatic, gin.WrapH(http.FileServer(http.Dir(uploadDir))))
+	r.GET("/avatars/*filepath", cacheableStatic, gin.WrapH(http.FileServer(http.Dir(avatarDir))))
+
 	// 9. Start server with graceful shutdown.
 	addr := fmt.Sprintf(":%d", cfg.App.Port)
 	httpSrv := &http.Server{
-		Addr:    addr,
-		Handler: r,
+		Addr:              addr,
+		Handler:           r,
+		ReadTimeout:       10 * time.Second,
+		ReadHeaderTimeout: 5 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 
 	go func() {

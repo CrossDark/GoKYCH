@@ -44,14 +44,14 @@ func (s *Server) listArticles(c *gin.Context) {
 // ── Article detail (aggregated: article + comments + line_comments + rating) ─
 
 type ArticleDetail struct {
-	Article          *content.Article        `json:"article"`
-	HTML             string                  `json:"html"`
-	Tags             []string                `json:"tags"`
-	Comments         []content.Comment       `json:"comments"`
-	LineComments     []content.Comment       `json:"line_comments"`
+	Article           *content.Article       `json:"article"`
+	HTML              string                 `json:"html"`
+	Tags              []string               `json:"tags"`
+	Comments          []content.Comment      `json:"comments"`
+	LineComments      []content.Comment      `json:"line_comments"`
 	LineCommentCounts map[int]int            `json:"line_comment_counts"`
-	Rating           *content.RatingSummary  `json:"rating"`
-	CanEdit          bool                    `json:"can_edit"`
+	Rating            *content.RatingSummary `json:"rating"`
+	CanEdit           bool                   `json:"can_edit"`
 }
 
 // GET /api/articles/{type}/{slug}
@@ -74,6 +74,10 @@ func (s *Server) getArticle(c *gin.Context) {
 	// across users. Logged-in users see per-user fields (can_edit, their own
 	// rating), so we never 304 for them and disable caching; anonymous reads
 	// get a private 30s cache + conditional 304 on a matching If-None-Match.
+	//
+	// ETag is computed BEFORE the comments/line-comments/rating sub-queries so
+	// a 304 response short-circuits the DB load. A cache hit shouldn't pay for
+	// comments/ratings the client already has.
 	currentUser := CurrentUserFromContext(c)
 	etag := fmt.Sprintf("\"%d-%d\"", a.ID, a.UpdatedAt.Unix())
 	c.Header("ETag", etag)
@@ -89,17 +93,26 @@ func (s *Server) getArticle(c *gin.Context) {
 
 	html := parsers.Render(parsers.ArticleType(atype), a.ID, a.Content)
 
+	// Sub-query failures are now fail-fast: a partial response (article +
+	// half-broken comments) is worse than a 500, since the frontend can't
+	// distinguish "no comments" from "comments failed to load".
 	comments, err := content.GetComments(s.DB, a.ID)
 	if err != nil {
 		slog.Error("getArticle: load comments", "article_id", a.ID, "err", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载评论失败。"})
+		return
 	}
 	lineComments, err := content.GetLineComments(s.DB, a.ID)
 	if err != nil {
 		slog.Error("getArticle: load line comments", "article_id", a.ID, "err", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载行评论失败。"})
+		return
 	}
 	lineCounts, err := content.GetLineCommentCounts(s.DB, a.ID)
 	if err != nil {
 		slog.Error("getArticle: load line comment counts", "article_id", a.ID, "err", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载行评论统计失败。"})
+		return
 	}
 
 	voterKey := ""
@@ -115,6 +128,8 @@ func (s *Server) getArticle(c *gin.Context) {
 	rating, err := content.GetRatingSummary(s.DB, a.ID, voterKey)
 	if err != nil {
 		slog.Error("getArticle: load rating", "article_id", a.ID, "err", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载评分失败。"})
+		return
 	}
 
 	c.JSON(http.StatusOK, ArticleDetail{

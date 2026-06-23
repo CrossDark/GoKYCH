@@ -2,8 +2,21 @@ package content
 
 import (
 	"database/sql"
+	"errors"
 	"time"
 )
+
+// Max comment content length. Mirrors the schema's VARCHAR(500); enforced here
+// as a defense-in-depth backstop in case the API layer ever loses its input
+// validation.
+const (
+	maxCommentContentLen = 500
+	maxLineCommentLen    = 20
+)
+
+// ErrCommentTooLong is returned by AddComment / AddLineComment when the input
+// exceeds the column width. Callers (the API layer) translate this into 400.
+var ErrCommentTooLong = errors.New("评论内容过长")
 
 // Comment represents a full-text or line comment.
 type Comment struct {
@@ -83,6 +96,9 @@ func AddComment(db *sql.DB, articleID int, userID *int, authorName, content stri
 	if authorName == "" {
 		authorName = "匿名"
 	}
+	if len([]rune(content)) > maxCommentContentLen {
+		return nil, ErrCommentTooLong
+	}
 	res, err := db.Exec(
 		`INSERT INTO comments (article_id, user_id, author_name, content) VALUES (?, ?, ?, ?)`,
 		articleID, userID, authorName, content)
@@ -98,9 +114,8 @@ func AddLineComment(db *sql.DB, articleID, lineNumber int, userID *int, authorNa
 	if authorName == "" {
 		authorName = "匿名"
 	}
-	// Cap at 20 chars.
-	if len(content) > 20 {
-		content = content[:20]
+	if len([]rune(content)) > maxLineCommentLen {
+		return nil, ErrCommentTooLong
 	}
 	res, err := db.Exec(
 		`INSERT INTO comments (article_id, line_number, user_id, author_name, content) VALUES (?, ?, ?, ?, ?)`,

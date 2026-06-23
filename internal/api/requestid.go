@@ -2,6 +2,7 @@ package api
 
 import (
 	"log/slog"
+	"regexp"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -9,6 +10,12 @@ import (
 )
 
 const ctxRequestIDKey = "requestID"
+
+// requestIDRe validates client-supplied X-Request-ID values. Restricting to
+// 8-128 alphanumeric+dash characters blocks log/header injection (CRLF,
+// control chars, oversized strings) while still accepting UUIDs and common
+// correlation-id formats (e.g. ULID, traceparent suffixes).
+var requestIDRe = regexp.MustCompile(`^[a-zA-Z0-9-]{8,128}$`)
 
 // requestIDMiddleware stamps each request with a unique id (UUID v4), exposes
 // it to callers via the gin context and the X-Request-ID response header, and
@@ -18,7 +25,8 @@ const ctxRequestIDKey = "requestID"
 func (s *Server) requestIDMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id := c.GetHeader("X-Request-ID")
-		if id == "" {
+		// Accept only sanitised client ids; otherwise generate our own.
+		if id == "" || !requestIDRe.MatchString(id) {
 			id = uuid.NewString()
 		}
 		c.Set(ctxRequestIDKey, id)
