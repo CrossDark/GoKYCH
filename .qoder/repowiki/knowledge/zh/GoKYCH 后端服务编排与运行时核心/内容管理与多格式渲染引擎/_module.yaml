@@ -1,0 +1,8 @@
+schema_version: 1
+module_path: backend/content
+title: 内容管理与多格式渲染引擎
+scope:
+    - internal/content/
+source_files: []
+depends_on: []
+related_to: []

@@ -1,0 +1,8 @@
+schema_version: 1
+module_path: backend/api_layer
+title: API路由与HTTP服务层
+scope:
+    - internal/api/
+source_files: []
+depends_on: []
+related_to: []

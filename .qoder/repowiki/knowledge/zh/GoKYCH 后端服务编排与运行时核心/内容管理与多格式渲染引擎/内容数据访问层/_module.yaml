@@ -1,0 +1,11 @@
+schema_version: 1
+module_path: backend/content/content_entities
+title: 内容数据访问层
+scope:
+    - internal/content/articles.go
+    - internal/content/comments.go
+    - internal/content/ratings.go
+    - internal/content/tags.go
+source_files: []
+depends_on: []
+related_to: []

@@ -1,0 +1,10 @@
+schema_version: 1
+module_path: frontend/shared_frontend
+title: 共享前端组件与API层
+scope:
+    - web/components/
+    - web/lib/
+    - web/styles/
+source_files: []
+depends_on: []
+related_to: []

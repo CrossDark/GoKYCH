@@ -1,0 +1,160 @@
+# 知识卡导出索引文件
+schema_version: 1
+locale: zh-CN
+branch: optimize/audit-fixes
+exported_at: "2026-06-23T08:25:24Z"
+modules:
+    "":
+        dir_name: GoKYCH 全栈应用编排与基础设施
+        title: GoKYCH 全栈应用编排与基础设施
+        scope:
+            - .gitignore
+            - go.mod
+            - go.sum
+            - Dockerfile
+            - docker-compose.yml
+            - docs/
+            - wiki/
+            - configs/
+            - .env
+            - .env.example
+            - LICENSE
+            - gokych
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    backend:
+        dir_name: GoKYCH 后端服务编排与运行时核心
+        title: GoKYCH 后端服务编排与运行时核心
+        scope:
+            - internal/
+            - cmd/
+        source_files: []
+        children:
+            - backend/core_infra
+            - backend/auth
+            - backend/api_layer
+            - backend/content
+        depends_on: []
+        related_to: []
+    backend/api_layer:
+        dir_name: API路由与HTTP服务层
+        title: API路由与HTTP服务层
+        scope:
+            - internal/api/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    backend/auth:
+        dir_name: 认证与会话管理
+        title: 认证与会话管理
+        scope:
+            - internal/auth/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    backend/content:
+        dir_name: 内容管理与多格式渲染引擎
+        title: 内容管理与多格式渲染引擎
+        scope:
+            - internal/content/
+        source_files: []
+        children:
+            - backend/content/parsers
+            - backend/content/content_entities
+        depends_on: []
+        related_to: []
+    backend/content/content_entities:
+        dir_name: 内容数据访问层
+        title: 内容数据访问层
+        scope:
+            - internal/content/articles.go
+            - internal/content/comments.go
+            - internal/content/ratings.go
+            - internal/content/tags.go
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    backend/content/parsers:
+        dir_name: 多格式内容解析与渲染
+        title: 多格式内容解析与渲染
+        scope:
+            - internal/content/parsers/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    backend/core_infra:
+        dir_name: 核心基础设施与数据持久化
+        title: 核心基础设施与数据持久化
+        scope:
+            - internal/core/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    frontend:
+        dir_name: Next.js 前端应用
+        title: Next.js 前端应用
+        scope:
+            - web/
+        source_files: []
+        children:
+            - frontend/public_site
+            - frontend/shared_frontend
+            - frontend/article_viewers
+            - frontend/admin_dashboard
+        depends_on: []
+        related_to: []
+    frontend/admin_dashboard:
+        dir_name: 管理后台仪表盘
+        title: 管理后台仪表盘
+        scope:
+            - web/app/admin/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    frontend/article_viewers:
+        dir_name: 多格式文章查看器
+        title: 多格式文章查看器
+        scope:
+            - web/app/bbcode/
+            - web/app/html/
+            - web/app/md/
+            - web/app/typst/
+            - web/app/wikidot/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    frontend/public_site:
+        dir_name: 公共站点页面与布局
+        title: 公共站点页面与布局
+        scope:
+            - web/app/about/
+            - web/app/labels/
+            - web/app/search/
+            - web/app/auth/
+            - web/app/page.tsx
+            - web/app/layout.tsx
+            - web/app/LayoutWrapper.tsx
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    frontend/shared_frontend:
+        dir_name: 共享前端组件与API层
+        title: 共享前端组件与API层
+        scope:
+            - web/components/
+            - web/lib/
+            - web/styles/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []

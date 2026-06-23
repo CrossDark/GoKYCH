@@ -1,0 +1,19 @@
+schema_version: 1
+module_path: ""
+title: GoKYCH 全栈应用编排与基础设施
+scope:
+    - .gitignore
+    - go.mod
+    - go.sum
+    - Dockerfile
+    - docker-compose.yml
+    - docs/
+    - wiki/
+    - configs/
+    - .env
+    - .env.example
+    - LICENSE
+    - gokych
+source_files: []
+depends_on: []
+related_to: []

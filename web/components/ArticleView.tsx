@@ -21,14 +21,13 @@ export function ArticleView({ data, articleType, articleSlug }: Props) {
   const lineCountsRef = useRef<Record<number, number>>({});
   const lineDataRef = useRef<Record<number, Comment[]>>({});
 
-  const [totalLines, setTotalLines] = useState(0);
   const [lineCounts, setLineCounts] = useState<Record<number, number>>(rawLineCounts ?? {});
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [currentUser, setCurrentUser] = useState<{ nickname?: string; username: string } | null>(null);
   const [csrfToken, setCsrfToken] = useState("");
   const [panelOpen, setPanelOpen] = useState(true);
   const [guideOpen, setGuideOpen] = useState(false);
-  const [bubbleHost, setBubbleHost] = useState<HTMLDivElement | null>(null);
+  const bubbleHostRef = useRef<HTMLDivElement | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   const [popup, setPopup] = useState<{ lineNum: number; x: number; y: number } | null>(null);
@@ -56,22 +55,22 @@ export function ArticleView({ data, articleType, articleSlug }: Props) {
     setCommentedLines(Object.keys(d).map(Number).sort((a, b) => a - b));
   }, [data]);
 
-  // Assign line numbers + markers + position bubbles after every render
+  // Set innerHTML manually (avoids dangerouslySetInnerHTML wiping DOM on re-renders)
   useLayoutEffect(() => {
     const container = contentRef.current;
     if (!container) return;
+    container.innerHTML = html ?? "";
 
-    // Ensure bubble portal host exists (may be destroyed by dangerouslySetInnerHTML re-render)
+    // Create bubble portal host
     let host = container.querySelector(".line-bubble-host") as HTMLDivElement | null;
     if (!host) {
       host = document.createElement("div");
       host.className = "line-bubble-host";
       container.appendChild(host);
-      setBubbleHost(host);
     }
+    bubbleHostRef.current = host;
 
     // Assign line numbers to block elements
-    container.querySelectorAll("[data-line]").forEach(el => el.removeAttribute("data-line"));
     const blocks = container.querySelectorAll("p, h1, h2, h3, h4, h5, h6, li, pre, blockquote, div, table");
     let ln = 0;
     blocks.forEach((block) => {
@@ -82,53 +81,40 @@ export function ArticleView({ data, articleType, articleSlug }: Props) {
       ln++;
       el.setAttribute("data-line", String(ln));
     });
-    setTotalLines(ln);
 
-    // Apply comment markers (just the dot indicator via class)
+    // Apply comment markers (dot indicator via class)
     const counts = lineCountsRef.current;
     container.querySelectorAll("[data-line]").forEach((block) => {
       const n = parseInt(block.getAttribute("data-line")!);
       const count = counts[n] || 0;
       block.classList.toggle("has-line-comments", count > 0);
     });
+  }, [html]);
 
-    // Position bubbles next to their corresponding lines (wide screen)
-    if (window.innerWidth >= 768) {
-      host.querySelectorAll(".line-comment-bubble").forEach((bubble) => {
-        const el = bubble as HTMLElement;
+  // Position bubbles after React portal renders + handle resize
+  useEffect(() => {
+    const positionBubbles = () => {
+      const container = contentRef.current;
+      if (!container || window.innerWidth < 768) return;
+      const host = container.querySelector(".line-bubble-host") as HTMLElement | null;
+      if (!host) return;
+      host.querySelectorAll<HTMLElement>(".line-comment-bubble").forEach((el) => {
         const ln = el.dataset.bubbleLine;
         if (!ln) return;
-        const lineEl = container.querySelector(`[data-line="${ln}"]`);
-        if (lineEl) el.style.top = `${(lineEl as HTMLElement).offsetTop}px`;
+        const lineEl = container.querySelector(`[data-line="${ln}"]`) as HTMLElement | null;
+        if (lineEl) el.style.top = `${lineEl.offsetTop}px`;
       });
-    }
-  });
-
-  // Reposition bubbles on window resize (rAF-throttled)
-  useEffect(() => {
+    };
+    positionBubbles();
     let ticking = false;
     const handler = () => {
       if (ticking) return;
       ticking = true;
-      requestAnimationFrame(() => {
-        const container = contentRef.current;
-        if (!container) { ticking = false; return; }
-        if (window.innerWidth < 768) { ticking = false; return; }
-        const host = container.querySelector(".line-bubble-host") as HTMLDivElement | null;
-        if (!host) { ticking = false; return; }
-        host.querySelectorAll(".line-comment-bubble").forEach((bubble) => {
-          const el = bubble as HTMLElement;
-          const ln = el.dataset.bubbleLine;
-          if (!ln) return;
-          const lineEl = container.querySelector(`[data-line="${ln}"]`);
-          if (lineEl) el.style.top = `${(lineEl as HTMLElement).offsetTop}px`;
-        });
-        ticking = false;
-      });
+      requestAnimationFrame(() => { positionBubbles(); ticking = false; });
     };
     window.addEventListener("resize", handler);
     return () => window.removeEventListener("resize", handler);
-  }, []);
+  }, [html, commentedLines]);
 
   const openPopupForLine = useCallback((ln: number, rect: DOMRect) => {
     const cmts = lineDataRef.current[ln] || [];
@@ -204,7 +190,7 @@ export function ArticleView({ data, articleType, articleSlug }: Props) {
           {article.created_at !== article.updated_at && <time className="updated-at">· 更新于 {new Date(article.updated_at).toLocaleDateString("zh-CN")}</time>}
           {can_edit && <Link href={`/admin/articles?editType=${article.type}&editSlug=${article.slug}`} className="edit-link">✏️ 编辑</Link>}</div>
       </header>
-      <div className="content-body" ref={contentRef} onClick={handleContentClick} dangerouslySetInnerHTML={{ __html: html ?? "" }} />
+      <div className="content-body" ref={contentRef} onClick={handleContentClick} />
 
       {/* Inline comment bubbles — rendered via portal inside content-body for wide-screen positioning */}
       {(() => {
@@ -234,7 +220,7 @@ export function ArticleView({ data, articleType, articleSlug }: Props) {
             </button>
           );
         });
-        return bubbleHost ? createPortal(bubbles, bubbleHost) : bubbles;
+        return bubbleHostRef.current ? createPortal(bubbles, bubbleHostRef.current) : bubbles;
       })()}
 
       {/* Side panel */}

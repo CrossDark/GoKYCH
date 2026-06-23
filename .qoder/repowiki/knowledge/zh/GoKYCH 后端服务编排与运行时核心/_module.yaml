@@ -1,0 +1,9 @@
+schema_version: 1
+module_path: backend
+title: GoKYCH 后端服务编排与运行时核心
+scope:
+    - internal/
+    - cmd/
+source_files: []
+depends_on: []
+related_to: []

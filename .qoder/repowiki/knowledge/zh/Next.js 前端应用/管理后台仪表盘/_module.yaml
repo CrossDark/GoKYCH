@@ -1,0 +1,8 @@
+schema_version: 1
+module_path: frontend/admin_dashboard
+title: 管理后台仪表盘
+scope:
+    - web/app/admin/
+source_files: []
+depends_on: []
+related_to: []

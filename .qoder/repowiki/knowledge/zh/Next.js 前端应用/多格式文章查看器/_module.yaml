@@ -1,0 +1,12 @@
+schema_version: 1
+module_path: frontend/article_viewers
+title: 多格式文章查看器
+scope:
+    - web/app/bbcode/
+    - web/app/html/
+    - web/app/md/
+    - web/app/typst/
+    - web/app/wikidot/
+source_files: []
+depends_on: []
+related_to: []

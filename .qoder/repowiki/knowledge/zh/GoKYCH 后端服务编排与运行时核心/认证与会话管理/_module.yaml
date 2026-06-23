@@ -1,0 +1,8 @@
+schema_version: 1
+module_path: backend/auth
+title: 认证与会话管理
+scope:
+    - internal/auth/
+source_files: []
+depends_on: []
+related_to: []

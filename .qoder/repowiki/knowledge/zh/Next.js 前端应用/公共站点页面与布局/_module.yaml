@@ -1,0 +1,14 @@
+schema_version: 1
+module_path: frontend/public_site
+title: 公共站点页面与布局
+scope:
+    - web/app/about/
+    - web/app/labels/
+    - web/app/search/
+    - web/app/auth/
+    - web/app/page.tsx
+    - web/app/layout.tsx
+    - web/app/LayoutWrapper.tsx
+source_files: []
+depends_on: []
+related_to: []
