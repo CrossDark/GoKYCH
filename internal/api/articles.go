@@ -2,6 +2,7 @@ package api
 
 import (
 	"database/sql"
+	"fmt"
 	"log"
 	"net/http"
 	"regexp"
@@ -18,14 +19,21 @@ var slugRe = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
 // ── Article list ──────────────────────────────────────────────────────
 
-// GET /api/articles?type=md&page=1
+// GET /api/articles?type=md&page=1&before=123
+// `before` is a keyset cursor (article id); omit/0 for the first page. `page`
+// is kept for display only — actual pagination is cursor-based (see
+// content.ListArticles) to avoid O(offset) scans on deep pages.
 func (s *Server) listArticles(c *gin.Context) {
 	atype := strings.TrimSpace(c.Query("type"))
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	if page < 1 {
 		page = 1
 	}
-	result, err := content.ListArticles(s.DB, atype, page, 10)
+	before, _ := strconv.Atoi(c.Query("before"))
+	if before < 0 {
+		before = 0
+	}
+	result, err := content.ListArticles(s.DB, atype, page, 10, before)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载文章列表失败。"})
 		return
@@ -61,6 +69,24 @@ func (s *Server) getArticle(c *gin.Context) {
 		return
 	}
 
+	// ETag / short-TTL cache for the aggregated detail (P3-28). The tag covers
+	// only PUBLIC state (article id + last update), so it's safe to share
+	// across users. Logged-in users see per-user fields (can_edit, their own
+	// rating), so we never 304 for them and disable caching; anonymous reads
+	// get a private 30s cache + conditional 304 on a matching If-None-Match.
+	currentUser := CurrentUserFromContext(c)
+	etag := fmt.Sprintf("\"%d-%d\"", a.ID, a.UpdatedAt.Unix())
+	c.Header("ETag", etag)
+	if currentUser == nil {
+		c.Header("Cache-Control", "private, max-age=30")
+		if c.GetHeader("If-None-Match") == etag {
+			c.Status(http.StatusNotModified)
+			return
+		}
+	} else {
+		c.Header("Cache-Control", "no-store")
+	}
+
 	html := parsers.Render(parsers.ArticleType(atype), a.ID, a.Content)
 
 	comments, err := content.GetComments(s.DB, a.ID)
@@ -76,7 +102,6 @@ func (s *Server) getArticle(c *gin.Context) {
 		log.Printf("[api] getArticle %d: load line comment counts failed: %v", a.ID, err)
 	}
 
-	currentUser := CurrentUserFromContext(c)
 	voterKey := ""
 	canEdit := false
 	if currentUser != nil {

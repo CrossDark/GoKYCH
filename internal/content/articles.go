@@ -28,15 +28,25 @@ type ArticleListResult struct {
 	Page       int       `json:"page"`
 	PerPage    int       `json:"per_page"`
 	TotalPages int       `json:"total_pages"`
+	// NextBefore is the id of the last article in this page; pass it as the
+	// `before` query param to fetch the next page (keyset pagination). 0 means
+	// no more pages. Populated by ListArticles; other builders leave it 0.
+	NextBefore int `json:"next_before,omitempty"`
 }
 
-// ListArticles returns paginated articles, optionally filtered by type.
-// If atype is empty, returns all types.
-func ListArticles(db *sql.DB, atype string, page, perPage int) (*ArticleListResult, error) {
+// ListArticles returns a page of articles, optionally filtered by type.
+// Pagination is keyset-based: beforeID=0 returns the newest perPage rows,
+// beforeID=N returns the perPage rows with id < N (older). This avoids the
+// O(offset) scan of LIMIT/OFFSET on deep pages. Total/TotalPages are still
+// computed (single COUNT) for UI page indicators; Page mirrors the requested
+// page number for display.
+func ListArticles(db *sql.DB, atype string, page, perPage, beforeID int) (*ArticleListResult, error) {
 	if perPage <= 0 {
 		perPage = 10
 	}
-	offset := (page - 1) * perPage
+	if page < 1 {
+		page = 1
+	}
 
 	var total int
 	var rows *sql.Rows
@@ -47,19 +57,33 @@ func ListArticles(db *sql.DB, atype string, page, perPage int) (*ArticleListResu
 		if err != nil {
 			return nil, err
 		}
-		rows, err = db.Query(
-			`SELECT id, type, slug, title, LEFT(content, 200) AS content, author_id, created_at, updated_at
-		 FROM articles ORDER BY created_at DESC LIMIT ? OFFSET ?`,
-			perPage, offset)
+		if beforeID > 0 {
+			rows, err = db.Query(
+				`SELECT id, type, slug, title, LEFT(content, 200) AS content, author_id, created_at, updated_at
+			 FROM articles WHERE id < ? ORDER BY id DESC LIMIT ?`,
+				beforeID, perPage)
+		} else {
+			rows, err = db.Query(
+				`SELECT id, type, slug, title, LEFT(content, 200) AS content, author_id, created_at, updated_at
+			 FROM articles ORDER BY id DESC LIMIT ?`,
+				perPage)
+		}
 	} else {
 		err = db.QueryRow(`SELECT COUNT(*) FROM articles WHERE type = ?`, atype).Scan(&total)
 		if err != nil {
 			return nil, err
 		}
-		rows, err = db.Query(
-			`SELECT id, type, slug, title, LEFT(content, 200) AS content, author_id, created_at, updated_at
-		 FROM articles WHERE type = ? ORDER BY created_at DESC LIMIT ? OFFSET ?`,
-			atype, perPage, offset)
+		if beforeID > 0 {
+			rows, err = db.Query(
+				`SELECT id, type, slug, title, LEFT(content, 200) AS content, author_id, created_at, updated_at
+			 FROM articles WHERE type = ? AND id < ? ORDER BY id DESC LIMIT ?`,
+				atype, beforeID, perPage)
+		} else {
+			rows, err = db.Query(
+				`SELECT id, type, slug, title, LEFT(content, 200) AS content, author_id, created_at, updated_at
+			 FROM articles WHERE type = ? ORDER BY id DESC LIMIT ?`,
+				atype, perPage)
+		}
 	}
 	if err != nil {
 		return nil, err
@@ -92,12 +116,20 @@ func ListArticles(db *sql.DB, atype string, page, perPage int) (*ArticleListResu
 		articles[i].Tags = tagMap[articles[i].ID]
 	}
 
+	// Keyset cursor: the id of the last (oldest) row. 0 (empty page) signals
+	// the client there's no next page to fetch.
+	nextBefore := 0
+	if n := len(articles); n == perPage {
+		nextBefore = articles[n-1].ID
+	}
+
 	return &ArticleListResult{
 		Articles:   articles,
 		Total:      total,
 		Page:       page,
 		PerPage:    perPage,
 		TotalPages: totalPages,
+		NextBefore: nextBefore,
 	}, nil
 }
 

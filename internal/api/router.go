@@ -23,6 +23,8 @@ func (s *Server) Setup(r *gin.Engine) {
 		log.Printf("[api] warning: SetTrustedProxies failed: %v", err)
 	}
 
+	r.Use(securityHeaders())
+	r.Use(requestIDMiddleware())
 	r.Use(s.sessionMiddleware())
 	r.Use(s.loadUserMiddleware())
 

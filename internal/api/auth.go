@@ -231,34 +231,12 @@ func (s *Server) popSessionValue(c *gin.Context, key string) (string, bool) {
 	case string:
 		return t, true
 	case int:
-		return int64ToString(int64(t)), true
+		return strconv.FormatInt(int64(t), 10), true
 	case int64:
-		return int64ToString(t), true
+		return strconv.FormatInt(t, 10), true
 	case float64:
-		return int64ToString(int64(t)), true
+		return strconv.FormatInt(int64(t), 10), true
 	default:
 		return "", false
 	}
-}
-
-func int64ToString(n int64) string {
-	if n == 0 {
-		return "0"
-	}
-	neg := n < 0
-	if neg {
-		n = -n
-	}
-	var buf [20]byte
-	i := len(buf)
-	for n > 0 {
-		i--
-		buf[i] = byte('0' + n%10)
-		n /= 10
-	}
-	if neg {
-		i--
-		buf[i] = '-'
-	}
-	return string(buf[i:])
 }

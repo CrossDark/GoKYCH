@@ -58,10 +58,11 @@ func main() {
 	typst.SetDB(db)
 	srv := api.NewServer(db, sess, limiter, cfg.App.DataDir, cfg.App.TrustedProxies)
 
-	// 7. Set up Gin.
+	// 7. Set up Gin. gin.Recovery() stays here; access logging + request id
+	// are handled by the per-request middleware registered in srv.Setup, so
+	// we don't double-log via gin.Logger().
 	gin.SetMode(cfg.App.GinMode)
 	r := gin.New()
-	r.Use(gin.Logger())
 	r.Use(gin.Recovery())
 
 	// 8. Register routes.
