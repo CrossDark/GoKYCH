@@ -60,6 +60,8 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
       label: "管理",
       items: [
         { href: "/admin/home", label: "🏠 首页管理" },
+        { href: "/admin/tags", label: "🏷️ 标签管理" },
+        { href: "/admin/files", label: "📁 文件管理" },
         { href: "/admin/notifications", label: "🔔 通知管理" },
         { href: "/admin/users", label: "👥 用户管理" },
       ],

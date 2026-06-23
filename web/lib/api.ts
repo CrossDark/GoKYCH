@@ -211,6 +211,14 @@ export function getHome() {
   return request<import("./types").HomeData>("/home");
 }
 
+// ── Site config ──────────────────────────────────────────────────
+//
+// One-shot read of title/subtitle/theme/ICP/subsite_links, used by the
+// global Header and LayoutWrapper footer. Public endpoint, no auth.
+export function getSite() {
+  return request<import("./types").SiteConfig>("/site");
+}
+
 // ── Labels ────────────────────────────────────────────────────────
 export function listLabels() {
   return request<import("./types").TagWithCount[]>("/labels");
@@ -356,5 +364,94 @@ export function updateProfile(csrf: string, body: { nickname?: string; bio?: str
     method: "PUT",
     headers: { "X-CSRF-Token": csrf },
     body: JSON.stringify(body),
+  });
+}
+
+// ── Admin: Tags (full CRUD) ─────────────────────────────────────────
+// Used by /admin/tags — the public /api/labels endpoint only returns tags
+// that have at least one article, so admins need a separate route to manage
+// empty tags too.
+export function listAdminTags(csrf: string) {
+  return request<import("./types").AdminTag[]>("/admin/tags", {
+    headers: { "X-CSRF-Token": csrf },
+  });
+}
+
+export function createTag(csrf: string, name: string) {
+  return request<{ id: number; status: string; existed?: boolean }>("/admin/tags", {
+    method: "POST",
+    headers: { "X-CSRF-Token": csrf },
+    body: JSON.stringify({ name }),
+  });
+}
+
+export function renameTag(csrf: string, id: number, name: string) {
+  return request<{ status: string }>(`/admin/tags/${id}`, {
+    method: "PUT",
+    headers: { "X-CSRF-Token": csrf },
+    body: JSON.stringify({ name }),
+  });
+}
+
+export function deleteAdminTag(csrf: string, id: number) {
+  return request<{ status: string }>(`/admin/tags/${id}`, {
+    method: "DELETE",
+    headers: { "X-CSRF-Token": csrf },
+  });
+}
+
+// ── Admin: Files (upload/delete) ────────────────────────────────────
+// listAdminFiles is already declared above; uploadFile/deleteFile cover the
+// write paths.
+export function uploadFile(csrf: string, file: File) {
+  const fd = new FormData();
+  fd.append("file", file);
+  // When sending FormData the browser sets its own multipart Content-Type
+  // with boundary — passing "Content-Type: application/json" from `request`
+  // would break the upload, so we build the fetch manually.
+  const headers: Record<string, string> = { "X-CSRF-Token": csrf };
+  if (typeof window === "undefined") {
+    // Server-side upload isn't expected in this UI, but keep the path working
+    // if it ever is.
+    return import("next/headers").then(async ({ cookies }) => {
+      const jar = await cookies();
+      const cookieStr = jar.getAll().map((c) => `${c.name}=${c.value}`).join("; ");
+      headers["Cookie"] = cookieStr;
+      const res = await fetch(`${process.env.API_BASE_URL || "http://localhost:8000"}/api/admin/files`, {
+        method: "POST",
+        headers,
+        body: fd,
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new ApiError(res.status, body.error || "上传失败");
+      }
+      return res.json() as Promise<{ status: string; filename: string; url: string; deduped?: boolean }>;
+    });
+  }
+  return fetch(`/api/admin/files`, {
+    method: "POST",
+    headers,
+    body: fd,
+    credentials: "include",
+  }).then(async (res) => {
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new ApiError(res.status, body.error || "上传失败");
+    }
+    return res.json() as Promise<{ status: string; filename: string; url: string; deduped?: boolean }>;
+  });
+}
+
+export function deleteAdminFile(csrf: string, id: number) {
+  return request<{ status: string }>(`/admin/files/${id}`, {
+    method: "DELETE",
+    headers: { "X-CSRF-Token": csrf },
+  });
+}
+
+export function listAdminFiles(csrf: string) {
+  return request<import("./types").AdminFile[]>("/admin/files", {
+    headers: { "X-CSRF-Token": csrf },
   });
 }

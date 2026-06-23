@@ -4,7 +4,7 @@ import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 import { useTheme } from "next-themes";
 import type { User, SubsiteLink } from "@/lib/types";
-import { getMe, listLabels, getHome } from "@/lib/api";
+import { getMe, listLabels, getSite } from "@/lib/api";
 import type { TagWithCount } from "@/lib/types";
 
 export function Header() {
@@ -16,7 +16,8 @@ export function Header() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [tags, setTags] = useState<TagWithCount[]>([]);
 
-  // Subsite links (admin-editable nav links)
+  // Subsite links (admin-editable nav links, served from /api/site so we
+  // don't double-fetch with the homepage).
   const [subsiteLinks, setSubsiteLinks] = useState<SubsiteLink[]>([]);
 
   useEffect(() => {
@@ -28,8 +29,10 @@ export function Header() {
     listLabels()
       .then(setTags)
       .catch(() => {});
-    // Load subsite links for navigation
-    getHome()
+    // Load subsite links (and other nav config) from /api/site — one
+    // round-trip covers title/theme/footer-ICP/subsite_links for the
+    // whole header+layout.
+    getSite()
       .then((d) => setSubsiteLinks(d.subsite_links ?? []))
       .catch(() => {});
   }, []);

@@ -115,3 +115,56 @@ export interface TagWithCount {
   name: string;
   count: number;
 }
+
+// ── Site config ───────────────────────────────────────────────────────
+//
+// Returned by GET /api/site. The frontend (Header, LayoutWrapper, footer)
+// reads this once at mount to render title/subtitle/theme/ICP/subsite_links.
+export interface SiteConfig {
+  site: {
+    title: string;
+    subtitle: string;
+    description: string;
+    language: string;
+    timezone: string;
+    logo_path: string;
+    favicon_path: string;
+    icp_number: string;
+  };
+  appearance: {
+    font_family: string;
+    primary_color: string;
+    style_theme: string;
+    theme: string;
+  };
+  features: {
+    enable_comments: boolean;
+    enable_dark_mode: boolean;
+    enable_search: boolean;
+    enable_tags_sidebar: boolean;
+    posts_per_page: number;
+  };
+  social: {
+    email: string;
+    github: string;
+    twitter: string;
+  };
+  subsite_links: SubsiteLink[];
+}
+
+// ── Admin: Tags ───────────────────────────────────────────────────────
+export interface AdminTag {
+  id: number;
+  name: string;
+  count: number;
+}
+
+// ── Admin: Files ──────────────────────────────────────────────────────
+export interface AdminFile {
+  id: number;
+  filename: string;
+  original_name: string;
+  file_size: number;
+  mime_type: string;
+  created_at: string;
+}
