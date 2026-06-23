@@ -2,7 +2,7 @@ package content
 
 import (
 	"database/sql"
-	"log"
+	"log/slog"
 	"math"
 	"strings"
 	"time"
@@ -180,7 +180,7 @@ func UpdateArticle(db *sql.DB, atype, slug, title, content string) (*Article, er
 	// stale. (Article deletion is handled by the ON DELETE CASCADE fk on
 	// typst_cache, so DeleteArticle needs no extra step.)
 	if _, derr := db.Exec(`DELETE FROM typst_cache WHERE article_id = ?`, a.ID); derr != nil {
-		log.Printf("[content] warn: failed to invalidate typst_cache for article %d: %v", a.ID, derr)
+		slog.Warn("failed to invalidate typst_cache", "article_id", a.ID, "err", derr)
 	}
 	return a, nil
 }
@@ -279,6 +279,15 @@ func SearchArticles(db *sql.DB, q string, page, perPage int) (*ArticleListResult
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
+	}
+
+	// Batch-fetch tags for all articles.
+	tagMap, err := GetTagsForArticlesBatch(db, articles)
+	if err != nil {
+		return nil, err
+	}
+	for i := range articles {
+		articles[i].Tags = tagMap[articles[i].ID]
 	}
 
 	totalPages := int(math.Ceil(float64(total) / float64(perPage)))

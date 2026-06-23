@@ -1,7 +1,7 @@
 package api
 
 import (
-	"log"
+	"log/slog"
 
 	"github.com/gin-gonic/gin"
 )
@@ -20,11 +20,11 @@ func (s *Server) Setup(r *gin.Engine) {
 		tp = []string{}
 	}
 	if err := r.SetTrustedProxies(tp); err != nil {
-		log.Printf("[api] warning: SetTrustedProxies failed: %v", err)
+		slog.Warn("SetTrustedProxies failed", "err", err)
 	}
 
 	r.Use(securityHeaders())
-	r.Use(requestIDMiddleware())
+	r.Use(s.requestIDMiddleware())
 	r.Use(s.sessionMiddleware())
 	r.Use(s.loadUserMiddleware())
 
@@ -98,6 +98,9 @@ func (s *Server) Setup(r *gin.Engine) {
 
 				adminG.GET("/files", requireAdmin, s.listFiles)
 
+				// Metrics (admin+)
+				adminG.GET("/metrics", requireAdmin, s.getMetrics)
+
 				adminG.GET("/profile", s.getProfile)
 				adminG.PUT("/profile", s.updateProfile)
 			}
@@ -107,4 +110,10 @@ func (s *Server) Setup(r *gin.Engine) {
 
 func healthHandler(c *gin.Context) {
 	c.JSON(200, gin.H{"status": "ok"})
+}
+
+// GET /api/admin/metrics — returns basic request metrics (total, status
+// distribution, average latency). Admin-only to avoid leaking operational data.
+func (s *Server) getMetrics(c *gin.Context) {
+	c.JSON(200, s.Metrics.Snapshot())
 }

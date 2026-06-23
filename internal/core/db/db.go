@@ -3,7 +3,7 @@ package db
 import (
 	"database/sql"
 	"fmt"
-	"log"
+	"log/slog"
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
@@ -32,7 +32,7 @@ func Init(cfg config.Config) (*sql.DB, error) {
 	if _, err := dbNoDB.Exec(createSQL); err != nil {
 		return nil, fmt.Errorf("create database %s: %w", mysql.Database, err)
 	}
-	log.Printf("[db] ensured database %q exists", mysql.Database)
+	slog.Info("database ensured", "name", mysql.Database)
 
 	// Step 2: connect with database.
 	dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?charset=%s&parseTime=true&timeout=10s&readTimeout=30s&writeTimeout=30s",
@@ -55,9 +55,14 @@ func Init(cfg config.Config) (*sql.DB, error) {
 		return nil, fmt.Errorf("ping mysql: %w", err)
 	}
 
-	log.Printf("[db] connected to %s:%d/%s (pool: min=%d, max=%d, recycle=%ds)",
-		mysql.Host, mysql.Port, mysql.Database,
-		mysql.Pool.MinSize, mysql.Pool.MaxSize, mysql.Pool.PoolRecycle)
+	slog.Info("database connected",
+		"host", mysql.Host,
+		"port", mysql.Port,
+		"database", mysql.Database,
+		"pool_min", mysql.Pool.MinSize,
+		"pool_max", mysql.Pool.MaxSize,
+		"pool_recycle_s", mysql.Pool.PoolRecycle,
+	)
 
 	return db, nil
 }

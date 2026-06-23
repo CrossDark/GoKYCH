@@ -1,7 +1,7 @@
 package api
 
 import (
-	"log"
+	"log/slog"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -35,7 +35,7 @@ func (s *Server) loadUserMiddleware() gin.HandlerFunc {
 		// Persist any session mutations (e.g. last_activity refresh). Surface
 		// failures so "莫名掉登录" is debuggable instead of silently swallowed.
 		if err := s.sessions.PersistSession(c.Writer, c.Request); err != nil {
-			log.Printf("[session] PersistSession error: %v", err)
+			slog.Error("session persist", "err", err)
 		}
 	}
 }

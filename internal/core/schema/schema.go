@@ -3,7 +3,7 @@ package schema
 import (
 	"database/sql"
 	"fmt"
-	"log"
+	"log/slog"
 
 	"golang.org/x/crypto/bcrypt"
 )
@@ -16,7 +16,53 @@ func Init(db *sql.DB) error {
 			return fmt.Errorf("[schema] create table failed: %w", err)
 		}
 	}
-	log.Println("[schema] all tables initialized")
+	// Run migrations for columns/indexes that may be missing on databases
+	// created before the column was added (CREATE TABLE IF NOT EXISTS does
+	// not retroactively add columns).
+	if err := runMigrations(db); err != nil {
+		return fmt.Errorf("[schema] migration failed: %w", err)
+	}
+	slog.Info("all tables initialized")
+	return nil
+}
+
+// runMigrations adds missing columns and indexes to existing tables.
+// Each statement uses information_schema checks so it's safe to run
+// multiple times without errors.
+func runMigrations(db *sql.DB) error {
+	migrations := []string{
+		// comments.user_id — added to bind comments to logged-in users.
+		`SELECT 1 FROM information_schema.COLUMNS
+		  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'comments' AND COLUMN_NAME = 'user_id'
+		  HAVING COUNT(*) = 0`,
+		`ALTER TABLE comments ADD COLUMN user_id INT DEFAULT NULL AFTER line_number`,
+		`ALTER TABLE comments ADD INDEX idx_comment_user (user_id)`,
+
+		// ratings.user_id — added to bind ratings to logged-in users.
+		`SELECT 1 FROM information_schema.COLUMNS
+		  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'ratings' AND COLUMN_NAME = 'user_id'
+		  HAVING COUNT(*) = 0`,
+		`ALTER TABLE ratings ADD COLUMN user_id INT DEFAULT NULL AFTER article_id`,
+		`ALTER TABLE ratings ADD INDEX idx_rating_user (user_id)`,
+
+		// ratings.voter_key — deduplication key for ratings.
+		`SELECT 1 FROM information_schema.COLUMNS
+		  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'ratings' AND COLUMN_NAME = 'voter_key'
+		  HAVING COUNT(*) = 0`,
+		`ALTER TABLE ratings ADD COLUMN voter_key VARCHAR(141) NOT NULL DEFAULT 'n:匿名' AFTER author_name`,
+	}
+	for i := 0; i < len(migrations); i += 2 {
+		check := migrations[i]
+		stmt := migrations[i+1]
+		var dummy int
+		err := db.QueryRow(check).Scan(&dummy)
+		if err == sql.ErrNoRows {
+			// Column is missing — run the ALTER.
+			if _, err := db.Exec(stmt); err != nil {
+				slog.Warn("migration skipped (may already exist)", "stmt", stmt, "err", err)
+			}
+		}
+	}
 	return nil
 }
 
@@ -25,14 +71,14 @@ func Init(db *sql.DB) error {
 func SeedAdmin(db *sql.DB, username, password string) {
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), 12)
 	if err != nil {
-		log.Printf("[schema] error: bcrypt hash failed: %v", err)
+		slog.Error("bcrypt hash failed", "err", err)
 		return
 	}
 
 	var count int
 	err = db.QueryRow("SELECT COUNT(*) FROM users WHERE username = ?", username).Scan(&count)
 	if err != nil {
-		log.Printf("[schema] error: check admin: %v", err)
+		slog.Error("check admin", "err", err)
 		return
 	}
 
@@ -42,10 +88,10 @@ func SeedAdmin(db *sql.DB, username, password string) {
 			username, string(hash), username,
 		)
 		if err != nil {
-			log.Printf("[schema] error: seed admin: %v", err)
+			slog.Error("seed admin", "err", err)
 			return
 		}
-		log.Printf("[schema] seeded admin user %q", username)
+		slog.Info("seeded admin user", "username", username)
 	} else {
 		// Promote admin → owner if needed.
 		res, err := db.Exec(
@@ -53,12 +99,12 @@ func SeedAdmin(db *sql.DB, username, password string) {
 			username,
 		)
 		if err != nil {
-			log.Printf("[schema] error: promote admin: %v", err)
+			slog.Error("promote admin", "err", err)
 			return
 		}
 		n, _ := res.RowsAffected()
 		if n > 0 {
-			log.Printf("[schema] promoted existing admin %q to owner", username)
+			slog.Info("promoted existing admin to owner", "username", username)
 		}
 	}
 }

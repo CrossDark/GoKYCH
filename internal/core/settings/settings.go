@@ -1,7 +1,7 @@
 package settings
 
 import (
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 
@@ -65,6 +65,6 @@ func Ensure(dataDir string) error {
 		return err
 	}
 
-	log.Printf("[settings] created default settings.yml at %s", path)
+	slog.Info("created default settings.yml", "path", path)
 	return nil
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -17,22 +18,32 @@ import (
 	"gokych/internal/auth/session"
 	"gokych/internal/config"
 	coredb "gokych/internal/core/db"
+	"gokych/internal/core/logging"
+	"gokych/internal/core/metrics"
 	"gokych/internal/core/schema"
 	"gokych/internal/core/settings"
 	"gokych/internal/typst"
 )
 
 func main() {
-	// 1. Load configuration.
+	// 0. Load configuration.
 	cfg := config.Load()
-	log.Printf("[main] config: db=%s:%d/%s, port=%d, gin_mode=%s",
-		cfg.MySQL.Host, cfg.MySQL.Port, cfg.MySQL.Database,
-		cfg.App.Port, cfg.App.GinMode)
+
+	// 0a. Initialise structured logging (slog) as early as possible so all
+	// subsequent startup diagnostics go through it.
+	logging.Init(cfg.App.GinMode)
+	slog.Info("config loaded",
+		"db_host", cfg.MySQL.Host,
+		"db_port", cfg.MySQL.Port,
+		"db_name", cfg.MySQL.Database,
+		"port", cfg.App.Port,
+		"gin_mode", cfg.App.GinMode,
+	)
 
 	// 2. Ensure data directories and default settings exist.
 	cfg.EnsureDataDirs()
 	if err := settings.Ensure(cfg.App.DataDir); err != nil {
-		log.Printf("[main] warning: failed to create default settings.yml: %v", err)
+		slog.Warn("failed to create default settings.yml", "err", err)
 	}
 
 	// 3. Initialize database connection pool.
@@ -50,13 +61,14 @@ func main() {
 	// 5. Seed default admin.
 	schema.SeedAdmin(db, cfg.App.AdminUsername, cfg.App.AdminPassword)
 
-	// 6. Set up session manager + rate limiter.
+	// 6. Set up session manager + rate limiter + metrics.
 	secure := cfg.App.GinMode == "release"
 	sess := session.New(db, cfg.App.SessionSecret, secure)
 	limiter := ratelimit.New()
+	m := metrics.New()
 	// typst.SetDB lets typst.CompileHTMLCached consult typst_cache.
 	typst.SetDB(db)
-	srv := api.NewServer(db, sess, limiter, cfg.App.DataDir, cfg.App.TrustedProxies)
+	srv := api.NewServer(db, sess, limiter, m, cfg.App.DataDir, cfg.App.TrustedProxies)
 
 	// 7. Set up Gin. gin.Recovery() stays here; access logging + request id
 	// are handled by the per-request middleware registered in srv.Setup, so
@@ -76,7 +88,7 @@ func main() {
 	}
 
 	go func() {
-		log.Printf("[main] server starting on %s", addr)
+		slog.Info("server starting", "addr", addr)
 		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("[main] server error: %v", err)
 		}
@@ -87,11 +99,11 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
-	log.Println("[main] shutting down...")
+	slog.Info("shutting down...")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := httpSrv.Shutdown(ctx); err != nil {
-		log.Printf("[main] shutdown error: %v", err)
+		slog.Error("shutdown error", "err", err)
 	}
-	log.Println("[main] server stopped")
+	slog.Info("server stopped")
 }

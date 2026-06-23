@@ -2,7 +2,7 @@ package parsers
 
 import (
 	"html/template"
-	"log"
+	"log/slog"
 	"strings"
 
 	"gokych/internal/typst"
@@ -82,7 +82,7 @@ func renderTypst(articleID int, source string) string {
 	}
 	body, err := typst.CompileHTMLCached(articleID, source)
 	if err != nil {
-		log.Printf("[render] typst compile error: %v", err)
+		slog.Error("typst compile", "err", err)
 		return "<p><em>Typst 编译失败：" + err.Error() + "</em></p>"
 	}
 	return body
@@ -97,12 +97,12 @@ func renderTypstUncached(source string) string {
 	}
 	body, err := typst.CompileHTML(source)
 	if err != nil {
-		log.Printf("[render] typst line compile error: %v", err)
+		slog.Error("typst line compile", "err", err)
 		return "<p><em>Typst 编译失败：" + err.Error() + "</em></p>"
 	}
 	return body
 }
 
 func init() {
-	log.Println("[parsers] loaded markdown, wikidot, bbcode, html renderers")
+	slog.Info("loaded markdown, wikidot, bbcode, html renderers")
 }

@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -153,7 +153,7 @@ func CompileHTMLCached(articleID int, source string) (string, error) {
 		return html, nil
 	}
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		log.Printf("[typst] cache lookup error for article %d: %v", articleID, err)
+		slog.Error("typst cache lookup", "article_id", articleID, "err", err)
 	}
 	body, err := CompileHTML(source)
 	if err != nil {
@@ -167,7 +167,7 @@ func CompileHTMLCached(articleID int, source string) (string, error) {
 		 ON DUPLICATE KEY UPDATE html_content = VALUES(html_content), compiled_at = CURRENT_TIMESTAMP`,
 		articleID, body, []byte{},
 	); werr != nil {
-		log.Printf("[typst] cache write error for article %d: %v", articleID, werr)
+		slog.Error("typst cache write", "article_id", articleID, "err", werr)
 	}
 	return body, nil
 }
@@ -188,8 +188,8 @@ func extractBody(html string) string {
 
 func init() {
 	if p := Path(); p != "" {
-		log.Printf("[typst] found typst CLI at %s", p)
+		slog.Info("typst CLI found", "path", p)
 	} else {
-		log.Println("[typst] typst CLI not found — typst articles will show placeholder")
+		slog.Warn("typst CLI not found — typst articles will show placeholder")
 	}
 }

@@ -1,7 +1,7 @@
 package config
 
 import (
-	"log"
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
@@ -118,7 +118,7 @@ func (c *Config) loadYAML() {
 	}
 	var raw mysqlYAML
 	if err := yaml.Unmarshal(data, &raw); err != nil {
-		log.Printf("[config] warning: failed to parse %s: %v", path, err)
+		slog.Warn("failed to parse yaml", "path", path, "err", err)
 		return
 	}
 	// Merge field-by-field instead of c.MySQL = raw.MySQL: a whole-struct
@@ -193,7 +193,7 @@ func (c *Config) EnsureDataDirs() {
 	}
 	for _, dir := range dirs {
 		if err := os.MkdirAll(dir, 0755); err != nil {
-			log.Printf("[config] warning: failed to create dir %s: %v", dir, err)
+			slog.Warn("failed to create data dir", "dir", dir, "err", err)
 		}
 	}
 }
@@ -212,7 +212,7 @@ func envIntOr(key string, fallback int) int {
 		if n, err := strconv.Atoi(v); err == nil {
 			return n
 		}
-		log.Printf("[config] warning: %s=%q is not a valid int, using default %d", key, v, fallback)
+		slog.Warn("invalid int env, using default", "key", key, "value", v, "default", fallback)
 	}
 	return fallback
 }

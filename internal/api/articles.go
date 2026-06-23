@@ -3,7 +3,7 @@ package api
 import (
 	"database/sql"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -91,15 +91,15 @@ func (s *Server) getArticle(c *gin.Context) {
 
 	comments, err := content.GetComments(s.DB, a.ID)
 	if err != nil {
-		log.Printf("[api] getArticle %d: load comments failed: %v", a.ID, err)
+		slog.Error("getArticle: load comments", "article_id", a.ID, "err", err)
 	}
 	lineComments, err := content.GetLineComments(s.DB, a.ID)
 	if err != nil {
-		log.Printf("[api] getArticle %d: load line comments failed: %v", a.ID, err)
+		slog.Error("getArticle: load line comments", "article_id", a.ID, "err", err)
 	}
 	lineCounts, err := content.GetLineCommentCounts(s.DB, a.ID)
 	if err != nil {
-		log.Printf("[api] getArticle %d: load line comment counts failed: %v", a.ID, err)
+		slog.Error("getArticle: load line comment counts", "article_id", a.ID, "err", err)
 	}
 
 	voterKey := ""
@@ -114,7 +114,7 @@ func (s *Server) getArticle(c *gin.Context) {
 	}
 	rating, err := content.GetRatingSummary(s.DB, a.ID, voterKey)
 	if err != nil {
-		log.Printf("[api] getArticle %d: load rating failed: %v", a.ID, err)
+		slog.Error("getArticle: load rating", "article_id", a.ID, "err", err)
 	}
 
 	c.JSON(http.StatusOK, ArticleDetail{
