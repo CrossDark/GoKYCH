@@ -1823,6 +1823,29 @@ hr {
     font-weight: 500;
 }
 
+.wp-admin-nav-icon {
+    display: inline-block;
+    width: 18px;
+    text-align: center;
+    font-size: 0.95rem;
+    flex-shrink: 0;
+}
+.wp-admin-nav-label-text {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* ── Content wrapper (topbar + main) ── */
+.wp-admin-content {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    background: var(--wp-bg);
+}
+
 /* ── Sidebar footer (full-width, no radius) ── */
 .wp-admin-sidebar-footer {
     padding: 0.55rem 0.75rem;
