@@ -3,14 +3,19 @@
 import { useState, useEffect } from "react";
 import { getCsrf, listNotifications, createNotification, updateNotification, deleteNotification } from "@/lib/api";
 import type { Notification } from "@/lib/types";
+import { useToast, useBeforeUnload } from "@/lib/admin-feedback";
+import { AdminConfirm } from "@/components/admin/AdminConfirm";
 
 export default function AdminNotifications() {
   const [csrf, setCsrf] = useState("");
   const [notifications, setNotifications] = useState<Notification[]>([]);
+  const toast = useToast();
   const [msg, setMsg] = useState<{ kind: "success" | "error"; text: string } | null>(null);
   const [editing, setEditing] = useState<Notification | null>(null);
   const [form, setForm] = useState({ title: "", content: "", is_important: false });
   const [submitting, setSubmitting] = useState(false);
+  const [pendingDelete, setPendingDelete] = useState<number | null>(null);
+  const isDirty = !!(form.title || form.content);
 
   const load = () => {
     if (!csrf) return;
@@ -31,11 +36,13 @@ export default function AdminNotifications() {
     setSubmitting(true);
     try {
       await createNotification(csrf, { title: form.title, content: form.content, is_important: form.is_important });
-      setMsg({ kind: "success", text: "通知已创建。" });
+      toast.success("通知已创建。");
       setForm({ title: "", content: "", is_important: false });
       load();
     } catch (err: any) {
-      setMsg({ kind: "error", text: err.message || "创建失败。" });
+      const text = err.message || "创建失败。";
+      setMsg({ kind: "error", text });
+      toast.error(text);
     } finally {
       setSubmitting(false);
     }
@@ -53,12 +60,14 @@ export default function AdminNotifications() {
     setSubmitting(true);
     try {
       await updateNotification(csrf, editing.id, { title: form.title, content: form.content, is_important: form.is_important });
-      setMsg({ kind: "success", text: "通知已更新。" });
+      toast.success("通知已更新。");
       setEditing(null);
       setForm({ title: "", content: "", is_important: false });
       load();
     } catch (err: any) {
-      setMsg({ kind: "error", text: err.message || "更新失败。" });
+      const text = err.message || "更新失败。";
+      setMsg({ kind: "error", text });
+      toast.error(text);
     } finally {
       setSubmitting(false);
     }
@@ -68,22 +77,30 @@ export default function AdminNotifications() {
     const currentActive = n.is_active !== false;
     try {
       await updateNotification(csrf, n.id, { is_active: !currentActive });
+      toast.info(currentActive ? "已暂停通知。" : "已启用通知。");
       load();
     } catch (err: any) {
-      setMsg({ kind: "error", text: err.message || "操作失败。" });
+      toast.error(err.message || "操作失败。");
     }
   };
 
-  const handleDelete = async (id: number) => {
-    if (!confirm("确定删除此通知吗？")) return;
+  const handleDelete = (id: number) => setPendingDelete(id);
+  const confirmDelete = async () => {
+    if (pendingDelete === null) return;
+    const id = pendingDelete;
     try {
       await deleteNotification(csrf, id);
-      setMsg({ kind: "success", text: "通知已删除。" });
+      toast.success("通知已删除。");
       load();
     } catch (err: any) {
-      setMsg({ kind: "error", text: err.message || "删除失败。" });
+      toast.error(err.message || "删除失败。");
+      throw err;
+    } finally {
+      setPendingDelete(null);
     }
   };
+
+  useBeforeUnload(isDirty && !submitting);
 
   return (
     <div className="admin-notifications">
@@ -117,12 +134,25 @@ export default function AdminNotifications() {
         <div className="admin-card-body">
           <form onSubmit={editing ? handleUpdate : handleCreate} className="admin-form">
             <div className="admin-form-group">
-              <label>标题 <span style={{ color: "var(--admin-danger)" }}>*</span></label>
-              <input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} required maxLength={120} />
+              <label htmlFor="notif-title">
+                标题
+                <span style={{ color: "var(--admin-danger)", marginLeft: 4 }} aria-hidden="true">*</span>
+              </label>
+              <input
+                id="notif-title"
+                value={form.title}
+                onChange={(e) => setForm({ ...form, title: e.target.value })}
+                required
+                maxLength={120}
+              />
             </div>
             <div className="admin-form-group">
-              <label>内容 <span style={{ color: "var(--admin-danger)" }}>*</span></label>
+              <label htmlFor="notif-content">
+                内容
+                <span style={{ color: "var(--admin-danger)", marginLeft: 4 }} aria-hidden="true">*</span>
+              </label>
               <textarea
+                id="notif-content"
                 value={form.content}
                 onChange={(e) => setForm({ ...form, content: e.target.value })}
                 rows={4}
@@ -132,8 +162,12 @@ export default function AdminNotifications() {
               />
             </div>
             <div className="admin-form-group">
-              <label style={{ display: "flex", alignItems: "center", gap: "0.5rem", cursor: "pointer", fontWeight: 500 }}>
+              <label
+                htmlFor="notif-important"
+                style={{ display: "flex", alignItems: "center", gap: "0.5rem", cursor: "pointer", fontWeight: 500 }}
+              >
                 <input
+                  id="notif-important"
                   type="checkbox"
                   checked={form.is_important}
                   onChange={(e) => setForm({ ...form, is_important: e.target.checked })}
@@ -143,8 +177,12 @@ export default function AdminNotifications() {
               </label>
             </div>
             <div className="admin-form-actions">
-              <button type="submit" className="admin-btn admin-btn-primary" disabled={submitting}>
-                {submitting ? "保存中…" : editing ? "保存修改" : "创建通知"}
+              <button
+                type="submit"
+                className={`admin-btn admin-btn-primary ${submitting ? "admin-btn-loading" : ""}`}
+                disabled={submitting}
+              >
+                {editing ? "保存修改" : "创建通知"}
               </button>
               <div className="admin-form-actions-spacer" />
               <span style={{ fontSize: "0.78rem", color: "var(--text-muted)" }}>
@@ -220,6 +258,16 @@ export default function AdminNotifications() {
           )}
         </div>
       </div>
+
+      <AdminConfirm
+        open={pendingDelete !== null}
+        title="删除通知"
+        message="确定要删除此通知吗？此操作不可撤销。"
+        confirmText="删除"
+        variant="danger"
+        onConfirm={confirmDelete}
+        onCancel={() => setPendingDelete(null)}
+      />
     </div>
   );
 }

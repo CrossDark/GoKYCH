@@ -3,17 +3,21 @@
 import { useEffect, useState } from "react";
 import { getCsrf, listAdminTags, createTag, renameTag, deleteAdminTag } from "@/lib/api";
 import type { AdminTag } from "@/lib/types";
+import { useToast } from "@/lib/admin-feedback";
+import { AdminConfirm } from "@/components/admin/AdminConfirm";
 
 export default function AdminTags() {
   const [csrf, setCsrf] = useState("");
   const [tags, setTags] = useState<AdminTag[]>([]);
   const [loading, setLoading] = useState(true);
+  const toast = useToast();
   const [msg, setMsg] = useState<{ kind: "success" | "error" | "info"; text: string } | null>(null);
   const [newName, setNewName] = useState("");
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editingName, setEditingName] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [search, setSearch] = useState("");
+  const [pendingDelete, setPendingDelete] = useState<AdminTag | null>(null);
 
   const load = () => {
     if (!csrf) return;
@@ -43,14 +47,16 @@ export default function AdminTags() {
     setSubmitting(true);
     try {
       const r = await createTag(csrf, name);
-      setMsg({
-        kind: r.existed ? "info" : "success",
-        text: r.existed ? `标签「${name}」已存在。` : `标签「${name}」已创建。`,
-      });
+      const text = r.existed ? `标签「${name}」已存在。` : `标签「${name}」已创建。`;
+      setMsg({ kind: r.existed ? "info" : "success", text });
+      if (r.existed) toast.info(text);
+      else toast.success(text);
       setNewName("");
       load();
     } catch (err: any) {
-      setMsg({ kind: "error", text: err.message || "创建失败。" });
+      const text = err.message || "创建失败。";
+      setMsg({ kind: "error", text });
+      toast.error(text);
     } finally {
       setSubmitting(false);
     }
@@ -75,23 +81,29 @@ export default function AdminTags() {
     setMsg(null);
     try {
       await renameTag(csrf, id, name);
-      setMsg({ kind: "success", text: "标签已重命名。" });
+      toast.success("标签已重命名。");
       cancelRename();
       load();
     } catch (err: any) {
-      setMsg({ kind: "error", text: err.message || "重命名失败。" });
+      const text = err.message || "重命名失败。";
+      setMsg({ kind: "error", text });
+      toast.error(text);
     }
   };
 
-  const handleDelete = async (t: AdminTag) => {
-    if (!confirm(`确定删除标签「${t.name}」吗？这会从所有引用此标签的文章上解除关联。`)) return;
-    setMsg(null);
+  const handleDelete = (t: AdminTag) => setPendingDelete(t);
+  const confirmDelete = async () => {
+    if (!pendingDelete) return;
+    const t = pendingDelete;
     try {
       await deleteAdminTag(csrf, t.id);
-      setMsg({ kind: "success", text: `标签「${t.name}」已删除。` });
+      toast.success(`标签「${t.name}」已删除。`);
       load();
     } catch (err: any) {
-      setMsg({ kind: "error", text: err.message || "删除失败。" });
+      toast.error(err.message || "删除失败。");
+      throw err;
+    } finally {
+      setPendingDelete(null);
     }
   };
 
@@ -126,20 +138,31 @@ export default function AdminTags() {
           <form onSubmit={handleCreate} className="admin-form">
             <div className="admin-form-row" style={{ gridTemplateColumns: "2fr 1fr" }}>
               <div className="admin-form-group">
-                <label>标签名 <span style={{ color: "var(--admin-danger)" }}>*</span></label>
+                <label htmlFor="tag-name">
+                  标签名
+                  <span style={{ color: "var(--admin-danger)", marginLeft: 4 }} aria-hidden="true">*</span>
+                </label>
                 <input
+                  id="tag-name"
                   value={newName}
                   onChange={(e) => setNewName(e.target.value)}
                   placeholder="例如：typescript / react / backend"
                   maxLength={64}
                   required
+                  aria-describedby="tag-name-hint"
                 />
-                <div className="admin-form-hint">最多 64 字符，建议用小写 + 短横线</div>
+                <div id="tag-name-hint" className="admin-form-hint">
+                  最多 64 字符，建议用小写 + 短横线
+                </div>
               </div>
               <div className="admin-form-group" style={{ justifyContent: "flex-end" }}>
                 <label>&nbsp;</label>
-                <button type="submit" className="admin-btn admin-btn-primary" disabled={submitting}>
-                  {submitting ? "创建中…" : "创建标签"}
+                <button
+                  type="submit"
+                  className={`admin-btn admin-btn-primary ${submitting ? "admin-btn-loading" : ""}`}
+                  disabled={submitting}
+                >
+                  创建标签
                 </button>
               </div>
             </div>
@@ -240,6 +263,16 @@ export default function AdminTags() {
           )}
         </div>
       </div>
+
+      <AdminConfirm
+        open={!!pendingDelete}
+        title="删除标签"
+        message={pendingDelete ? `确定要删除标签「${pendingDelete.name}」吗？这会从所有引用此标签的文章上解除关联。` : ""}
+        confirmText="删除"
+        variant="danger"
+        onConfirm={confirmDelete}
+        onCancel={() => setPendingDelete(null)}
+      />
     </div>
   );
 }

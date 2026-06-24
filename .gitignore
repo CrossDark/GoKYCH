@@ -57,3 +57,6 @@ data/settings/settings.yml
 web/node_modules/
 web/.next/
 web/*.log
+# TypeScript incremental build cache (regenerated on every build)
+web/tsconfig.tsbuildinfo
+web/tsconfig.tsbuildinfo.*

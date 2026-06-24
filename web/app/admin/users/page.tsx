@@ -3,6 +3,8 @@
 import { useState, useEffect } from "react";
 import { getCsrf, listUsers, createUser, updateUserRole, deleteUser } from "@/lib/api";
 import type { User } from "@/lib/types";
+import { useToast, useBeforeUnload } from "@/lib/admin-feedback";
+import { AdminConfirm } from "@/components/admin/AdminConfirm";
 
 const ROLE_BADGE: Record<string, string> = {
   owner: "danger",
@@ -19,10 +21,13 @@ const ROLE_LABEL: Record<string, string> = {
 export default function AdminUsers() {
   const [csrf, setCsrf] = useState("");
   const [users, setUsers] = useState<User[]>([]);
+  const toast = useToast();
   const [msg, setMsg] = useState<{ kind: "success" | "error"; text: string } | null>(null);
   const [search, setSearch] = useState("");
   const [form, setForm] = useState({ username: "", password: "", nickname: "", role: "user" });
   const [submitting, setSubmitting] = useState(false);
+  const [pendingDelete, setPendingDelete] = useState<string | null>(null);
+  const isDirty = !!(form.username || form.password || form.nickname);
 
   const load = () => {
     if (!csrf) return;
@@ -47,11 +52,15 @@ export default function AdminUsers() {
         nickname: form.nickname || undefined,
         role: form.role,
       });
-      setMsg({ kind: "success", text: `用户「${form.username}」已创建。` });
+      const username = form.username;
+      setMsg({ kind: "success", text: `用户「${username}」已创建。` });
+      toast.success(`用户「${username}」已创建。`);
       setForm({ username: "", password: "", nickname: "", role: "user" });
       load();
     } catch (err: any) {
-      setMsg({ kind: "error", text: err.message || "创建失败。" });
+      const text = err.message || "创建失败。";
+      setMsg({ kind: "error", text });
+      toast.error(text);
     } finally {
       setSubmitting(false);
     }
@@ -60,21 +69,26 @@ export default function AdminUsers() {
   const handleRoleChange = async (username: string, role: string) => {
     try {
       await updateUserRole(csrf, username, role);
-      setMsg({ kind: "success", text: `已更新「${username}」的角色。` });
+      toast.success(`已更新「${username}」的角色。`);
       load();
     } catch (err: any) {
-      setMsg({ kind: "error", text: err.message || "操作失败。" });
+      toast.error(err.message || "操作失败。");
     }
   };
 
-  const handleDelete = async (username: string) => {
-    if (!confirm(`确定删除用户「${username}」吗？此操作不可撤销。`)) return;
+  const handleDelete = (username: string) => setPendingDelete(username);
+  const confirmDelete = async () => {
+    if (!pendingDelete) return;
+    const username = pendingDelete;
     try {
       await deleteUser(csrf, username);
-      setMsg({ kind: "success", text: `用户「${username}」已删除。` });
+      toast.success(`用户「${username}」已删除。`);
       load();
     } catch (err: any) {
-      setMsg({ kind: "error", text: err.message || "删除失败。" });
+      toast.error(err.message || "删除失败。");
+      throw err;
+    } finally {
+      setPendingDelete(null);
     }
   };
 
@@ -84,6 +98,8 @@ export default function AdminUsers() {
     return u.username.toLowerCase().includes(s)
       || (u.nickname || "").toLowerCase().includes(s);
   });
+
+  useBeforeUnload(isDirty && !submitting);
 
   return (
     <div className="admin-users">
@@ -110,49 +126,71 @@ export default function AdminUsers() {
           <form onSubmit={handleCreate} className="admin-form">
             <div className="admin-form-row">
               <div className="admin-form-group">
-                <label>用户名 <span style={{ color: "var(--admin-danger)" }}>*</span></label>
+                <label htmlFor="user-username">
+                  用户名
+                  <span style={{ color: "var(--admin-danger)", marginLeft: 4 }} aria-hidden="true">*</span>
+                </label>
                 <input
+                  id="user-username"
                   value={form.username}
                   onChange={(e) => setForm({ ...form, username: e.target.value })}
                   required
                   minLength={3}
                   placeholder="字母数字下划线"
+                  autoComplete="username"
                 />
               </div>
               <div className="admin-form-group">
-                <label>密码 <span style={{ color: "var(--admin-danger)" }}>*</span></label>
+                <label htmlFor="user-password">
+                  密码
+                  <span style={{ color: "var(--admin-danger)", marginLeft: 4 }} aria-hidden="true">*</span>
+                </label>
                 <input
+                  id="user-password"
                   type="password"
                   value={form.password}
                   onChange={(e) => setForm({ ...form, password: e.target.value })}
                   required
                   minLength={6}
                   placeholder="至少 6 位"
+                  autoComplete="new-password"
                 />
               </div>
             </div>
             <div className="admin-form-row">
               <div className="admin-form-group">
-                <label>昵称</label>
+                <label htmlFor="user-nickname">昵称</label>
                 <input
+                  id="user-nickname"
                   value={form.nickname}
                   onChange={(e) => setForm({ ...form, nickname: e.target.value })}
                   placeholder="显示名称（可选）"
                 />
               </div>
               <div className="admin-form-group">
-                <label>角色</label>
-                <select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })}>
+                <label htmlFor="user-role">角色</label>
+                <select
+                  id="user-role"
+                  value={form.role}
+                  onChange={(e) => setForm({ ...form, role: e.target.value })}
+                  aria-describedby="user-role-hint"
+                >
                   <option value="user">用户（普通）</option>
                   <option value="admin">管理员</option>
                   <option value="owner">站长（最高权限）</option>
                 </select>
-                <div className="admin-form-hint">站长可以管理其他用户和站点设置</div>
+                <div id="user-role-hint" className="admin-form-hint">
+                  站长可以管理其他用户和站点设置
+                </div>
               </div>
             </div>
             <div className="admin-form-actions">
-              <button type="submit" className="admin-btn admin-btn-primary" disabled={submitting}>
-                {submitting ? "创建中…" : "创建用户"}
+              <button
+                type="submit"
+                className={`admin-btn admin-btn-primary ${submitting ? "admin-btn-loading" : ""}`}
+                disabled={submitting}
+              >
+                创建用户
               </button>
             </div>
           </form>
@@ -245,6 +283,16 @@ export default function AdminUsers() {
           )}
         </div>
       </div>
+
+      <AdminConfirm
+        open={!!pendingDelete}
+        title="删除用户"
+        message={pendingDelete ? `确定要删除用户「${pendingDelete}」吗？此操作不可撤销。` : ""}
+        confirmText="删除"
+        variant="danger"
+        onConfirm={confirmDelete}
+        onCancel={() => setPendingDelete(null)}
+      />
     </div>
   );
 }

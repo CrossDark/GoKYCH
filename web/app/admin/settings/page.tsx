@@ -1,7 +1,9 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { getCsrf, getSettings, updateSettings } from "@/lib/api";
+import { useToast, useBeforeUnload } from "@/lib/admin-feedback";
+import { AdminModal } from "@/components/admin/AdminModal";
 
 // Chinese translations for section names and field keys
 const SECTION_LABELS: Record<string, string> = {
@@ -63,9 +65,13 @@ const SELECT_FIELDS: Record<string, { value: string; label: string }[]> = {
 export default function AdminSettings() {
   const [csrf, setCsrf] = useState("");
   const [settings, setSettings] = useState<Record<string, any> | null>(null);
-  const [msg, setMsg] = useState("");
-  const [msgType, setMsgType] = useState<"success" | "error">("success");
+  const initialSettingsRef = useRef<Record<string, any> | null>(null);
+  const toast = useToast();
   const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const isDirty = initialSettingsRef.current !== null
+    && settings !== null
+    && JSON.stringify(settings) !== JSON.stringify(initialSettingsRef.current);
 
   // File picker state
   const [filePickerOpen, setFilePickerOpen] = useState(false);
@@ -77,6 +83,7 @@ export default function AdminSettings() {
       setCsrf(r.csrf_token);
       getSettings(r.csrf_token).then((s) => {
         setSettings(s);
+        initialSettingsRef.current = s;
         setLoading(false);
       }).catch(() => setLoading(false));
       // Load uploaded files for file picker
@@ -86,6 +93,8 @@ export default function AdminSettings() {
         .catch(() => {});
     });
   }, []);
+
+  useBeforeUnload(isDirty && !saving);
 
   const openFilePicker = (section: string, key: string) => {
     setFilePickerTarget(`${section}.${key}`);
@@ -133,14 +142,15 @@ export default function AdminSettings() {
 
   const handleSave = async () => {
     if (!settings) return;
-    setMsg("");
+    setSaving(true);
     try {
       await updateSettings(csrf, settings);
-      setMsg("设置已保存。");
-      setMsgType("success");
+      initialSettingsRef.current = settings;
+      toast.success("设置已保存。");
     } catch (err: any) {
-      setMsg(err.message || "保存失败。");
-      setMsgType("error");
+      toast.error(err.message || "保存失败。");
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -202,7 +212,7 @@ export default function AdminSettings() {
             />
             <button
               type="button"
-              className="btn btn-small"
+              className="admin-btn admin-btn-ghost admin-btn-sm"
               onClick={() => openFilePicker(section, key)}
               title="从已上传文件中选择"
             >
@@ -253,12 +263,6 @@ export default function AdminSettings() {
           <div className="admin-page-subtitle">站点信息、外观、功能开关、社交媒体</div>
         </div>
       </div>
-      {msg && (
-        <div className={`admin-notice admin-notice-${msgType}`}>
-          <span className="admin-notice-icon">{msgType === "success" ? "✓" : "✕"}</span>
-          <div className="admin-notice-content">{msg}</div>
-        </div>
-      )}
 
       {SECTION_ORDER.map((section) => {
         const fields = settings[section];
@@ -277,44 +281,44 @@ export default function AdminSettings() {
         );
       })}
 
-      <button onClick={handleSave} className="btn btn-primary btn-large">💾 保存设置</button>
+      <button
+        onClick={handleSave}
+        className={`admin-btn admin-btn-primary admin-btn-lg ${saving ? "admin-btn-loading" : ""}`}
+        disabled={saving}
+      >
+        💾 保存设置
+      </button>
 
       {/* File Picker Modal */}
-      {filePickerOpen && (
-        <div className="modal-overlay" onClick={() => setFilePickerOpen(false)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h3>📁 选择文件</h3>
-              <button className="modal-close" onClick={() => setFilePickerOpen(false)}>×</button>
-            </div>
-            <div className="modal-body">
-              {uploadedFiles.length === 0 ? (
-                <p className="empty-message">暂无已上传文件。请先在文件管理中上传。</p>
-              ) : (
-                <div className="file-grid">
-                  {uploadedFiles.map((f) => (
-                    <div
-                      key={f.id}
-                      className="file-grid-item"
-                      onClick={() => selectFile(f.filename)}
-                      title={f.original_name || f.filename}
-                    >
-                      <div className="file-grid-preview">
-                        {f.filename.match(/\.(png|jpg|jpeg|gif|webp|svg|ico)$/i) ? (
-                          <img src={`/uploads/${f.filename}`} alt={f.original_name} />
-                        ) : (
-                          <span className="file-grid-icon">📄</span>
-                        )}
-                      </div>
-                      <span className="file-grid-name">{f.original_name || f.filename}</span>
-                    </div>
-                  ))}
+      <AdminModal
+        open={filePickerOpen}
+        onClose={() => setFilePickerOpen(false)}
+        title="📁 选择文件"
+      >
+        {uploadedFiles.length === 0 ? (
+          <p className="empty-message">暂无已上传文件。请先在文件管理中上传。</p>
+        ) : (
+          <div className="file-grid">
+            {uploadedFiles.map((f) => (
+              <div
+                key={f.id}
+                className="file-grid-item"
+                onClick={() => selectFile(f.filename)}
+                title={f.original_name || f.filename}
+              >
+                <div className="file-grid-preview">
+                  {f.filename.match(/\.(png|jpg|jpeg|gif|webp|svg|ico)$/i) ? (
+                    <img src={`/uploads/${f.filename}`} alt={f.original_name} />
+                  ) : (
+                    <span className="file-grid-icon">📄</span>
+                  )}
                 </div>
-              )}
-            </div>
+                <span className="file-grid-name">{f.original_name || f.filename}</span>
+              </div>
+            ))}
           </div>
-        </div>
-      )}
+        )}
+      </AdminModal>
     </div>
   );
 }

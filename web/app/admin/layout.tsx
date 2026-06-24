@@ -5,10 +5,13 @@ import { useRouter, usePathname } from "next/navigation";
 import Link from "next/link";
 import { getMe, getCsrf, logout } from "@/lib/api";
 import type { User } from "@/lib/types";
+import { ToastProvider, useToast } from "@/lib/admin-feedback";
 
 // Map pathname → breadcrumb label + optional parent
 const BREADCRUMB: { match: (p: string) => boolean; label: string; parent?: string }[] = [
   { match: (p) => p === "/admin", label: "仪表盘", parent: "首页" },
+  // Article detail (deeper match first) — show "文章标题" with link to list page
+  { match: (p) => /^\/admin\/articles\/[^/]+\/[^/]+/.test(p), label: "文章详情", parent: "文章管理" },
   { match: (p) => p.startsWith("/admin/articles"), label: "文章管理", parent: "内容" },
   { match: (p) => p.startsWith("/admin/home"), label: "首页管理", parent: "管理" },
   { match: (p) => p.startsWith("/admin/tags"), label: "标签管理", parent: "管理" },
@@ -19,14 +22,27 @@ const BREADCRUMB: { match: (p: string) => boolean; label: string; parent?: strin
   { match: (p) => p.startsWith("/admin/profile"), label: "个人资料", parent: "设置" },
 ];
 
-function getBreadcrumb(pathname: string): { parent?: string; current: string } {
+function getBreadcrumb(pathname: string): { parent?: string; parentHref?: string; current: string } {
+  // Article detail — special case: parent is "文章管理" with a link to the list
+  if (/^\/admin\/articles\/[^/]+\/[^/]+/.test(pathname)) {
+    return { parent: "文章管理", parentHref: "/admin/articles", current: "文章详情" };
+  }
   const m = BREADCRUMB.find((b) => b.match(pathname));
   return m ? { parent: m.parent, current: m.label } : { current: "管理后台" };
 }
 
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <ToastProvider>
+      <AdminLayoutInner>{children}</AdminLayoutInner>
+    </ToastProvider>
+  );
+}
+
+function AdminLayoutInner({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
+  const toast = useToast();
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const [csrfToken, setCsrfToken] = useState("");
@@ -66,7 +82,12 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   }, [pathname]);
 
   const handleLogout = async () => {
-    await logout(csrfToken).catch(() => {});
+    try {
+      await logout(csrfToken);
+      toast.success("已退出登录。");
+    } catch {
+      // Even if logout API fails, send the user back to the site.
+    }
     router.push("/");
   };
 
@@ -185,7 +206,11 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
               {crumb.parent && (
                 <>
                   <span className="sep">/</span>
-                  <span>{crumb.parent}</span>
+                  {crumb.parentHref ? (
+                    <Link href={crumb.parentHref}>{crumb.parent}</Link>
+                  ) : (
+                    <span>{crumb.parent}</span>
+                  )}
                 </>
               )}
               <span className="sep">/</span>

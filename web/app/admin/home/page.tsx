@@ -3,16 +3,21 @@
 import { useState, useEffect, useCallback } from "react";
 import { getCsrf, getAdminHome, addSubsiteLink, deleteSubsiteLink, addFeatured, deleteFeatured, listArticles } from "@/lib/api";
 import type { SubsiteLink, FeaturedArticle, Article } from "@/lib/types";
+import { useToast } from "@/lib/admin-feedback";
+import { AdminConfirm } from "@/components/admin/AdminConfirm";
 
 export default function AdminHome() {
   const [csrf, setCsrf] = useState("");
   const [links, setLinks] = useState<SubsiteLink[]>([]);
   const [featured, setFeatured] = useState<FeaturedArticle[]>([]);
-  const [msg, setMsg] = useState("");
-  const [msgType, setMsgType] = useState<"success" | "error">("success");
+  const toast = useToast();
   const [linkForm, setLinkForm] = useState({ name: "", url: "", description: "", sort_order: 0 });
   const [editingLink, setEditingLink] = useState<number | null>(null);
   const [editLinkForm, setEditLinkForm] = useState({ name: "", url: "", description: "", sort_order: 0 });
+  const [pendingLinkDelete, setPendingLinkDelete] = useState<number | null>(null);
+  const [pendingFeaturedDelete, setPendingFeaturedDelete] = useState<number | null>(null);
+  const [linkSubmitting, setLinkSubmitting] = useState(false);
+  const [featuredSubmitting, setFeaturedSubmitting] = useState(false);
 
   // Article search for featured
   const [articleSearch, setArticleSearch] = useState("");
@@ -21,11 +26,6 @@ export default function AdminHome() {
   const [searching, setSearching] = useState(false);
   const [selectedArticle, setSelectedArticle] = useState<Article | null>(null);
   const [showArticleDropdown, setShowArticleDropdown] = useState(false);
-
-  const showMsg = (m: string, t: "success" | "error" = "success") => {
-    setMsg(m); setMsgType(t);
-    setTimeout(() => setMsg(""), 4000);
-  };
 
   const load = useCallback(() => {
     if (!csrf) return;
@@ -74,36 +74,68 @@ export default function AdminHome() {
   // ── Links ──
   const handleAddLink = async (e: React.FormEvent) => {
     e.preventDefault();
+    setLinkSubmitting(true);
     try {
       await addSubsiteLink(csrf, linkForm);
-      showMsg("链接已添加。");
+      toast.success("链接已添加。");
       setLinkForm({ name: "", url: "", description: "", sort_order: 0 });
       load();
-    } catch (err: any) { showMsg(err.message || "添加失败。", "error"); }
+    } catch (err: any) {
+      toast.error(err.message || "添加失败。");
+    } finally {
+      setLinkSubmitting(false);
+    }
   };
 
-  const handleDeleteLink = async (id: number) => {
-    try { await deleteSubsiteLink(csrf, id); load(); showMsg("已删除。"); }
-    catch (err: any) { showMsg(err.message || "删除失败。", "error"); }
+  const handleDeleteLink = (id: number) => setPendingLinkDelete(id);
+  const confirmDeleteLink = async () => {
+    if (pendingLinkDelete === null) return;
+    const id = pendingLinkDelete;
+    try {
+      await deleteSubsiteLink(csrf, id);
+      toast.success("链接已删除。");
+      load();
+    } catch (err: any) {
+      toast.error(err.message || "删除失败。");
+      throw err;
+    } finally {
+      setPendingLinkDelete(null);
+    }
   };
 
   // ── Featured ──
   const handleAddFeatured = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedArticle) { showMsg("请选择一篇文章。", "error"); return; }
+    if (!selectedArticle) { toast.warning("请选择一篇文章。"); return; }
+    setFeaturedSubmitting(true);
     try {
       await addFeatured(csrf, selectedArticle.id);
-      showMsg("推荐文章已添加。");
+      toast.success("推荐文章已添加。");
       setSelectedArticle(null);
       setArticleSearch("");
       setArticleResults([]);
       load();
-    } catch (err: any) { showMsg(err.message || "添加失败。", "error"); }
+    } catch (err: any) {
+      toast.error(err.message || "添加失败。");
+    } finally {
+      setFeaturedSubmitting(false);
+    }
   };
 
-  const handleDeleteFeatured = async (id: number) => {
-    try { await deleteFeatured(csrf, id); load(); showMsg("已移除。"); }
-    catch (err: any) { showMsg(err.message || "移除失败。", "error"); }
+  const handleDeleteFeatured = (id: number) => setPendingFeaturedDelete(id);
+  const confirmDeleteFeatured = async () => {
+    if (pendingFeaturedDelete === null) return;
+    const id = pendingFeaturedDelete;
+    try {
+      await deleteFeatured(csrf, id);
+      toast.success("已移除。");
+      load();
+    } catch (err: any) {
+      toast.error(err.message || "移除失败。");
+      throw err;
+    } finally {
+      setPendingFeaturedDelete(null);
+    }
   };
 
   return (
@@ -114,12 +146,6 @@ export default function AdminHome() {
           <div className="admin-page-subtitle">子站点链接与推荐文章配置</div>
         </div>
       </div>
-      {msg && (
-        <div className={`admin-notice admin-notice-${msgType}`}>
-          <span className="admin-notice-icon">{msgType === "success" ? "✓" : "✕"}</span>
-          <div className="admin-notice-content">{msg}</div>
-        </div>
-      )}
 
       {/* ═══ Subsite Links ═══ */}
       <section className="admin-card">
@@ -129,12 +155,18 @@ export default function AdminHome() {
         </div>
         <div className="admin-card-body">
           <details className="admin-inline-form">
-            <summary className="btn btn-small">+ 添加链接</summary>
+            <summary className="admin-btn admin-btn-ghost admin-btn-sm">+ 添加链接</summary>
             <form onSubmit={handleAddLink} className="admin-form-row">
               <input placeholder="名称" value={linkForm.name} onChange={(e) => setLinkForm({ ...linkForm, name: e.target.value })} required />
               <input placeholder="URL (如 https://...)" value={linkForm.url} onChange={(e) => setLinkForm({ ...linkForm, url: e.target.value })} required />
               <input placeholder="描述（可选）" value={linkForm.description} onChange={(e) => setLinkForm({ ...linkForm, description: e.target.value })} />
-              <button type="submit" className="btn btn-primary btn-small">添加</button>
+              <button
+                type="submit"
+                className={`admin-btn admin-btn-primary admin-btn-sm ${linkSubmitting ? "admin-btn-loading" : ""}`}
+                disabled={linkSubmitting}
+              >
+                添加
+              </button>
             </form>
           </details>
           {links.length === 0 ? (
@@ -149,7 +181,7 @@ export default function AdminHome() {
                     <td className="col-url"><a href={l.url} target="_blank" rel="noopener">{l.url.length > 40 ? l.url.slice(0, 40) + "…" : l.url}</a></td>
                     <td className="col-sort">{l.sort_order ?? 0}</td>
                     <td className="col-actions">
-                      <button className="btn btn-small btn-danger" onClick={() => handleDeleteLink(l.id)}>删除</button>
+                      <button className="admin-btn admin-btn-danger admin-btn-sm" onClick={() => handleDeleteLink(l.id)} title="删除">🗑</button>
                     </td>
                   </tr>
                 ))}
@@ -220,7 +252,13 @@ export default function AdminHome() {
                   </div>
                 )}
               </div>
-              <button type="submit" className="btn btn-primary btn-small">添加推荐</button>
+              <button
+                type="submit"
+                className={`admin-btn admin-btn-primary admin-btn-sm ${featuredSubmitting ? "admin-btn-loading" : ""}`}
+                disabled={featuredSubmitting}
+              >
+                添加推荐
+              </button>
             </form>
           </details>
           {featured.length === 0 ? (
@@ -235,7 +273,7 @@ export default function AdminHome() {
                     <td className="col-title">{f.title}</td>
                     <td><span className="article-type-badge">{f.type || "—"}</span></td>
                     <td className="col-actions">
-                      <button className="btn btn-small btn-danger" onClick={() => handleDeleteFeatured(f.id)}>移除</button>
+                      <button className="admin-btn admin-btn-danger admin-btn-sm" onClick={() => handleDeleteFeatured(f.id)} title="移除">🗑</button>
                     </td>
                   </tr>
                 ))}
@@ -244,6 +282,25 @@ export default function AdminHome() {
           )}
         </div>
       </section>
+
+      <AdminConfirm
+        open={pendingLinkDelete !== null}
+        title="删除链接"
+        message="确定要删除此子站点链接吗？"
+        confirmText="删除"
+        variant="danger"
+        onConfirm={confirmDeleteLink}
+        onCancel={() => setPendingLinkDelete(null)}
+      />
+      <AdminConfirm
+        open={pendingFeaturedDelete !== null}
+        title="移除推荐"
+        message="确定要从首页推荐中移除此文章吗？"
+        confirmText="移除"
+        variant="danger"
+        onConfirm={confirmDeleteFeatured}
+        onCancel={() => setPendingFeaturedDelete(null)}
+      />
     </div>
   );
 }

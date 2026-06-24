@@ -5,6 +5,8 @@ import Link from "next/link";
 import { useSearchParams, useRouter } from "next/navigation";
 import { getCsrf, listArticles, getArticle, createArticle, updateArticle, deleteArticle } from "@/lib/api";
 import type { Article, ArticleListResult } from "@/lib/types";
+import { useToast, useBeforeUnload } from "@/lib/admin-feedback";
+import { AdminConfirm } from "@/components/admin/AdminConfirm";
 
 const TYPES = [
   { key: "md", label: "Markdown" },
@@ -27,6 +29,7 @@ function TypeBadge({ type }: { type: string }) {
 function AdminArticlesInner() {
   const searchParams = useSearchParams();
   const router = useRouter();
+  const toast = useToast();
   const [csrf, setCsrf] = useState("");
   const [result, setResult] = useState<ArticleListResult | null>(null);
   const [page, setPage] = useState(1);
@@ -37,6 +40,8 @@ function AdminArticlesInner() {
   const [msg, setMsg] = useState<{ kind: "success" | "error" | "info"; text: string } | null>(null);
   const [initialEditLoaded, setInitialEditLoaded] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [pendingDelete, setPendingDelete] = useState<Article | null>(null);
+  const isDirty = !!(form.title || form.content || form.slug || form.tags);
 
   const load = (p: number, t: string) => {
     listArticles(t || undefined, p).then(setResult).catch(() => {});
@@ -101,28 +106,37 @@ function AdminArticlesInner() {
       if (editing) {
         await updateArticle(editing.type, editing.slug, csrf, { title: form.title, content: form.content, tags });
         setMsg({ kind: "success", text: "文章已更新。" });
+        toast.success("文章已更新。");
       } else {
         await createArticle(form.type, csrf, { slug: form.slug, title: form.title, content: form.content, tags });
         setMsg({ kind: "success", text: "文章已创建。" });
+        toast.success("文章已创建。");
       }
       load(page, filterType);
       setEditing(null);
       setForm({ type: "md", slug: "", title: "", content: "", tags: "" });
     } catch (err: any) {
-      setMsg({ kind: "error", text: err.message || "操作失败。" });
+      const text = err.message || "操作失败。";
+      setMsg({ kind: "error", text });
+      toast.error(text);
     } finally {
       setSubmitting(false);
     }
   };
 
-  const handleDelete = async (a: Article) => {
-    if (!confirm(`确定删除「${a.title}」吗？此操作不可撤销。`)) return;
+  const handleDelete = (a: Article) => setPendingDelete(a);
+  const confirmDelete = async () => {
+    if (!pendingDelete) return;
+    const target = pendingDelete;
     try {
-      await deleteArticle(a.type, a.slug, csrf);
-      setMsg({ kind: "success", text: "文章已删除。" });
+      await deleteArticle(target.type, target.slug, csrf);
+      toast.success(`文章「${target.title}」已删除。`);
       load(page, filterType);
     } catch (err: any) {
-      setMsg({ kind: "error", text: err.message || "删除失败。" });
+      toast.error(err.message || "删除失败。");
+      throw err; // keep modal open so the user can retry or cancel
+    } finally {
+      setPendingDelete(null);
     }
   };
 
@@ -134,6 +148,9 @@ function AdminArticlesInner() {
       || a.slug.toLowerCase().includes(s)
       || (a.tags || []).some((t) => t.toLowerCase().includes(s));
   }) ?? [];
+
+  // Warn before leaving with unsaved form changes.
+  useBeforeUnload(isDirty && !submitting);
 
   return (
     <div className="admin-articles">
@@ -171,34 +188,54 @@ function AdminArticlesInner() {
             {!editing && (
               <div className="admin-form-row">
                 <div className="admin-form-group">
-                  <label>类型</label>
-                  <select value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}>
+                  <label htmlFor="article-type">类型</label>
+                  <select
+                    id="article-type"
+                    value={form.type}
+                    onChange={(e) => setForm({ ...form, type: e.target.value })}
+                  >
                     {TYPES.map((t) => <option key={t.key} value={t.key}>{t.label}</option>)}
                   </select>
                 </div>
                 <div className="admin-form-group">
-                  <label>Slug</label>
+                  <label htmlFor="article-slug">
+                    Slug
+                    <span style={{ color: "var(--admin-danger)", marginLeft: 4 }} aria-hidden="true">*</span>
+                  </label>
                   <input
+                    id="article-slug"
                     value={form.slug}
                     onChange={(e) => setForm({ ...form, slug: e.target.value })}
                     placeholder="hello-world"
                     required
+                    aria-describedby="article-slug-hint"
+                    pattern="[A-Za-z0-9-]+"
                   />
-                  <div className="admin-form-hint">URL 中的标识符，只能用字母数字和短横线</div>
+                  <div id="article-slug-hint" className="admin-form-hint">
+                    URL 中的标识符，只能用字母数字和短横线
+                  </div>
                 </div>
               </div>
             )}
             <div className="admin-form-group">
-              <label>标题</label>
+              <label htmlFor="article-title">
+                标题
+                <span style={{ color: "var(--admin-danger)", marginLeft: 4 }} aria-hidden="true">*</span>
+              </label>
               <input
+                id="article-title"
                 value={form.title}
                 onChange={(e) => setForm({ ...form, title: e.target.value })}
                 required
               />
             </div>
             <div className="admin-form-group">
-              <label>内容</label>
+              <label htmlFor="article-content">
+                内容
+                <span style={{ color: "var(--admin-danger)", marginLeft: 4 }} aria-hidden="true">*</span>
+              </label>
               <textarea
+                id="article-content"
                 value={form.content}
                 onChange={(e) => setForm({ ...form, content: e.target.value })}
                 rows={12}
@@ -207,16 +244,23 @@ function AdminArticlesInner() {
               />
             </div>
             <div className="admin-form-group">
-              <label>标签 <span style={{ fontWeight: 400, color: "var(--text-muted)" }}>（逗号分隔）</span></label>
+              <label htmlFor="article-tags">
+                标签 <span style={{ fontWeight: 400, color: "var(--text-muted)" }}>（逗号分隔）</span>
+              </label>
               <input
+                id="article-tags"
                 value={form.tags}
                 onChange={(e) => setForm({ ...form, tags: e.target.value })}
                 placeholder="tag1, tag2, tag3"
               />
             </div>
             <div className="admin-form-actions">
-              <button type="submit" className="admin-btn admin-btn-primary" disabled={submitting}>
-                {submitting ? "保存中…" : editing ? "保存修改" : "创建文章"}
+              <button
+                type="submit"
+                className={`admin-btn admin-btn-primary ${submitting ? "admin-btn-loading" : ""}`}
+                disabled={submitting}
+              >
+                {editing ? "保存修改" : "创建文章"}
               </button>
               {editing && (
                 <button type="button" className="admin-btn admin-btn-ghost" onClick={handleCreate}>
@@ -323,7 +367,13 @@ function AdminArticlesInner() {
                     <td className="col-date">{new Date(a.updated_at).toLocaleDateString("zh-CN")}</td>
                     <td className="col-actions">
                       <Link href={`/${a.type}/${a.slug}`} target="_blank" className="admin-btn admin-btn-outline admin-btn-sm" title="查看">👁</Link>
-                      <button className="admin-btn admin-btn-secondary admin-btn-sm" onClick={() => handleEdit(a)} title="编辑">✏️</button>
+                      <Link
+                        href={`/admin/articles/${a.type}/${a.slug}`}
+                        className="admin-btn admin-btn-secondary admin-btn-sm"
+                        title="编辑"
+                      >
+                        ✏️
+                      </Link>
                       <button className="admin-btn admin-btn-danger admin-btn-sm" onClick={() => handleDelete(a)} title="删除">🗑</button>
                     </td>
                   </tr>
@@ -375,6 +425,16 @@ function AdminArticlesInner() {
           </div>
         )}
       </div>
+
+      <AdminConfirm
+        open={!!pendingDelete}
+        title="删除文章"
+        message={pendingDelete ? `确定要删除「${pendingDelete.title}」吗？此操作不可撤销。` : ""}
+        confirmText="删除"
+        variant="danger"
+        onConfirm={confirmDelete}
+        onCancel={() => setPendingDelete(null)}
+      />
     </div>
   );
 }

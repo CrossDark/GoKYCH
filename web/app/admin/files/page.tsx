@@ -8,6 +8,8 @@ import {
   deleteAdminFile,
 } from "@/lib/api";
 import type { AdminFile } from "@/lib/types";
+import { useToast } from "@/lib/admin-feedback";
+import { AdminConfirm } from "@/components/admin/AdminConfirm";
 
 const IMAGE_EXTS = /\.(png|jpe?g|gif|webp|svg|ico|bmp)$/i;
 
@@ -17,7 +19,9 @@ export default function AdminFiles() {
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [msg, setMsg] = useState("");
+  const toast = useToast();
   const [dragOver, setDragOver] = useState(false);
+  const [pendingDelete, setPendingDelete] = useState<AdminFile | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   const load = () => {
@@ -45,6 +49,7 @@ export default function AdminFiles() {
     let ok = 0;
     let fail = 0;
     let dedup = 0;
+    const failures: string[] = [];
     for (const f of Array.from(picked)) {
       try {
         const r = await uploadFile(csrf, f);
@@ -52,6 +57,7 @@ export default function AdminFiles() {
         else ok++;
       } catch (err: any) {
         fail++;
+        failures.push(f.name);
         // Continue with the rest — one bad file shouldn't block the batch.
         console.error("upload failed:", f.name, err);
       }
@@ -59,6 +65,12 @@ export default function AdminFiles() {
     setMsg(
       `上传完成：${ok} 个新增，${dedup} 个去重，${fail} 个失败。`,
     );
+    if (ok > 0 || dedup > 0) {
+      toast.success(`上传完成：${ok} 个新增，${dedup} 个去重${fail > 0 ? `，${fail} 个失败` : ""}。`);
+    }
+    if (fail > 0) {
+      toast.error(`${fail} 个文件上传失败：${failures.slice(0, 3).join("、")}${failures.length > 3 ? "…" : ""}`);
+    }
     setUploading(false);
     if (inputRef.current) inputRef.current.value = "";
     load();
@@ -77,23 +89,25 @@ export default function AdminFiles() {
   const copyUrl = async (url: string) => {
     try {
       await navigator.clipboard.writeText(url);
-      setMsg(`已复制链接：${url}`);
+      toast.success(`已复制链接：${url}`);
     } catch {
-      // Fallback for browsers without clipboard permission.
-      setMsg(`链接：${url}（请手动复制）`);
+      toast.warning(`请手动复制：${url}`);
     }
   };
 
-  const handleDelete = async (f: AdminFile) => {
-    if (!confirm(`确定删除「${f.original_name || f.filename}」吗？此操作不可撤销。`))
-      return;
-    setMsg("");
+  const handleDelete = (f: AdminFile) => setPendingDelete(f);
+  const confirmDelete = async () => {
+    if (!pendingDelete) return;
+    const f = pendingDelete;
     try {
       await deleteAdminFile(csrf, f.id);
-      setMsg(`已删除「${f.original_name || f.filename}」。`);
+      toast.success(`已删除「${f.original_name || f.filename}」。`);
       load();
     } catch (err: any) {
-      setMsg(err.message || "删除失败。");
+      toast.error(err.message || "删除失败。");
+      throw err;
+    } finally {
+      setPendingDelete(null);
     }
   };
 
@@ -142,10 +156,14 @@ export default function AdminFiles() {
               multiple
               style={{ display: "none" }}
               onChange={handleSelect}
+              disabled={uploading}
             />
             <div className="admin-upload-prompt">
               {uploading ? (
-                <p>上传中…</p>
+                <p>
+                  <span className="admin-spinner" style={{ marginRight: 6, verticalAlign: "middle" }} />
+                  上传中…
+                </p>
               ) : (
                 <>
                   <p className="admin-upload-title">点击选择文件 或 拖拽到此处</p>
@@ -234,6 +252,16 @@ export default function AdminFiles() {
           </div>
         </div>
       )}
+
+      <AdminConfirm
+        open={!!pendingDelete}
+        title="删除文件"
+        message={pendingDelete ? `确定要删除「${pendingDelete.original_name || pendingDelete.filename}」吗？此操作不可撤销。` : ""}
+        confirmText="删除"
+        variant="danger"
+        onConfirm={confirmDelete}
+        onCancel={() => setPendingDelete(null)}
+      />
     </div>
   );
 }
