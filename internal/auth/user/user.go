@@ -146,13 +146,26 @@ func UpdatePassword(db *sql.DB, username, passwordHash string) (bool, error) {
 	return n > 0, err
 }
 
-// UpdateInfo updates nickname and role.
+// UpdateInfo updates nickname and role. An empty nickname is treated as
+// "leave the existing value alone" — otherwise a role-only mutation
+// (e.g. updateUserRole) would silently wipe out a user's display name
+// by passing nickname="". Callers that genuinely want to clear the
+// nickname should bypass this and write a dedicated handler.
 func UpdateInfo(db *sql.DB, username, nickname, role string) (bool, error) {
 	if !IsValidRole(role) {
 		return false, errors.New("无效的角色: " + role)
 	}
-	res, err := db.Exec(`UPDATE users SET nickname = ?, role = ? WHERE username = ?`,
-		nickname, role, username)
+	var (
+		res sql.Result
+		err error
+	)
+	if nickname == "" {
+		res, err = db.Exec(`UPDATE users SET role = ? WHERE username = ?`,
+			role, username)
+	} else {
+		res, err = db.Exec(`UPDATE users SET nickname = ?, role = ? WHERE username = ?`,
+			nickname, role, username)
+	}
 	if err != nil {
 		return false, err
 	}
