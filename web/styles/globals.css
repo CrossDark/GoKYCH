@@ -2932,7 +2932,35 @@ hr {
     }
 }
 
-/* ── Mobile: sidebar hidden, hamburger visible ── */
+/* ── Passkey divider on login page ── */
+.passkey-section {
+    margin-bottom: 1rem;
+}
+.login-divider {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin: 1.25rem 0;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+}
+.login-divider::before,
+.login-divider::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+}
+.admin-tag {
+    display: inline-block;
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    padding: 0.05rem 0.4rem;
+    border-radius: 3px;
+    font-size: 0.7rem;
+    font-family: "SF Mono", "Fira Code", monospace;
+}
 @media (max-width: 782px) {
     .wp-admin-hamburger {
         display: flex;

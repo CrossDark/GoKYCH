@@ -6,6 +6,7 @@ import (
 	"log"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"os/signal"
@@ -84,6 +85,35 @@ func main() {
 	typst.SetDB(db)
 	srv := api.NewServer(db, sess, limiter, m, cfg.App.DataDir, cfg.App.TrustedProxies)
 
+	// Configure WebAuthn relying-party identity. RPID is the bare domain
+	// ("localhost" or your public hostname) — browsers compare it against
+	// the calling origin's domain to scope passkeys. RPOrigin is the full
+	// https://host the auth flows run from. APP_DOMAIN can be either form
+	// ("example.com" or "https://example.com"); we normalise to the
+	// origin for the lib.
+	if cfg.App.WebAuthnDomain != "" {
+		// Normalise APP_DOMAIN into the (rpid, origin) pair the WebAuthn
+		// lib needs. Accept any of these forms:
+		//   "example.com"            → rpid "example.com",   origin "http://example.com"
+		//   "localhost:3000"         → rpid "localhost",     origin "http://localhost:3000"
+		//   "https://example.com"    → rpid "example.com",   origin "https://example.com"
+		//   "http://localhost:3000"  → rpid "localhost",     origin "http://localhost:3000"
+		// RPID must be the bare host (no scheme/port): browsers compare it
+		// against the calling origin's registrable domain. RPOrigin is the
+		// full scheme://host[:port] the auth flows run from — it must
+		// match the browser's window.origin byte-for-byte, port included,
+		// so the docker-compose frontend (http://localhost:3000) works.
+		rpid, origin := normalizeWebAuthnDomain(cfg.App.WebAuthnDomain)
+		if rpid == "" {
+			slog.Warn("passkey disabled: APP_DOMAIN could not be parsed", "value", cfg.App.WebAuthnDomain)
+		} else {
+			srv.ConfigureWebAuthn(rpid, "跨越晨昏", origin)
+			slog.Info("passkey configured", "rpid", rpid, "origin", origin)
+		}
+	} else {
+		slog.Warn("passkey disabled: APP_DOMAIN not set; passkey endpoints will 503")
+	}
+
 	// 7. Set up Gin. gin.Recovery() stays here; access logging + request id
 	// are handled by the per-request middleware registered in srv.Setup, so
 	// we don't double-log via gin.Logger().
@@ -145,4 +175,32 @@ func main() {
 		slog.Error("shutdown error", "err", err)
 	}
 	slog.Info("server stopped")
+}
+
+// normalizeWebAuthnDomain turns an APP_DOMAIN value (bare host, host:port,
+// or full origin with a scheme) into the (rpid, origin) pair the WebAuthn
+// library expects. Returns ("", "") when the input can't be parsed so the
+// caller can disable passkey rather than start with a broken RPID.
+func normalizeWebAuthnDomain(domain string) (rpid, origin string) {
+	d := strings.TrimSpace(domain)
+	if d == "" {
+		return "", ""
+	}
+	// url.Parse needs a scheme to populate Host; otherwise it puts the
+	// whole "host:port" into Path. Inject http:// when the caller omits
+	// one (dev default is a bare domain / host:port).
+	withScheme := d
+	if !strings.Contains(d, "://") {
+		withScheme = "http://" + d
+	}
+	u, err := url.Parse(withScheme)
+	if err != nil || u.Host == "" {
+		return "", ""
+	}
+	scheme := u.Scheme
+	if scheme == "" {
+		scheme = "http"
+	}
+	// Hostname() strips the port — that's exactly the bare RPID we want.
+	return u.Hostname(), scheme + "://" + u.Host
 }

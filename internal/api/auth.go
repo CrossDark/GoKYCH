@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"database/sql"
+	"log/slog"
 	"math/big"
 	"net/http"
 	"net/url"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"gokych/internal/auth/passkey"
 	"gokych/internal/auth/password"
 	"gokych/internal/auth/user"
 )
@@ -180,6 +182,20 @@ func (s *Server) postLogin(c *gin.Context) {
 		s.limiter.RecordFailure(username, ip)
 		s.loginError(c, http.StatusUnauthorized, "用户名或密码错误。")
 		return
+	}
+
+	// 5b. If this user has a passkey registered, the password path is
+	// disabled — passkey is the only way in. Owner is exempt so the
+	// bootstrap admin can never lock themselves out of the system.
+	if !user.IsOwner(uwp.Role) {
+		has, err := passkey.HasAny(s.DB, uwp.ID)
+		if err != nil {
+			slog.Error("postLogin: passkey check", "user_id", uwp.ID, "err", err)
+		} else if has {
+			s.limiter.RecordFailure(username, ip)
+			s.loginError(c, http.StatusForbidden, "该账号已启用 Passkey，请使用 Passkey 登录。")
+			return
+		}
 	}
 
 	// 6. Success.

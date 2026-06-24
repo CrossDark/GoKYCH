@@ -42,6 +42,9 @@ type AppConfig struct {
 	AdminPassword  string
 	DataDir        string
 	TrustedProxies []string // trusted reverse-proxy CIDRs/IPs for c.ClientIP(); empty = trust none (RemoteAddr only)
+	// WebAuthnDomain is the bare host ("example.com" or "localhost") used
+	// as the WebAuthn relying-party ID. Leave empty to disable passkey.
+	WebAuthnDomain string
 }
 
 // mysqlYAML is the YAML file structure (top-level key "mysql").
@@ -174,6 +177,7 @@ func (c *Config) applyEnvOverrides() {
 	c.App.AdminPassword = envOr("ADMIN_PASSWORD", c.App.AdminPassword)
 	c.App.DataDir = envOr("DATA_DIR", c.App.DataDir)
 	c.App.TrustedProxies = envListOr("TRUSTED_PROXIES", c.App.TrustedProxies)
+	c.App.WebAuthnDomain = envOr("APP_DOMAIN", c.App.WebAuthnDomain)
 }
 
 // DataRoot returns the absolute path to the data directory.

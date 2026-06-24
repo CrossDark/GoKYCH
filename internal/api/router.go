@@ -61,6 +61,15 @@ func (s *Server) Setup(r *gin.Engine) {
 				authWithCSRF.POST("/login", s.postLogin)
 				authWithCSRF.POST("/logout", s.postLogout)
 			}
+			// Passkey endpoints. /begin and /finish are CSRF-gated (no
+			// anonymous write to the DB), but anonymous OK for /login/* —
+			// that's the whole point.
+			authG.GET("/passkey", requireLogin, s.listMyPasskeys)
+			authG.DELETE("/passkey/:id", requireLogin, s.deleteMyPasskey)
+			authWithCSRF.POST("/passkey/register/begin", requireLogin, s.beginPasskeyRegistration)
+			authWithCSRF.POST("/passkey/register/finish", requireLogin, s.finishPasskeyRegistration)
+			authWithCSRF.POST("/passkey/login/begin", s.beginPasskeyLogin)
+			authWithCSRF.POST("/passkey/login/finish", s.finishPasskeyLogin)
 		}
 
 		// CSRF-gated mutations.
@@ -112,13 +121,15 @@ func (s *Server) Setup(r *gin.Engine) {
 				adminG.POST("/files", requireAdmin, s.uploadFile)
 				adminG.DELETE("/files/:id", requireAdmin, s.deleteFile)
 
-				// API keys — admins can create/revoke their own keys for
-				// scripting. The X-API-Key middleware in loadUserMiddleware
-				// lets those keys substitute for the session cookie on any
-				// other endpoint.
-				adminG.GET("/api-keys", s.listAPIKeys)
-				adminG.POST("/api-keys", s.createAPIKey)
-				adminG.DELETE("/api-keys/:id", s.deleteAPIKey)
+				// API keys — owner-only management. The requirement is that
+				// only the site owner may add/revoke API keys, so we gate
+				// the CRUD with requireOwner (not merely requireAdmin). The
+				// X-API-Key middleware in loadUserMiddleware still lets a
+				// valid key substitute for the session cookie on any other
+				// endpoint no matter who created it.
+				adminG.GET("/api-keys", requireOwner, s.listAPIKeys)
+				adminG.POST("/api-keys", requireOwner, s.createAPIKey)
+				adminG.DELETE("/api-keys/:id", requireOwner, s.deleteAPIKey)
 
 				// Metrics (admin+)
 				adminG.GET("/metrics", requireAdmin, s.getMetrics)

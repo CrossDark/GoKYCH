@@ -26,44 +26,78 @@ func Init(db *sql.DB) error {
 	return nil
 }
 
-// runMigrations adds missing columns and indexes to existing tables.
-// Each statement uses information_schema checks so it's safe to run
-// multiple times without errors.
+// runMigrations adds missing columns to existing tables that were
+// created before a feature was added. CREATE TABLE IF NOT EXISTS does
+// not retroactively add new columns, so an explicit ALTER is required
+// for live upgrades.
+//
+// Each migration runs a parameterised COUNT against information_schema
+// first; if the column already exists (n > 0) we skip the ALTER. This is
+// the standard MySQL pattern — `SELECT ... HAVING COUNT(*) = 0` is
+// unreliable when the WHERE matches rows in OTHER tables that share
+// the same column name, so we use a plain scalar count.
 func runMigrations(db *sql.DB) error {
-	migrations := []string{
-		// comments.user_id — added to bind comments to logged-in users.
-		`SELECT 1 FROM information_schema.COLUMNS
-		  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'comments' AND COLUMN_NAME = 'user_id'
-		  HAVING COUNT(*) = 0`,
-		`ALTER TABLE comments ADD COLUMN user_id INT DEFAULT NULL AFTER line_number`,
-		`ALTER TABLE comments ADD INDEX idx_comment_user (user_id)`,
-
-		// ratings.user_id — added to bind ratings to logged-in users.
-		`SELECT 1 FROM information_schema.COLUMNS
-		  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'ratings' AND COLUMN_NAME = 'user_id'
-		  HAVING COUNT(*) = 0`,
-		`ALTER TABLE ratings ADD COLUMN user_id INT DEFAULT NULL AFTER article_id`,
-		`ALTER TABLE ratings ADD INDEX idx_rating_user (user_id)`,
-
-		// ratings.voter_key — deduplication key for ratings.
-		`SELECT 1 FROM information_schema.COLUMNS
-		  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'ratings' AND COLUMN_NAME = 'voter_key'
-		  HAVING COUNT(*) = 0`,
-		`ALTER TABLE ratings ADD COLUMN voter_key VARCHAR(141) NOT NULL DEFAULT 'n:匿名' AFTER author_name`,
+	// (table, column, alter) — column presence is the trigger.
+	migrations := []struct {
+		table  string
+		column string
+		alter  string
+	}{
+		{"comments", "user_id", "ALTER TABLE comments ADD COLUMN user_id INT DEFAULT NULL AFTER line_number"},
+		{"ratings", "user_id", "ALTER TABLE ratings ADD COLUMN user_id INT DEFAULT NULL AFTER article_id"},
+		{"ratings", "voter_key", "ALTER TABLE ratings ADD COLUMN voter_key VARCHAR(141) NOT NULL DEFAULT 'n:匿名' AFTER author_name"},
+		{"webauthn_credentials", "name", "ALTER TABLE webauthn_credentials ADD COLUMN name VARCHAR(128) NOT NULL DEFAULT '未命名 Passkey' AFTER user_id"},
 	}
-	for i := 0; i < len(migrations); i += 2 {
-		check := migrations[i]
-		stmt := migrations[i+1]
-		var dummy int
-		err := db.QueryRow(check).Scan(&dummy)
-		if err == sql.ErrNoRows {
-			// Column is missing — run the ALTER.
-			if _, err := db.Exec(stmt); err != nil {
-				slog.Warn("migration skipped (may already exist)", "stmt", stmt, "err", err)
+	for _, m := range migrations {
+		var n int
+		err := db.QueryRow(
+			`SELECT COUNT(*) FROM information_schema.COLUMNS
+			 WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?`,
+			m.table, m.column).Scan(&n)
+		if err != nil {
+			slog.Warn("migration check failed", "table", m.table, "column", m.column, "err", err)
+			continue
+		}
+		if n > 0 {
+			continue // already applied
+		}
+		if _, err := db.Exec(m.alter); err != nil {
+			slog.Warn("migration alter failed", "alter", m.alter, "err", err)
+		}
+	}
+	// Index migrations can't be expressed in the table above because
+	// information_schema.COLUMNS only knows about columns — for indexes
+	// we'd need STATISTICS. The two indexes we add (idx_comment_user,
+	// idx_rating_user) ride on the user_id columns above; MySQL creates
+	// them in parallel CREATE TABLE entries for fresh installs. For
+	// upgraded installs, add them once via `CREATE INDEX IF NOT EXISTS`
+	// is not available in MySQL — we use the duplicate-index error
+	// path instead, which is best-effort.
+	addIndexes := []string{
+		"ALTER TABLE comments ADD INDEX idx_comment_user (user_id)",
+		"ALTER TABLE ratings ADD INDEX idx_rating_user (user_id)",
+	}
+	for _, s := range addIndexes {
+		if _, err := db.Exec(s); err != nil {
+			// 1061 = ER_DUP_KEYNAME. Tolerate it; log anything else.
+			msg := err.Error()
+			if !contains(msg, "Duplicate key name") && !contains(msg, "1061") {
+				slog.Warn("index add failed", "stmt", s, "err", err)
 			}
 		}
 	}
 	return nil
+}
+
+// contains is a tiny substring helper to avoid dragging in strings just
+// for the index-migration log filter.
+func contains(s, sub string) bool {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
 }
 
 // SeedAdmin inserts the default admin user if the users table is empty.
