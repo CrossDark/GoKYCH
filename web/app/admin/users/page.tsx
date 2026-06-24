@@ -4,15 +4,29 @@ import { useState, useEffect } from "react";
 import { getCsrf, listUsers, createUser, updateUserRole, deleteUser } from "@/lib/api";
 import type { User } from "@/lib/types";
 
+const ROLE_BADGE: Record<string, string> = {
+  owner: "danger",
+  admin: "warning",
+  user: "neutral",
+};
+
+const ROLE_LABEL: Record<string, string> = {
+  owner: "站长",
+  admin: "管理员",
+  user: "用户",
+};
+
 export default function AdminUsers() {
   const [csrf, setCsrf] = useState("");
   const [users, setUsers] = useState<User[]>([]);
-  const [msg, setMsg] = useState("");
+  const [msg, setMsg] = useState<{ kind: "success" | "error"; text: string } | null>(null);
+  const [search, setSearch] = useState("");
   const [form, setForm] = useState({ username: "", password: "", nickname: "", role: "user" });
+  const [submitting, setSubmitting] = useState(false);
 
   const load = () => {
     if (!csrf) return;
-    listUsers(csrf).then(setUsers).catch((e) => setMsg(e.message));
+    listUsers(csrf).then(setUsers).catch((e) => setMsg({ kind: "error", text: e.message }));
   };
 
   useEffect(() => {
@@ -24,88 +38,213 @@ export default function AdminUsers() {
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
-    setMsg("");
+    setMsg(null);
+    setSubmitting(true);
     try {
-      await createUser(csrf, { username: form.username, password: form.password, nickname: form.nickname || undefined, role: form.role });
-      setMsg("用户已创建。");
+      await createUser(csrf, {
+        username: form.username,
+        password: form.password,
+        nickname: form.nickname || undefined,
+        role: form.role,
+      });
+      setMsg({ kind: "success", text: `用户「${form.username}」已创建。` });
       setForm({ username: "", password: "", nickname: "", role: "user" });
       load();
     } catch (err: any) {
-      setMsg(err.message || "创建失败。");
+      setMsg({ kind: "error", text: err.message || "创建失败。" });
+    } finally {
+      setSubmitting(false);
     }
   };
 
   const handleRoleChange = async (username: string, role: string) => {
     try {
       await updateUserRole(csrf, username, role);
+      setMsg({ kind: "success", text: `已更新「${username}」的角色。` });
       load();
     } catch (err: any) {
-      setMsg(err.message || "操作失败。");
+      setMsg({ kind: "error", text: err.message || "操作失败。" });
     }
   };
 
   const handleDelete = async (username: string) => {
-    if (!confirm(`确定删除用户「${username}」吗？`)) return;
+    if (!confirm(`确定删除用户「${username}」吗？此操作不可撤销。`)) return;
     try {
       await deleteUser(csrf, username);
-      setMsg("用户已删除。");
+      setMsg({ kind: "success", text: `用户「${username}」已删除。` });
       load();
     } catch (err: any) {
-      setMsg(err.message || "删除失败。");
+      setMsg({ kind: "error", text: err.message || "删除失败。" });
     }
   };
 
+  const filtered = users.filter((u) => {
+    if (!search) return true;
+    const s = search.toLowerCase();
+    return u.username.toLowerCase().includes(s)
+      || (u.nickname || "").toLowerCase().includes(s);
+  });
+
   return (
     <div className="admin-users">
-      <h1>用户管理</h1>
-      {msg && <p className="admin-msg">{msg}</p>}
+      <div className="admin-page-header">
+        <div>
+          <h1>用户管理</h1>
+          <div className="admin-page-subtitle">共 {users.length} 个用户{search && ` · 匹配 ${filtered.length}`}</div>
+        </div>
+      </div>
 
-      <details className="admin-form-section">
-        <summary>新建用户</summary>
-        <form onSubmit={handleCreate} className="admin-form">
-          <label>用户名 <input value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} required /></label>
-          <label>密码 <input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} required /></label>
-          <label>昵称 <input value={form.nickname} onChange={(e) => setForm({ ...form, nickname: e.target.value })} /></label>
-          <label>角色
-            <select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })}>
-              <option value="user">user</option>
-              <option value="admin">admin</option>
-              <option value="owner">owner</option>
-            </select>
-          </label>
-          <button type="submit" className="btn btn-primary">创建</button>
-        </form>
-      </details>
-
-      {users.length === 0 ? (
-        <p className="empty-message">暂无用户。</p>
-      ) : (
-        <table className="admin-table">
-          <thead>
-            <tr><th>ID</th><th>用户名</th><th>昵称</th><th>角色</th><th>创建时间</th><th>操作</th></tr>
-          </thead>
-          <tbody>
-            {users.map((u) => (
-              <tr key={u.id}>
-                <td>{u.id}</td>
-                <td>{u.username}</td>
-                <td>{u.nickname || "—"}</td>
-                <td>
-                  <select value={u.role} onChange={(e) => handleRoleChange(u.username, e.target.value)} className="admin-role-select">
-                    <option value="user">user</option>
-                    <option value="admin">admin</option>
-                    <option value="owner">owner</option>
-                  </select>
-                </td>
-                <td>{new Date(u.created_at).toLocaleDateString("zh-CN")}</td>
-                <td>
-                  <button className="btn btn-small btn-danger" onClick={() => handleDelete(u.username)}>删除</button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      {msg && (
+        <div className={`admin-notice admin-notice-${msg.kind}`}>
+          <span className="admin-notice-icon">{msg.kind === "success" ? "✓" : "✕"}</span>
+          <div className="admin-notice-content">{msg.text}</div>
+        </div>
       )}
+
+      {/* New user form */}
+      <div className="admin-card">
+        <div className="admin-card-header">
+          <h2>＋ 创建新用户</h2>
+        </div>
+        <div className="admin-card-body">
+          <form onSubmit={handleCreate} className="admin-form">
+            <div className="admin-form-row">
+              <div className="admin-form-group">
+                <label>用户名 <span style={{ color: "var(--admin-danger)" }}>*</span></label>
+                <input
+                  value={form.username}
+                  onChange={(e) => setForm({ ...form, username: e.target.value })}
+                  required
+                  minLength={3}
+                  placeholder="字母数字下划线"
+                />
+              </div>
+              <div className="admin-form-group">
+                <label>密码 <span style={{ color: "var(--admin-danger)" }}>*</span></label>
+                <input
+                  type="password"
+                  value={form.password}
+                  onChange={(e) => setForm({ ...form, password: e.target.value })}
+                  required
+                  minLength={6}
+                  placeholder="至少 6 位"
+                />
+              </div>
+            </div>
+            <div className="admin-form-row">
+              <div className="admin-form-group">
+                <label>昵称</label>
+                <input
+                  value={form.nickname}
+                  onChange={(e) => setForm({ ...form, nickname: e.target.value })}
+                  placeholder="显示名称（可选）"
+                />
+              </div>
+              <div className="admin-form-group">
+                <label>角色</label>
+                <select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })}>
+                  <option value="user">用户（普通）</option>
+                  <option value="admin">管理员</option>
+                  <option value="owner">站长（最高权限）</option>
+                </select>
+                <div className="admin-form-hint">站长可以管理其他用户和站点设置</div>
+              </div>
+            </div>
+            <div className="admin-form-actions">
+              <button type="submit" className="admin-btn admin-btn-primary" disabled={submitting}>
+                {submitting ? "创建中…" : "创建用户"}
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      {/* Filter */}
+      <div className="admin-filter">
+        <span className="admin-filter-label">搜索：</span>
+        <div className="admin-search-box" style={{ maxWidth: 300 }}>
+          <span className="admin-search-box-icon">🔍</span>
+          <input
+            placeholder="按用户名 / 昵称搜索"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
+      </div>
+
+      {/* List */}
+      <div className="admin-card">
+        <div className="admin-card-header">
+          <h2>👥 用户列表</h2>
+        </div>
+        <div className="admin-card-body no-padding">
+          {users.length === 0 ? (
+            <div className="admin-empty">
+              <span className="admin-empty-icon">👥</span>
+              <div className="admin-empty-title">加载中…</div>
+            </div>
+          ) : filtered.length === 0 ? (
+            <div className="admin-empty">
+              <span className="admin-empty-icon">🔍</span>
+              <div className="admin-empty-title">没有匹配的用户</div>
+            </div>
+          ) : (
+            <table className="admin-table">
+              <thead>
+                <tr>
+                  <th className="col-id">ID</th>
+                  <th>用户名</th>
+                  <th>昵称</th>
+                  <th>角色</th>
+                  <th className="col-date">创建时间</th>
+                  <th className="col-actions">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((u) => (
+                  <tr key={u.id}>
+                    <td className="col-id">{u.id}</td>
+                    <td className="col-title">
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: "0.5rem" }}>
+                        <span className="admin-user-avatar" style={{ width: 24, height: 24, fontSize: "0.7rem" }}>
+                          {(u.nickname?.[0] || u.username[0] || "?").toUpperCase()}
+                        </span>
+                        {u.username}
+                      </span>
+                    </td>
+                    <td>{u.nickname || <span style={{ color: "var(--text-muted)" }}>—</span>}</td>
+                    <td>
+                      <select
+                        value={u.role}
+                        onChange={(e) => handleRoleChange(u.username, e.target.value)}
+                        className="admin-role-select"
+                        style={{ fontSize: "0.82rem", padding: "0.25rem 0.5rem" }}
+                      >
+                        <option value="user">用户</option>
+                        <option value="admin">管理员</option>
+                        <option value="owner">站长</option>
+                      </select>
+                      <span className={`admin-badge admin-badge-${ROLE_BADGE[u.role] || "neutral"}`} style={{ marginLeft: "0.4rem" }}>
+                        {ROLE_LABEL[u.role] || u.role}
+                      </span>
+                    </td>
+                    <td className="col-date">{new Date(u.created_at).toLocaleDateString("zh-CN")}</td>
+                    <td className="col-actions">
+                      <button
+                        className="admin-btn admin-btn-danger admin-btn-sm"
+                        onClick={() => handleDelete(u.username)}
+                        title="删除"
+                      >
+                        🗑
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

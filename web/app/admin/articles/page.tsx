@@ -6,7 +6,23 @@ import { useSearchParams, useRouter } from "next/navigation";
 import { getCsrf, listArticles, getArticle, createArticle, updateArticle, deleteArticle } from "@/lib/api";
 import type { Article, ArticleListResult } from "@/lib/types";
 
-const TYPES = ["md", "wikidot", "html", "bbcode", "typst"];
+const TYPES = [
+  { key: "md", label: "Markdown" },
+  { key: "wikidot", label: "Wikidot" },
+  { key: "html", label: "HTML" },
+  { key: "bbcode", label: "BBCode" },
+  { key: "typst", label: "Typst" },
+] as const;
+
+function TypeBadge({ type }: { type: string }) {
+  const cls =
+    type === "md" ? "primary" :
+    type === "wikidot" ? "danger" :
+    type === "html" ? "warning" :
+    type === "bbcode" ? "success" :
+    "neutral";
+  return <span className={`admin-badge admin-badge-${cls}`}>{type}</span>;
+}
 
 function AdminArticlesInner() {
   const searchParams = useSearchParams();
@@ -15,10 +31,12 @@ function AdminArticlesInner() {
   const [result, setResult] = useState<ArticleListResult | null>(null);
   const [page, setPage] = useState(1);
   const [filterType, setFilterType] = useState("");
+  const [search, setSearch] = useState("");
   const [editing, setEditing] = useState<Article | null>(null);
   const [form, setForm] = useState({ type: "md", slug: "", title: "", content: "", tags: "" });
-  const [msg, setMsg] = useState("");
+  const [msg, setMsg] = useState<{ kind: "success" | "error" | "info"; text: string } | null>(null);
   const [initialEditLoaded, setInitialEditLoaded] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
 
   const load = (p: number, t: string) => {
     listArticles(t || undefined, p).then(setResult).catch(() => {});
@@ -33,6 +51,12 @@ function AdminArticlesInner() {
 
   useEffect(() => { load(page, filterType); }, [page, filterType]);
 
+  // Read ?type= from URL (dashboard links)
+  useEffect(() => {
+    const t = searchParams.get("type");
+    if (t && TYPES.find(x => x.key === t)) setFilterType(t);
+  }, [searchParams]);
+
   // Handle direct edit link from article page
   useEffect(() => {
     if (initialEditLoaded || !csrf) return;
@@ -46,12 +70,10 @@ function AdminArticlesInner() {
         setFilterType(a.type);
         setPage(1);
         setInitialEditLoaded(true);
-        // Open the form section
         setTimeout(() => {
           const details = document.querySelector(".admin-form-section") as HTMLDetailsElement;
           if (details) details.open = true;
         }, 100);
-        // Clean URL
         router.replace("/admin/articles");
       }).catch(() => {});
     }
@@ -61,32 +83,35 @@ function AdminArticlesInner() {
   const handleCreate = () => {
     setEditing(null);
     setForm({ type: "md", slug: "", title: "", content: "", tags: "" });
-    setMsg("");
+    setMsg(null);
   };
 
   const handleEdit = (a: Article) => {
     setEditing(a);
     setForm({ type: a.type, slug: a.slug, title: a.title, content: a.content, tags: (a.tags || []).join(", ") });
-    setMsg("");
+    setMsg(null);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setMsg("");
+    setMsg(null);
+    setSubmitting(true);
     const tags = form.tags.split(",").map((t) => t.trim()).filter(Boolean);
     try {
       if (editing) {
         await updateArticle(editing.type, editing.slug, csrf, { title: form.title, content: form.content, tags });
-        setMsg("文章已更新。");
+        setMsg({ kind: "success", text: "文章已更新。" });
       } else {
         await createArticle(form.type, csrf, { slug: form.slug, title: form.title, content: form.content, tags });
-        setMsg("文章已创建。");
+        setMsg({ kind: "success", text: "文章已创建。" });
       }
       load(page, filterType);
       setEditing(null);
       setForm({ type: "md", slug: "", title: "", content: "", tags: "" });
     } catch (err: any) {
-      setMsg(err.message || "操作失败。");
+      setMsg({ kind: "error", text: err.message || "操作失败。" });
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -94,98 +119,262 @@ function AdminArticlesInner() {
     if (!confirm(`确定删除「${a.title}」吗？此操作不可撤销。`)) return;
     try {
       await deleteArticle(a.type, a.slug, csrf);
-      setMsg("文章已删除。");
+      setMsg({ kind: "success", text: "文章已删除。" });
       load(page, filterType);
     } catch (err: any) {
-      setMsg(err.message || "删除失败。");
+      setMsg({ kind: "error", text: err.message || "删除失败。" });
     }
   };
 
+  // Client-side filter (search in title/slug/tags)
+  const filtered = result?.articles?.filter((a) => {
+    if (!search) return true;
+    const s = search.toLowerCase();
+    return a.title.toLowerCase().includes(s)
+      || a.slug.toLowerCase().includes(s)
+      || (a.tags || []).some((t) => t.toLowerCase().includes(s));
+  }) ?? [];
+
   return (
     <div className="admin-articles">
-      <h1>文章管理</h1>
-      {msg && <p className="admin-msg">{msg}</p>}
+      <div className="admin-page-header">
+        <div>
+          <h1>文章管理</h1>
+          <div className="admin-page-subtitle">
+            {result ? `共 ${result.total} 篇` : "加载中…"}
+          </div>
+        </div>
+        <div className="admin-header-actions">
+          <button className="admin-btn admin-btn-primary" onClick={handleCreate}>
+            ＋ 新建文章
+          </button>
+        </div>
+      </div>
+
+      {msg && (
+        <div className={`admin-notice admin-notice-${msg.kind}`}>
+          <span className="admin-notice-icon">{msg.kind === "success" ? "✓" : msg.kind === "error" ? "✕" : "ℹ"}</span>
+          <div className="admin-notice-content">{msg.text}</div>
+        </div>
+      )}
 
       {/* New/Edit form */}
-      <details className="admin-form-section">
-        <summary>{editing ? `编辑：${editing.title}` : "新建文章"}</summary>
-        <form onSubmit={handleSubmit} className="admin-form">
-          {!editing && (
-            <>
-              <label>类型
-                <select value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}>
-                  {TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
-                </select>
-              </label>
-              <label>Slug
-                <input value={form.slug} onChange={(e) => setForm({ ...form, slug: e.target.value })} placeholder="hello-world" required />
-              </label>
-            </>
+      <div className="admin-card">
+        <div className="admin-card-header">
+          <h2>{editing ? `✏️ 编辑：${editing.title}` : "＋ 新建文章"}</h2>
+          {editing && (
+            <button className="admin-btn admin-btn-ghost admin-btn-sm" onClick={handleCreate}>取消编辑</button>
           )}
-          <label>标题
-            <input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} required />
-          </label>
-          <label>内容
-            <textarea value={form.content} onChange={(e) => setForm({ ...form, content: e.target.value })} rows={8} required />
-          </label>
-          <label>标签（逗号分隔）
-            <input value={form.tags} onChange={(e) => setForm({ ...form, tags: e.target.value })} />
-          </label>
-          <div className="admin-form-actions">
-            <button type="submit" className="btn btn-primary">{editing ? "保存" : "创建"}</button>
-            {editing && <button type="button" className="btn" onClick={handleCreate}>取消</button>}
-          </div>
-        </form>
-      </details>
+        </div>
+        <div className="admin-card-body">
+          <form onSubmit={handleSubmit} className="admin-form">
+            {!editing && (
+              <div className="admin-form-row">
+                <div className="admin-form-group">
+                  <label>类型</label>
+                  <select value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}>
+                    {TYPES.map((t) => <option key={t.key} value={t.key}>{t.label}</option>)}
+                  </select>
+                </div>
+                <div className="admin-form-group">
+                  <label>Slug</label>
+                  <input
+                    value={form.slug}
+                    onChange={(e) => setForm({ ...form, slug: e.target.value })}
+                    placeholder="hello-world"
+                    required
+                  />
+                  <div className="admin-form-hint">URL 中的标识符，只能用字母数字和短横线</div>
+                </div>
+              </div>
+            )}
+            <div className="admin-form-group">
+              <label>标题</label>
+              <input
+                value={form.title}
+                onChange={(e) => setForm({ ...form, title: e.target.value })}
+                required
+              />
+            </div>
+            <div className="admin-form-group">
+              <label>内容</label>
+              <textarea
+                value={form.content}
+                onChange={(e) => setForm({ ...form, content: e.target.value })}
+                rows={12}
+                required
+                placeholder="支持 Markdown / Wikidot / HTML / BBCode / Typst（取决于类型）"
+              />
+            </div>
+            <div className="admin-form-group">
+              <label>标签 <span style={{ fontWeight: 400, color: "var(--text-muted)" }}>（逗号分隔）</span></label>
+              <input
+                value={form.tags}
+                onChange={(e) => setForm({ ...form, tags: e.target.value })}
+                placeholder="tag1, tag2, tag3"
+              />
+            </div>
+            <div className="admin-form-actions">
+              <button type="submit" className="admin-btn admin-btn-primary" disabled={submitting}>
+                {submitting ? "保存中…" : editing ? "保存修改" : "创建文章"}
+              </button>
+              {editing && (
+                <button type="button" className="admin-btn admin-btn-ghost" onClick={handleCreate}>
+                  取消
+                </button>
+              )}
+              <div className="admin-form-actions-spacer" />
+              {editing && (
+                <span style={{ fontSize: "0.78rem", color: "var(--text-muted)" }}>
+                  类型 / Slug 在编辑模式下不可修改
+                </span>
+              )}
+            </div>
+          </form>
+        </div>
+      </div>
 
-      {/* Filter */}
+      {/* Filter bar */}
       <div className="admin-filter">
-        <span>筛选类型：</span>
-        {["", ...TYPES].map((t) => (
-          <button key={t} className={`btn btn-small ${filterType === t ? "active" : ""}`} onClick={() => { setFilterType(t); setPage(1); }}>
-            {t || "全部"}
+        <span className="admin-filter-label">类型：</span>
+        <button
+          className={`admin-filter-chip ${filterType === "" ? "active" : ""}`}
+          onClick={() => { setFilterType(""); setPage(1); }}
+        >
+          全部
+        </button>
+        {TYPES.map((t) => (
+          <button
+            key={t.key}
+            className={`admin-filter-chip ${filterType === t.key ? "active" : ""}`}
+            onClick={() => { setFilterType(t.key); setPage(1); }}
+          >
+            {t.label}
           </button>
         ))}
+        <div style={{ flex: 1 }} />
+        <div className="admin-search-box" style={{ maxWidth: 240 }}>
+          <span className="admin-search-box-icon">🔍</span>
+          <input
+            placeholder="搜索标题 / Slug / 标签"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
       </div>
 
       {/* List */}
-      {result && result.articles.length === 0 ? (
-        <p className="empty-message">暂无文章。</p>
-      ) : (
-        <table className="admin-table">
-          <thead>
-            <tr>
-              <th>类型</th><th>标题</th><th>Slug</th><th>标签</th><th>更新于</th><th>操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            {result?.articles.map((a) => (
-              <tr key={a.id}>
-                <td><span className="article-type-badge">{a.type}</span></td>
-                <td><Link href={`/${a.type}/${a.slug}`} target="_blank">{a.title}</Link></td>
-                <td>{a.slug}</td>
-                <td>{(a.tags || []).join(", ")}</td>
-                <td>{new Date(a.updated_at).toLocaleDateString("zh-CN")}</td>
-                <td>
-                  <button className="btn btn-small" onClick={() => handleEdit(a)}>编辑</button>
-                  <button className="btn btn-small btn-danger" onClick={() => handleDelete(a)}>删除</button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-
-      {/* Pagination */}
-      {result && result.total_pages > 1 && (
-        <div className="admin-pagination">
-          {Array.from({ length: result.total_pages }, (_, i) => i + 1).map((p) => (
-            <button key={p} className={`btn btn-small ${page === p ? "active" : ""}`} onClick={() => setPage(p)}>
-              {p}
-            </button>
-          ))}
+      <div className="admin-card">
+        <div className="admin-card-header">
+          <h2>
+            📋 文章列表
+            {filterType && <span style={{ fontWeight: 400, color: "var(--text-muted)", fontSize: "0.85rem", marginLeft: "0.5rem" }}>· {TYPES.find(t => t.key === filterType)?.label}</span>}
+          </h2>
+          <div className="admin-card-actions">
+            <span style={{ fontSize: "0.82rem", color: "var(--text-muted)" }}>
+              {search ? `匹配 ${filtered.length} / ${result?.articles.length ?? 0}` : `共 ${result?.total ?? 0} 篇`}
+            </span>
+          </div>
         </div>
-      )}
+        <div className="admin-card-body no-padding">
+          {!result ? (
+            <div className="admin-empty">
+              <div className="admin-skeleton" style={{ height: 24, marginBottom: 8 }}>—</div>
+              <div className="admin-skeleton" style={{ height: 24, marginBottom: 8 }}>—</div>
+              <div className="admin-skeleton" style={{ height: 24 }}>—</div>
+            </div>
+          ) : filtered.length === 0 ? (
+            <div className="admin-empty">
+              <span className="admin-empty-icon">{search ? "🔍" : "📝"}</span>
+              <div className="admin-empty-title">{search ? "没有匹配的文章" : "还没有文章"}</div>
+              <div>{search ? "试试调整搜索词" : <>点击右上角 <strong>新建文章</strong> 开始</>}</div>
+            </div>
+          ) : (
+            <table className="admin-table">
+              <thead>
+                <tr>
+                  <th>类型</th>
+                  <th>标题</th>
+                  <th>Slug</th>
+                  <th>标签</th>
+                  <th className="col-date">更新于</th>
+                  <th className="col-actions">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((a) => (
+                  <tr key={a.id}>
+                    <td><TypeBadge type={a.type} /></td>
+                    <td className="col-title">
+                      <Link href={`/${a.type}/${a.slug}`} target="_blank" style={{ color: "inherit" }}>
+                        {a.title}
+                      </Link>
+                    </td>
+                    <td className="col-slug">{a.slug}</td>
+                    <td>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: "0.2rem" }}>
+                        {(a.tags || []).map((t) => (
+                          <Link key={t} href={`/labels/${t}`} target="_blank" className="admin-badge admin-badge-neutral">
+                            {t}
+                          </Link>
+                        ))}
+                      </div>
+                    </td>
+                    <td className="col-date">{new Date(a.updated_at).toLocaleDateString("zh-CN")}</td>
+                    <td className="col-actions">
+                      <Link href={`/${a.type}/${a.slug}`} target="_blank" className="admin-btn admin-btn-outline admin-btn-sm" title="查看">👁</Link>
+                      <button className="admin-btn admin-btn-secondary admin-btn-sm" onClick={() => handleEdit(a)} title="编辑">✏️</button>
+                      <button className="admin-btn admin-btn-danger admin-btn-sm" onClick={() => handleDelete(a)} title="删除">🗑</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+        {/* Pagination */}
+        {result && result.total_pages > 1 && (
+          <div className="admin-card-footer">
+            <span>第 {page} / {result.total_pages} 页 · 共 {result.total} 条</span>
+            <div className="admin-pagination-controls">
+              <button
+                className="admin-pagination-btn"
+                onClick={() => setPage(Math.max(1, page - 1))}
+                disabled={page === 1}
+              >
+                ←
+              </button>
+              {Array.from({ length: result.total_pages }, (_, i) => i + 1)
+                .filter((p) => p === 1 || p === result.total_pages || Math.abs(p - page) <= 2)
+                .reduce<(number | "…")[]>((acc, p, i, arr) => {
+                  if (i > 0 && (p as number) - (arr[i - 1] as number) > 1) acc.push("…");
+                  acc.push(p);
+                  return acc;
+                }, [])
+                .map((item, i) =>
+                  item === "…" ? (
+                    <span key={`e${i}`} className="admin-pagination-ellipsis">…</span>
+                  ) : (
+                    <button
+                      key={item}
+                      className={`admin-pagination-btn ${page === item ? "active" : ""}`}
+                      onClick={() => setPage(item)}
+                    >
+                      {item}
+                    </button>
+                  )
+                )}
+              <button
+                className="admin-pagination-btn"
+                onClick={() => setPage(Math.min(result.total_pages, page + 1))}
+                disabled={page === result.total_pages}
+              >
+                →
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
