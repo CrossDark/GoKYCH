@@ -11,7 +11,6 @@ export default function AdminTags() {
   const [tags, setTags] = useState<AdminTag[]>([]);
   const [loading, setLoading] = useState(true);
   const toast = useToast();
-  const [msg, setMsg] = useState<{ kind: "success" | "error" | "info"; text: string } | null>(null);
   const [newName, setNewName] = useState("");
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editingName, setEditingName] = useState("");
@@ -43,20 +42,16 @@ export default function AdminTags() {
     e.preventDefault();
     const name = newName.trim();
     if (!name) return;
-    setMsg(null);
     setSubmitting(true);
     try {
       const r = await createTag(csrf, name);
       const text = r.existed ? `标签「${name}」已存在。` : `标签「${name}」已创建。`;
-      setMsg({ kind: r.existed ? "info" : "success", text });
       if (r.existed) toast.info(text);
       else toast.success(text);
       setNewName("");
       load();
     } catch (err: any) {
-      const text = err.message || "创建失败。";
-      setMsg({ kind: "error", text });
-      toast.error(text);
+      toast.error(err.message || "创建失败。");
     } finally {
       setSubmitting(false);
     }
@@ -78,16 +73,13 @@ export default function AdminTags() {
       cancelRename();
       return;
     }
-    setMsg(null);
     try {
       await renameTag(csrf, id, name);
       toast.success("标签已重命名。");
       cancelRename();
       load();
     } catch (err: any) {
-      const text = err.message || "重命名失败。";
-      setMsg({ kind: "error", text });
-      toast.error(text);
+      toast.error(err.message || "重命名失败。");
     }
   };
 
@@ -121,13 +113,6 @@ export default function AdminTags() {
           </div>
         </div>
       </div>
-
-      {msg && (
-        <div className={`admin-notice admin-notice-${msg.kind}`}>
-          <span className="admin-notice-icon">{msg.kind === "success" ? "✓" : msg.kind === "error" ? "✕" : "ℹ"}</span>
-          <div className="admin-notice-content">{msg.text}</div>
-        </div>
-      )}
 
       {/* New tag */}
       <div className="admin-card">

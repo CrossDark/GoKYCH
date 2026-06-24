@@ -9,7 +9,6 @@ export default function AdminProfile() {
   const [csrf, setCsrf] = useState("");
   const [user, setUser] = useState<User | null>(null);
   const toast = useToast();
-  const [msg, setMsg] = useState<{ kind: "success" | "error"; text: string } | null>(null);
   const [form, setForm] = useState({ nickname: "", bio: "", avatar: "" });
   const [submitting, setSubmitting] = useState(false);
   const [initial, setInitial] = useState({ nickname: "", bio: "", avatar: "" });
@@ -33,7 +32,6 @@ export default function AdminProfile() {
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    setMsg(null);
     setSubmitting(true);
     try {
       const updated = await updateProfile(csrf, {
@@ -45,12 +43,9 @@ export default function AdminProfile() {
       const init = { nickname: updated.nickname || "", bio: updated.bio || "", avatar: updated.avatar || "" };
       setInitial(init);
       setForm(init);
-      setMsg({ kind: "success", text: "资料已更新。" });
       toast.success("资料已更新。");
     } catch (err: any) {
-      const text = err.message || "保存失败。";
-      setMsg({ kind: "error", text });
-      toast.error(text);
+      toast.error(err.message || "保存失败。");
     } finally {
       setSubmitting(false);
     }
@@ -66,13 +61,6 @@ export default function AdminProfile() {
           <div className="admin-page-subtitle">修改昵称、简介、头像</div>
         </div>
       </div>
-
-      {msg && (
-        <div className={`admin-notice admin-notice-${msg.kind}`}>
-          <span className="admin-notice-icon">{msg.kind === "success" ? "✓" : "✕"}</span>
-          <div className="admin-notice-content">{msg.text}</div>
-        </div>
-      )}
 
       {/* Account info (read-only) */}
       <div className="admin-card">

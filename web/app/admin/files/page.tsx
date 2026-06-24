@@ -18,7 +18,6 @@ export default function AdminFiles() {
   const [files, setFiles] = useState<AdminFile[]>([]);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
-  const [msg, setMsg] = useState("");
   const toast = useToast();
   const [dragOver, setDragOver] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<AdminFile | null>(null);
@@ -44,7 +43,6 @@ export default function AdminFiles() {
 
   const doUpload = async (picked: FileList | null) => {
     if (!picked || picked.length === 0) return;
-    setMsg("");
     setUploading(true);
     let ok = 0;
     let fail = 0;
@@ -62,9 +60,6 @@ export default function AdminFiles() {
         console.error("upload failed:", f.name, err);
       }
     }
-    setMsg(
-      `上传完成：${ok} 个新增，${dedup} 个去重，${fail} 个失败。`,
-    );
     if (ok > 0 || dedup > 0) {
       toast.success(`上传完成：${ok} 个新增，${dedup} 个去重${fail > 0 ? `，${fail} 个失败` : ""}。`);
     }
@@ -127,13 +122,6 @@ export default function AdminFiles() {
           </div>
         </div>
       </div>
-
-      {msg && (
-        <div className="admin-notice admin-notice-info">
-          <span className="admin-notice-icon">ℹ</span>
-          <div className="admin-notice-content">{msg}</div>
-        </div>
-      )}
 
       <div className="admin-card">
         <div className="admin-card-header">

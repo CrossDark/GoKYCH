@@ -22,7 +22,6 @@ export default function AdminUsers() {
   const [csrf, setCsrf] = useState("");
   const [users, setUsers] = useState<User[]>([]);
   const toast = useToast();
-  const [msg, setMsg] = useState<{ kind: "success" | "error"; text: string } | null>(null);
   const [search, setSearch] = useState("");
   const [form, setForm] = useState({ username: "", password: "", nickname: "", role: "user" });
   const [submitting, setSubmitting] = useState(false);
@@ -31,7 +30,7 @@ export default function AdminUsers() {
 
   const load = () => {
     if (!csrf) return;
-    listUsers(csrf).then(setUsers).catch((e) => setMsg({ kind: "error", text: e.message }));
+    listUsers(csrf).then(setUsers).catch((e) => toast.error(e.message));
   };
 
   useEffect(() => {
@@ -43,7 +42,6 @@ export default function AdminUsers() {
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
-    setMsg(null);
     setSubmitting(true);
     try {
       await createUser(csrf, {
@@ -53,14 +51,11 @@ export default function AdminUsers() {
         role: form.role,
       });
       const username = form.username;
-      setMsg({ kind: "success", text: `用户「${username}」已创建。` });
       toast.success(`用户「${username}」已创建。`);
       setForm({ username: "", password: "", nickname: "", role: "user" });
       load();
     } catch (err: any) {
-      const text = err.message || "创建失败。";
-      setMsg({ kind: "error", text });
-      toast.error(text);
+      toast.error(err.message || "创建失败。");
     } finally {
       setSubmitting(false);
     }
@@ -109,13 +104,6 @@ export default function AdminUsers() {
           <div className="admin-page-subtitle">共 {users.length} 个用户{search && ` · 匹配 ${filtered.length}`}</div>
         </div>
       </div>
-
-      {msg && (
-        <div className={`admin-notice admin-notice-${msg.kind}`}>
-          <span className="admin-notice-icon">{msg.kind === "success" ? "✓" : "✕"}</span>
-          <div className="admin-notice-content">{msg.text}</div>
-        </div>
-      )}
 
       {/* New user form */}
       <div className="admin-card">

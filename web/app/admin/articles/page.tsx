@@ -37,7 +37,6 @@ function AdminArticlesInner() {
   const [search, setSearch] = useState("");
   const [editing, setEditing] = useState<Article | null>(null);
   const [form, setForm] = useState({ type: "md", slug: "", title: "", content: "", tags: "" });
-  const [msg, setMsg] = useState<{ kind: "success" | "error" | "info"; text: string } | null>(null);
   const [initialEditLoaded, setInitialEditLoaded] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<Article | null>(null);
@@ -88,37 +87,30 @@ function AdminArticlesInner() {
   const handleCreate = () => {
     setEditing(null);
     setForm({ type: "md", slug: "", title: "", content: "", tags: "" });
-    setMsg(null);
   };
 
   const handleEdit = (a: Article) => {
     setEditing(a);
     setForm({ type: a.type, slug: a.slug, title: a.title, content: a.content, tags: (a.tags || []).join(", ") });
-    setMsg(null);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setMsg(null);
     setSubmitting(true);
     const tags = form.tags.split(",").map((t) => t.trim()).filter(Boolean);
     try {
       if (editing) {
         await updateArticle(editing.type, editing.slug, csrf, { title: form.title, content: form.content, tags });
-        setMsg({ kind: "success", text: "文章已更新。" });
         toast.success("文章已更新。");
       } else {
         await createArticle(form.type, csrf, { slug: form.slug, title: form.title, content: form.content, tags });
-        setMsg({ kind: "success", text: "文章已创建。" });
         toast.success("文章已创建。");
       }
       load(page, filterType);
       setEditing(null);
       setForm({ type: "md", slug: "", title: "", content: "", tags: "" });
     } catch (err: any) {
-      const text = err.message || "操作失败。";
-      setMsg({ kind: "error", text });
-      toast.error(text);
+      toast.error(err.message || "操作失败。");
     } finally {
       setSubmitting(false);
     }
@@ -167,13 +159,6 @@ function AdminArticlesInner() {
           </button>
         </div>
       </div>
-
-      {msg && (
-        <div className={`admin-notice admin-notice-${msg.kind}`}>
-          <span className="admin-notice-icon">{msg.kind === "success" ? "✓" : msg.kind === "error" ? "✕" : "ℹ"}</span>
-          <div className="admin-notice-content">{msg.text}</div>
-        </div>
-      )}
 
       {/* New/Edit form */}
       <div className="admin-card">

@@ -10,7 +10,6 @@ export default function AdminNotifications() {
   const [csrf, setCsrf] = useState("");
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const toast = useToast();
-  const [msg, setMsg] = useState<{ kind: "success" | "error"; text: string } | null>(null);
   const [editing, setEditing] = useState<Notification | null>(null);
   const [form, setForm] = useState({ title: "", content: "", is_important: false });
   const [submitting, setSubmitting] = useState(false);
@@ -32,7 +31,6 @@ export default function AdminNotifications() {
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
-    setMsg(null);
     setSubmitting(true);
     try {
       await createNotification(csrf, { title: form.title, content: form.content, is_important: form.is_important });
@@ -40,9 +38,7 @@ export default function AdminNotifications() {
       setForm({ title: "", content: "", is_important: false });
       load();
     } catch (err: any) {
-      const text = err.message || "创建失败。";
-      setMsg({ kind: "error", text });
-      toast.error(text);
+      toast.error(err.message || "创建失败。");
     } finally {
       setSubmitting(false);
     }
@@ -56,7 +52,6 @@ export default function AdminNotifications() {
   const handleUpdate = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editing) return;
-    setMsg(null);
     setSubmitting(true);
     try {
       await updateNotification(csrf, editing.id, { title: form.title, content: form.content, is_important: form.is_important });
@@ -65,9 +60,7 @@ export default function AdminNotifications() {
       setForm({ title: "", content: "", is_important: false });
       load();
     } catch (err: any) {
-      const text = err.message || "更新失败。";
-      setMsg({ kind: "error", text });
-      toast.error(text);
+      toast.error(err.message || "更新失败。");
     } finally {
       setSubmitting(false);
     }
@@ -112,13 +105,6 @@ export default function AdminNotifications() {
           </div>
         </div>
       </div>
-
-      {msg && (
-        <div className={`admin-notice admin-notice-${msg.kind}`}>
-          <span className="admin-notice-icon">{msg.kind === "success" ? "✓" : "✕"}</span>
-          <div className="admin-notice-content">{msg.text}</div>
-        </div>
-      )}
 
       {/* Form */}
       <div className="admin-card">

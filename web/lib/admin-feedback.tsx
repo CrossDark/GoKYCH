@@ -113,27 +113,6 @@ function ToastContainer({
   );
 }
 
-/**
- * Convenience hook for one-shot inline messages.
- * Returns [message, showMessage]; `showMessage` shows an admin-notice block.
- * If you also want toast support, use `useToast` directly.
- */
-export function useNotice(
-  initialKind: ToastKind = "info",
-  initialText = ""
-): [
-  { kind: ToastKind; text: string } | null,
-  (kind: ToastKind, text: string) => void,
-  () => void
-] {
-  const [state, setState] = useState<{ kind: ToastKind; text: string } | null>(
-    initialText ? { kind: initialKind, text: initialText } : null
-  );
-  const show = useCallback((kind: ToastKind, text: string) => setState({ kind, text }), []);
-  const clear = useCallback(() => setState(null), []);
-  return [state, show, clear];
-}
-
 /** Tiny helper: register a one-time beforeunload warning when `active` is true. */
 export function useBeforeUnload(active: boolean, message = "您有未保存的修改，确定离开吗？") {
   useEffect(() => {
