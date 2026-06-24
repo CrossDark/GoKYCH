@@ -40,6 +40,9 @@ func (s *Server) Setup(r *gin.Engine) {
 		apiG.GET("/notifications", s.listNotifications)
 		apiG.GET("/articles", s.listArticles)
 		apiG.GET("/articles/:type/:slug", s.getArticle)
+		// Typst-only: download the compiled PDF. 404 if the article isn't
+		// a typst article or typst isn't installed.
+		apiG.GET("/articles/:type/:slug/pdf", s.getArticlePDF)
 		apiG.GET("/labels", s.listLabels)
 		apiG.GET("/labels/:tag", s.getLabelArticles)
 		apiG.GET("/search", s.search)
