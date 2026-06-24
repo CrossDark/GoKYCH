@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import { createPortal } from "react-dom";
 import Link from "next/link";
 import type { ArticleDetail, Comment } from "@/lib/types";
 import { RatingWidget } from "./RatingWidget";
@@ -12,6 +11,106 @@ interface Props {
   data: ArticleDetail;
   articleType: string;
   articleSlug: string;
+}
+
+function formatBubbleTime(iso: string): string {
+  try {
+    const d = new Date(iso);
+    return d.toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  } catch { return ""; }
+}
+
+function LineCommentBubble({
+  lineNum,
+  comments,
+  top,
+  height,
+  onClickLine,
+}: {
+  lineNum: number;
+  comments: Comment[];
+  top: number;
+  height: number;
+  onClickLine: (ln: number) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const sorted = [...comments].sort(
+    (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+  );
+
+  // Multiple comments: collapsed by default, click to expand to show all.
+  if (sorted.length > 1) {
+    if (!expanded) {
+      return (
+        <div
+          className="line-bubble line-bubble-collapsed"
+          style={{ top, height }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <button
+            className="line-bubble-expand-btn"
+            onClick={(e) => { e.stopPropagation(); setExpanded(true); }}
+            title={`第 ${lineNum} 行 · ${sorted.length} 条评论`}
+          >
+            <span className="line-bubble-expand-icon">▸</span>
+            <span>第 {lineNum} 行 · {sorted.length} 条评论 · 点击展开</span>
+          </button>
+        </div>
+      );
+    }
+
+    // Expanded: full list, auto-height (taller than line)
+    return (
+      <div
+        className="line-bubble line-bubble-expanded"
+        style={{ top }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="line-bubble-expanded-header">
+          <span>第 {lineNum} 行 · {sorted.length} 条评论</span>
+          <button
+            className="line-bubble-collapse-btn"
+            onClick={(e) => { e.stopPropagation(); setExpanded(false); }}
+            title="收起"
+          >▾</button>
+        </div>
+        <div className="line-bubble-comment-list">
+          {sorted.map((c, i) => (
+            <div key={i} className="line-bubble-comment-item">
+              <span className="line-bubble-avatar">{(c.author_name || "匿")[0]}</span>
+              <span className="line-bubble-name">{c.author_name || "匿名"}</span>
+              <span className="line-bubble-time">· {formatBubbleTime(c.created_at)}</span>
+              <span className="line-bubble-content">{c.content}</span>
+            </div>
+          ))}
+        </div>
+        <button
+          className="line-bubble-line-link"
+          onClick={(e) => { e.stopPropagation(); onClickLine(lineNum); }}
+        >定位到第 {lineNum} 行 →</button>
+      </div>
+    );
+  }
+
+  // Single comment: one-line compact display
+  const c = sorted[0];
+  return (
+    <div
+      className="line-bubble line-bubble-single"
+      style={{ top, height, "--bubble-h": `${height}px` } as React.CSSProperties}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <span className="line-bubble-avatar">{(c.author_name || "匿")[0]}</span>
+      <span className="line-bubble-name">{c.author_name || "匿名"}</span>
+      <span className="line-bubble-time">· {formatBubbleTime(c.created_at)}</span>
+      <span className="line-bubble-content">{c.content}</span>
+      <button
+        className="line-bubble-line-link"
+        onClick={(e) => { e.stopPropagation(); onClickLine(lineNum); }}
+        title={`定位到第 ${lineNum} 行`}
+      >→</button>
+    </div>
+  );
 }
 
 export function ArticleView({ data, articleType, articleSlug }: Props) {
@@ -27,15 +126,21 @@ export function ArticleView({ data, articleType, articleSlug }: Props) {
   const [csrfToken, setCsrfToken] = useState("");
   const [panelOpen, setPanelOpen] = useState(true);
   const [guideOpen, setGuideOpen] = useState(false);
-  const bubbleHostRef = useRef<HTMLDivElement | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   const [popup, setPopup] = useState<{ lineNum: number; x: number; y: number } | null>(null);
   const [popupInput, setPopupInput] = useState("");
   const [popupComments, setPopupComments] = useState<Comment[]>([]);
 
-  // Commented lines (for panel)
+  // Commented lines (for panel + bubble layer)
   const [commentedLines, setCommentedLines] = useState<number[]>([]);
+
+  // Bubble vertical positions (line number → top in px relative to content-body)
+  const [bubbleTops, setBubbleTops] = useState<Record<number, number>>({});
+  // Bubble heights — match the commented line's offsetHeight so the bubble
+  // visually aligns with the line and auto-shrinks font to fit.
+  const [bubbleHeights, setBubbleHeights] = useState<Record<number, number>>({});
+  const bubbleMeasureKeyRef = useRef(0);
 
   // Auth
   useEffect(() => {
@@ -54,6 +159,33 @@ export function ArticleView({ data, articleType, articleSlug }: Props) {
     lineDataRef.current = d;
     setCommentedLines(Object.keys(d).map(Number).sort((a, b) => a - b));
   }, [data]);
+
+  // Measure bubble top + height for each commented line. Used both after
+  // innerHTML is rendered and on window resize.
+  const measureBubbleTops = useCallback((container: HTMLElement) => {
+    const tops: Record<number, number> = {};
+    const heights: Record<number, number> = {};
+    commentedLines.forEach((ln) => {
+      const el = container.querySelector(`[data-line="${ln}"]`) as HTMLElement | null;
+      if (el) {
+        tops[ln] = el.offsetTop;
+        heights[ln] = el.offsetHeight;
+      }
+    });
+    bubbleMeasureKeyRef.current += 1;
+    setBubbleTops(tops);
+    setBubbleHeights(heights);
+  }, [commentedLines]);
+
+  // Re-measure on resize (responsive font/wrap can shift line positions).
+  useEffect(() => {
+    const onResize = () => {
+      const container = contentRef.current;
+      if (container) measureBubbleTops(container);
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [measureBubbleTops]);
 
   // Set innerHTML manually (avoids dangerouslySetInnerHTML wiping DOM on
 // re-renders). DOMPurify is loaded dynamically inside the effect so its
@@ -92,15 +224,6 @@ useEffect(() => {
     });
     container.innerHTML = safe;
 
-    // Create bubble portal host
-    let host = container.querySelector(".line-bubble-host") as HTMLDivElement | null;
-    if (!host) {
-      host = document.createElement("div");
-      host.className = "line-bubble-host";
-      container.appendChild(host);
-    }
-    bubbleHostRef.current = host;
-
     // Assign line numbers to block elements
     const blocks = container.querySelectorAll("p, h1, h2, h3, h4, h5, h6, li, pre, blockquote, div, table");
     let ln = 0;
@@ -120,36 +243,26 @@ useEffect(() => {
       const count = counts[n] || 0;
       block.classList.toggle("has-line-comments", count > 0);
     });
+
+    // Measure bubble positions inline: we are guaranteed lines exist at this point.
+    // The async import has resolved, innerHTML is set, and data-line attributes are applied.
+    measureBubbleTops(container);
   })();
   return () => {
     cancelled = true;
   };
-}, [html]);
+}, [html, lineCounts]);
 
-  // Position bubbles after React portal renders + handle resize
-  useEffect(() => {
-    const positionBubbles = () => {
-      const container = contentRef.current;
-      if (!container || window.innerWidth < 768) return;
-      const host = container.querySelector(".line-bubble-host") as HTMLElement | null;
-      if (!host) return;
-      host.querySelectorAll<HTMLElement>(".line-comment-bubble").forEach((el) => {
-        const ln = el.dataset.bubbleLine;
-        if (!ln) return;
-        const lineEl = container.querySelector(`[data-line="${ln}"]`) as HTMLElement | null;
-        if (lineEl) el.style.top = `${lineEl.offsetTop}px`;
-      });
-    };
-    positionBubbles();
-    let ticking = false;
-    const handler = () => {
-      if (ticking) return;
-      ticking = true;
-      requestAnimationFrame(() => { positionBubbles(); ticking = false; });
-    };
-    window.addEventListener("resize", handler);
-    return () => window.removeEventListener("resize", handler);
-  }, [html, commentedLines]);
+  const scrollToLine = useCallback((ln: number) => {
+    const container = contentRef.current;
+    if (!container) return;
+    const block = container.querySelector(`[data-line="${ln}"]`) as HTMLElement | null;
+    if (block) {
+      container.querySelectorAll(".line-active").forEach((el) => el.classList.remove("line-active"));
+      block.classList.add("line-active");
+      block.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }, []);
 
   const openPopupForLine = useCallback((ln: number, rect: DOMRect) => {
     const cmts = lineDataRef.current[ln] || [];
@@ -168,7 +281,7 @@ useEffect(() => {
 
   const handleContentClick = (e: React.MouseEvent) => {
     const target = (e.target as HTMLElement).closest("[data-line]") as HTMLElement;
-    if (!target || (e.target as HTMLElement).closest(".line-comment-bubble")) return;
+    if (!target) return;
     const ln = parseInt(target.getAttribute("data-line")!);
     if (!ln) return;
     contentRef.current?.querySelectorAll(".line-active").forEach(el => el.classList.remove("line-active"));
@@ -225,45 +338,40 @@ useEffect(() => {
           {article.created_at !== article.updated_at && <time className="updated-at">· 更新于 {new Date(article.updated_at).toLocaleDateString("zh-CN")}</time>}
           {can_edit && <Link href={`/admin/articles?editType=${article.type}&editSlug=${article.slug}`} className="edit-link">✏️ 编辑</Link>}</div>
       </header>
-      <div className="content-body" ref={contentRef} onClick={handleContentClick} />
-
-      {/* Inline comment bubbles — rendered via portal inside content-body for wide-screen positioning */}
-      {(() => {
-        const bubbles = commentedLines.map((ln) => {
-          const count = lineCounts[ln] || 0;
-          if (count === 0) return null;
-          const cmts = lineDataRef.current[ln] || [];
-          const latest = cmts.length > 0 ? cmts[cmts.length - 1].content : "";
-          return (
-            <button
-              key={`bubble-${ln}`}
-              className="line-comment-bubble"
-              data-bubble-line={ln}
-              title={`${count} 条评论 — ${latest}`}
-              onClick={(e) => {
-                e.stopPropagation();
-                const block = contentRef.current?.querySelector(`[data-line="${ln}"]`);
-                if (block) {
-                  contentRef.current?.querySelectorAll(".line-active").forEach(el => el.classList.remove("line-active"));
-                  block.classList.add("line-active");
-                  openPopupForLine(ln, block.getBoundingClientRect());
-                }
-              }}
-            >
-              <span className="line-comment-bubble-icon">💬</span>
-              {count > 1 && <span className="line-comment-bubble-count">{count}</span>}
-            </button>
-          );
-        });
-        return bubbleHostRef.current ? createPortal(bubbles, bubbleHostRef.current) : bubbles;
-      })()}
+      <div className="article-content-wrap">
+        <div className="content-body" ref={contentRef} onClick={handleContentClick} />
+        {/* Line comment bubbles — outside the text area, aligned with each commented line */}
+        <div className="line-bubble-layer" aria-hidden={false}>
+          {commentedLines.map((ln) => {
+            const cmts = lineDataRef.current[ln] || [];
+            if (cmts.length === 0) return null;
+            const top = bubbleTops[ln];
+            const height = bubbleHeights[ln];
+            if (top === undefined || height === undefined) return null;
+            return (
+              <LineCommentBubble
+                key={ln}
+                lineNum={ln}
+                comments={cmts}
+                top={top}
+                height={height}
+                onClickLine={(n) => {
+                  scrollToLine(n);
+                  const block = contentRef.current?.querySelector(`[data-line="${n}"]`);
+                  if (block) openPopupForLine(n, block.getBoundingClientRect());
+                }}
+              />
+            );
+          })}
+        </div>
+      </div>
 
       {/* Side panel */}
       <div className="line-comments-container"><div className="line-comments-panel">
-        <div className="line-comments-header"><span>💬 行评论</span><div className="line-comments-header-actions">
+        <div className="line-comments-header"><span>行评论</span><div className="line-comments-header-actions">
           <span className={`line-comments-help ${guideOpen ? "active" : ""}`} onClick={() => setGuideOpen(!guideOpen)} title="使用帮助">?</span>
           <span className="line-comments-toggle" onClick={() => setPanelOpen(!panelOpen)} title={panelOpen ? "隐藏行评论" : "显示行评论"}>{panelOpen ? "×" : "+"}</span></div></div>
-        {guideOpen && <div className="line-comments-guide"><div className="line-comments-guide-content"><p><strong>📖 行评论使用说明</strong></p><ul><li>点击文章中有 💬 标记的行打开评论</li><li>每条评论最多 <strong>20 字</strong></li><li>面板仅在<strong>宽屏（≥1024px）</strong>显示</li></ul></div></div>}
+        {guideOpen && <div className="line-comments-guide"><div className="line-comments-guide-content"><p><strong>📖 行评论使用说明</strong></p><ul><li>已评论的行左侧显示与行等高的浮泡</li><li>单条：头像+昵称+时间+内容紧凑展示</li><li>多条：折叠显示"点击展开"，点击后展示全部</li><li>点击文章中的任意行可添加新评论</li><li>每条评论最多 <strong>20 字</strong></li></ul></div></div>}
         {panelOpen && <div className="line-comments-list">
           {commentedLines.length === 0
             ? <div className="line-comments-empty">暂无行评论<br /><span className="line-comments-empty-hint">点击文章中的行可添加短评</span></div>
