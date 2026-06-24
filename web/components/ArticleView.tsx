@@ -251,7 +251,8 @@ useEffect(() => {
   return () => {
     cancelled = true;
   };
-}, [html, lineCounts]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [html, lineCounts, commentedLines]);
 
   const scrollToLine = useCallback((ln: number) => {
     const container = contentRef.current;
