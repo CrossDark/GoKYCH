@@ -247,8 +247,18 @@ export default function AdminSettings() {
 
   return (
     <div className="admin-settings">
-      <h1>站点设置</h1>
-      {msg && <div className={`admin-msg ${msgType}`}>{msg}</div>}
+      <div className="admin-page-header">
+        <div>
+          <h1>站点设置</h1>
+          <div className="admin-page-subtitle">站点信息、外观、功能开关、社交媒体</div>
+        </div>
+      </div>
+      {msg && (
+        <div className={`admin-notice admin-notice-${msgType}`}>
+          <span className="admin-notice-icon">{msgType === "success" ? "✓" : "✕"}</span>
+          <div className="admin-notice-content">{msg}</div>
+        </div>
+      )}
 
       {SECTION_ORDER.map((section) => {
         const fields = settings[section];

@@ -105,109 +105,134 @@ export default function AdminFiles() {
 
   return (
     <div className="admin-files">
-      <h1>文件管理</h1>
-      <p className="admin-hint">
-        上传图片、附件供文章和设置使用。支持拖拽，单文件最大 10 MB，仅允许常见图片与文档类型。
-      </p>
+      <div className="admin-page-header">
+        <div>
+          <h1>文件管理</h1>
+          <div className="admin-page-subtitle">
+            {files.length > 0 ? `共 ${files.length} 个文件` : "加载中…"}
+          </div>
+        </div>
+      </div>
 
-      {msg && <p className="admin-msg">{msg}</p>}
+      {msg && (
+        <div className="admin-notice admin-notice-info">
+          <span className="admin-notice-icon">ℹ</span>
+          <div className="admin-notice-content">{msg}</div>
+        </div>
+      )}
 
-      <div
-        className={`admin-upload-dropzone ${dragOver ? "drag-over" : ""}`}
-        onDragOver={(e) => {
-          e.preventDefault();
-          setDragOver(true);
-        }}
-        onDragLeave={() => setDragOver(false)}
-        onDrop={handleDrop}
-        onClick={() => inputRef.current?.click()}
-      >
-        <input
-          ref={inputRef}
-          type="file"
-          multiple
-          style={{ display: "none" }}
-          onChange={handleSelect}
-        />
-        <div className="admin-upload-prompt">
-          {uploading ? (
-            <p>上传中…</p>
-          ) : (
-            <>
-              <p className="admin-upload-title">点击选择文件 或 拖拽到此处</p>
-              <p className="admin-upload-hint">
-                支持 png / jpg / gif / webp / svg / ico / pdf / md / txt / css
-              </p>
-            </>
-          )}
+      <div className="admin-card">
+        <div className="admin-card-header">
+          <h2>⬆ 上传文件</h2>
+        </div>
+        <div className="admin-card-body">
+          <div
+            className={`admin-upload-dropzone ${dragOver ? "drag-over" : ""}`}
+            onDragOver={(e) => {
+              e.preventDefault();
+              setDragOver(true);
+            }}
+            onDragLeave={() => setDragOver(false)}
+            onDrop={handleDrop}
+            onClick={() => inputRef.current?.click()}
+          >
+            <input
+              ref={inputRef}
+              type="file"
+              multiple
+              style={{ display: "none" }}
+              onChange={handleSelect}
+            />
+            <div className="admin-upload-prompt">
+              {uploading ? (
+                <p>上传中…</p>
+              ) : (
+                <>
+                  <p className="admin-upload-title">点击选择文件 或 拖拽到此处</p>
+                  <p className="admin-upload-hint">
+                    支持 png / jpg / gif / webp / svg / ico / pdf / md / txt / css · 单文件最大 10 MB
+                  </p>
+                </>
+              )}
+            </div>
+          </div>
         </div>
       </div>
 
       {loading ? (
-        <p className="loading">加载中…</p>
+        <div className="admin-card"><div className="admin-card-body"><div className="admin-empty">加载中…</div></div></div>
       ) : files.length === 0 ? (
-        <p className="empty-message">还没有上传文件。</p>
+        <div className="admin-card"><div className="admin-card-body">
+          <div className="admin-empty">
+            <span className="admin-empty-icon">📁</span>
+            <div className="admin-empty-title">还没有上传文件</div>
+            <div>通过上方拖拽区上传</div>
+          </div>
+        </div></div>
       ) : (
-        <table className="admin-table">
-          <thead>
-            <tr>
-              <th>预览</th>
-              <th>文件名</th>
-              <th>大小</th>
-              <th>类型</th>
-              <th>上传时间</th>
-              <th>操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            {files.map((f) => {
-              const url = `/uploads/${f.filename}`;
-              const isImage = IMAGE_EXTS.test(f.filename) ||
-                (f.mime_type?.startsWith("image/") ?? false);
-              return (
-                <tr key={f.id}>
-                  <td className="admin-file-thumb">
-                    {isImage ? (
-                      <img
-                        src={url}
-                        alt={f.original_name || f.filename}
-                        loading="lazy"
-                      />
-                    ) : (
-                      <span className="admin-file-icon">📄</span>
-                    )}
-                  </td>
-                  <td>
-                    <div className="admin-file-name">{f.original_name || f.filename}</div>
-                    <div className="admin-file-stored">{f.filename}</div>
-                  </td>
-                  <td>{fmtSize(f.file_size)}</td>
-                  <td>{f.mime_type || "—"}</td>
-                  <td>{new Date(f.created_at).toLocaleString("zh-CN")}</td>
-                  <td>
-                    <button className="btn btn-small" onClick={() => copyUrl(url)}>
-                      复制链接
-                    </button>
-                    <a
-                      className="btn btn-small"
-                      href={url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                    >
-                      打开
-                    </a>
-                    <button
-                      className="btn btn-small btn-danger"
-                      onClick={() => handleDelete(f)}
-                    >
-                      删除
-                    </button>
-                  </td>
+        <div className="admin-card">
+          <div className="admin-card-header">
+            <h2>📁 文件列表</h2>
+          </div>
+          <div className="admin-card-body no-padding">
+            <table className="admin-table">
+              <thead>
+                <tr>
+                  <th style={{ width: 60 }}>预览</th>
+                  <th>文件名</th>
+                  <th>大小</th>
+                  <th>类型</th>
+                  <th className="col-date">上传时间</th>
+                  <th className="col-actions">操作</th>
                 </tr>
-              );
-            })}
-          </tbody>
-        </table>
+              </thead>
+              <tbody>
+                {files.map((f) => {
+                  const url = `/uploads/${f.filename}`;
+                  const isImage = IMAGE_EXTS.test(f.filename) ||
+                    (f.mime_type?.startsWith("image/") ?? false);
+                  return (
+                    <tr key={f.id}>
+                      <td className="admin-file-thumb">
+                        {isImage ? (
+                          <img
+                            src={url}
+                            alt={f.original_name || f.filename}
+                            loading="lazy"
+                          />
+                        ) : (
+                          <span className="admin-file-icon">📄</span>
+                        )}
+                      </td>
+                      <td>
+                        <div className="admin-file-name">{f.original_name || f.filename}</div>
+                        <div className="admin-file-stored">{f.filename}</div>
+                      </td>
+                      <td>{fmtSize(f.file_size)}</td>
+                      <td><span style={{ fontSize: "0.78rem", color: "var(--text-muted)" }}>{f.mime_type || "—"}</span></td>
+                      <td className="col-date">{new Date(f.created_at).toLocaleString("zh-CN")}</td>
+                      <td className="col-actions">
+                        <button className="admin-btn admin-btn-outline admin-btn-sm" onClick={() => copyUrl(url)} title="复制链接">📋</button>
+                        <a
+                          className="admin-btn admin-btn-secondary admin-btn-sm"
+                          href={url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          title="打开"
+                        >↗</a>
+                        <button
+                          className="admin-btn admin-btn-danger admin-btn-sm"
+                          onClick={() => handleDelete(f)}
+                          title="删除"
+                        >🗑</button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
       )}
     </div>
   );

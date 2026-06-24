@@ -108,8 +108,18 @@ export default function AdminHome() {
 
   return (
     <div className="admin-home">
-      <h1>首页管理</h1>
-      {msg && <div className={`admin-msg ${msgType}`}>{msg}</div>}
+      <div className="admin-page-header">
+        <div>
+          <h1>首页管理</h1>
+          <div className="admin-page-subtitle">子站点链接与推荐文章配置</div>
+        </div>
+      </div>
+      {msg && (
+        <div className={`admin-notice admin-notice-${msgType}`}>
+          <span className="admin-notice-icon">{msgType === "success" ? "✓" : "✕"}</span>
+          <div className="admin-notice-content">{msg}</div>
+        </div>
+      )}
 
       {/* ═══ Subsite Links ═══ */}
       <section className="admin-card">
