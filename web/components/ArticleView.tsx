@@ -116,6 +116,9 @@ function LineCommentBubble({
 export function ArticleView({ data, articleType, articleSlug }: Props) {
   const { article, html, rating, comments: rawComments, line_comment_counts: rawLineCounts, can_edit } = data;
   const comments = rawComments ?? [];
+  // Backend omits `tags` when the article has none (omitempty); coerce to []
+  // so the header tag list doesn't blow up with "Cannot read .map of undefined".
+  const articleTags = (article as any).tags ?? [];
   const contentRef = useRef<HTMLDivElement>(null);
   const lineCountsRef = useRef<Record<number, number>>({});
   const lineDataRef = useRef<Record<number, Comment[]>>({});
@@ -280,7 +283,15 @@ useEffect(() => {
     contentRef.current?.querySelectorAll(".line-active").forEach(el => el.classList.remove("line-active"));
   }, []);
 
+  // Narrow viewport: line-comment UI is hidden via CSS (line-bubble-layer is
+  // display:none below 1024px, and the side panel never appears). The click
+  // handler also has to bail out, otherwise tapping a paragraph on a phone
+  // would still pop a "add line comment" dialog that the user has no way to
+  // see the comments from.
+  const isNarrowViewport = () => typeof window !== "undefined" && window.innerWidth < 1024;
+
   const handleContentClick = (e: React.MouseEvent) => {
+    if (isNarrowViewport()) return;
     const target = (e.target as HTMLElement).closest("[data-line]") as HTMLElement;
     if (!target) return;
     const ln = parseInt(target.getAttribute("data-line")!);
@@ -333,7 +344,7 @@ useEffect(() => {
     <article className="article-detail">
       <header className="article-header">
         <div className="article-type-row"><span className="article-type-badge">{article.type}</span>
-          <div className="article-tags">{article.tags.map((tag) => <Link key={tag} href={`/labels/${tag}`} className="tag-badge">{tag}</Link>)}</div></div>
+          <div className="article-tags">{articleTags.map((tag: string) => <Link key={tag} href={`/labels/${tag}`} className="tag-badge">{tag}</Link>)}</div></div>
         <h1 className="article-title">{article.title}</h1>
         <div className="article-meta"><time>发布于 {new Date(article.created_at).toLocaleDateString("zh-CN")}</time>
           {article.created_at !== article.updated_at && <time className="updated-at">· 更新于 {new Date(article.updated_at).toLocaleDateString("zh-CN")}</time>}

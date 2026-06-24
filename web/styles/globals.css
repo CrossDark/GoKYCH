@@ -65,7 +65,11 @@ header, .site-header {
     padding: 1.2rem 0;
     position: sticky;
     top: 0;
-    z-index: 100;
+    /* Keep above line-comment popup (z-index 300) and admin toast container
+     * (z-index 1100 — toast still wins because that one is in a fixed
+     * container that scrolls with the page header, but for body content we
+     * want the header opaque to anything within the article flow). */
+    z-index: 400;
     backdrop-filter: blur(12px);
     -webkit-backdrop-filter: blur(12px);
     transition: background 0.3s ease;
@@ -3940,6 +3944,28 @@ body.admin-modal-open { overflow: hidden; }
 .admin-table .col-title  { font-weight: 500; }
 .admin-table .col-slug   { font-family: "SF Mono", "Fira Code", monospace; font-size: 0.8rem; color: var(--text-muted); }
 .admin-table td.col-actions { display: flex; gap: 0.3rem; justify-content: flex-end; align-items: center; }
+
+/* ── File manager thumbs: cap the size so a 4000×3000 PNG can't blow the
+ *   row out to its native height. The thumb cell itself also gets a fixed
+ *   height with object-fit:cover so the row stays a sensible 64px. */
+.admin-file-thumb {
+    width: 64px;
+    height: 64px;
+    text-align: center;
+    vertical-align: middle;
+    padding: 0.4rem !important;
+}
+.admin-file-thumb img {
+    max-width: 56px;
+    max-height: 56px;
+    object-fit: cover;
+    border-radius: 4px;
+    background: var(--admin-stripe);
+}
+.admin-file-icon {
+    font-size: 1.6rem;
+    line-height: 1;
+}
 
 /* ── Quick link cards (dashboard shortcuts) ── */
 .admin-link-grid {
