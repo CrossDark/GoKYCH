@@ -1848,7 +1848,7 @@ hr {
 
 /* ── Sidebar footer (full-width, no radius) ── */
 .wp-admin-sidebar-footer {
-    padding: 0.55rem 0.75rem;
+    padding: 0.6rem 0.75rem;
     background: var(--wp-sidebar-card);
     border-top: 1px solid var(--wp-sidebar-hover);
     flex-shrink: 0;
@@ -1857,35 +1857,52 @@ hr {
 .wp-admin-user {
     display: flex;
     align-items: center;
-    gap: 0.4rem;
+    gap: 0.75rem;
     margin-bottom: 0.4rem;
+    text-decoration: none;
+    color: inherit;
+    min-width: 0;
+    padding: 0.15rem 0;
 }
 
 .wp-admin-user-avatar {
-    width: 24px;
-    height: 24px;
-    border-radius: 0;
-    background: var(--wp-sidebar-active);
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #2271b1, #72aee6);
     color: #fff;
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 0.68rem;
+    font-size: 0.78rem;
     font-weight: 700;
     flex-shrink: 0;
+    line-height: 1;
+}
+
+.wp-admin-user > div {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
 }
 
 .wp-admin-user-name {
-    font-size: 0.76rem;
+    font-size: 0.8rem;
     color: #fff;
     font-weight: 500;
     line-height: 1.2;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .wp-admin-user-role {
-    font-size: 0.6rem;
+    font-size: 0.66rem;
     color: var(--wp-sidebar-icon);
     text-transform: capitalize;
+    line-height: 1.2;
 }
 
 .wp-admin-logout-btn {
