@@ -1942,11 +1942,13 @@ hr {
 /* ── Main content ── */
 .wp-admin-main {
     flex: 1;
+    min-width: 0;
+    width: 100%;
+    max-width: none;  /* override global `main { max-width: 720px }` */
+    margin: 0;
     padding: 1.5rem 2rem;
-    overflow-x: auto;
     background: var(--wp-bg);
     color: var(--wp-text);
-    min-width: 0;
 }
 
 .wp-admin-main h1 {
@@ -4031,6 +4033,14 @@ hr {
     transition: background 0.15s;
 }
 .admin-topbar-home:hover { background: var(--admin-stripe); color: var(--text-primary); text-decoration: none; }
+
+.admin-recent-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr));
+    gap: 1.25rem;
+    margin-bottom: 1.25rem;
+    min-width: 0;
+}
 
 .admin-user-menu-wrap { position: relative; }
 .admin-user-menu-btn {
