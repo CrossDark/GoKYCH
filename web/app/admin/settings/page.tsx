@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { getCsrf, getSettings, updateSettings } from "@/lib/api";
+import { getCsrf, getSettings, updateSettings, listThemes } from "@/lib/api";
+import type { Theme } from "@/lib/types";
 import { useToast, useBeforeUnload } from "@/lib/admin-feedback";
 import { AdminModal } from "@/components/admin/AdminModal";
 
@@ -54,18 +55,14 @@ const SELECT_FIELDS: Record<string, { value: string; label: string }[]> = {
     { value: "Asia/Shanghai", label: "Asia/Shanghai" },
     { value: "UTC", label: "UTC" },
   ],
-  style_theme: [
-    { value: "default", label: "默认 (蓝白)" },
-    { value: "sunset", label: "日落" },
-    { value: "forest", label: "森林" },
-    { value: "ocean", label: "海洋" },
-  ],
+  // style_theme is populated dynamically from /api/themes — see useEffect below.
 };
 
 export default function AdminSettings() {
   const [csrf, setCsrf] = useState("");
   const [settings, setSettings] = useState<Record<string, any> | null>(null);
   const initialSettingsRef = useRef<Record<string, any> | null>(null);
+  const [availableThemes, setAvailableThemes] = useState<Theme[]>([]);
   const toast = useToast();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -92,6 +89,17 @@ export default function AdminSettings() {
         .then(setUploadedFiles)
         .catch(() => {});
     });
+    // Load themes for the style_theme dropdown. /api/themes is public and
+    // changes only when the admin drops a new directory under data/themes/,
+    // so a one-shot read on mount is fine.
+    listThemes()
+      .then((themes) => {
+        // Only themes with CSS can be selected — a theme directory without
+        // a static/theme.css would render as 404 in the layout, which is
+        // confusing for the admin.
+        setAvailableThemes(themes.filter((t) => t.has_css));
+      })
+      .catch(() => setAvailableThemes([]));
   }, []);
 
   useBeforeUnload(isDirty && !saving);
@@ -195,6 +203,30 @@ export default function AdminSettings() {
               <option key={opt.value} value={opt.value}>{opt.label}</option>
             ))}
           </select>
+        </label>
+      );
+    }
+
+    // Dynamic select for style_theme — options come from GET /api/themes.
+    if (key === "style_theme") {
+      return (
+        <label key={key} className="admin-setting-field">
+          <span className="admin-setting-key">{label}</span>
+          <select
+            value={String(value ?? "")}
+            onChange={(e) => handleChange(section, key, e.target.value)}
+          >
+            <option value="">（使用内置默认）</option>
+            {availableThemes.map((t) => (
+              <option key={t.name} value={t.name}>
+                {t.name}{t.description ? ` — ${t.description}` : ""}
+              </option>
+            ))}
+          </select>
+          <span className="admin-setting-hint">
+            主题目录：<code>data/themes/&lt;name&gt;/static/theme.css</code>。
+            重启后端后新建的主题才会出现在列表中。
+          </span>
         </label>
       );
     }

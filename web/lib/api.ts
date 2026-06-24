@@ -219,6 +219,13 @@ export function getSite() {
   return request<import("./types").SiteConfig>("/site");
 }
 
+// Public theme list — names + meta + has_css. Used by the admin settings
+// page to populate the theme dropdown. Theme CSS itself is fetched
+// directly from /api/themes/:name.css (text/css, no JSON wrapping).
+export function listThemes() {
+  return request<import("./types").Theme[]>("/themes");
+}
+
 // ── Labels ────────────────────────────────────────────────────────
 export function listLabels() {
   return request<import("./types").TagWithCount[]>("/labels");

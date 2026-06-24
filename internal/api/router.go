@@ -35,6 +35,8 @@ func (s *Server) Setup(r *gin.Engine) {
 		// Public read endpoints.
 		apiG.GET("/site", s.getSite)
 		apiG.GET("/home", s.getHome)
+		apiG.GET("/themes", s.listThemes)
+		apiG.GET("/themes/:name", s.getThemeCSS)
 		apiG.GET("/notifications", s.listNotifications)
 		apiG.GET("/articles", s.listArticles)
 		apiG.GET("/articles/:type/:slug", s.getArticle)

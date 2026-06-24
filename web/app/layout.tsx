@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { ThemeProvider } from "@/components/ThemeProvider";
+import { ThemeStylesheet } from "@/components/ThemeStylesheet";
 import { LayoutWrapper } from "./LayoutWrapper";
 import "@/styles/globals.css";
 
@@ -35,6 +36,7 @@ export default function RootLayout({
         />
       </head>
       <body>
+        <ThemeStylesheet />
         <ThemeProvider>
           <LayoutWrapper>{children}</LayoutWrapper>
         </ThemeProvider>

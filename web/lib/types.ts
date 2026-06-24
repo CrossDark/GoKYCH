@@ -116,6 +116,18 @@ export interface TagWithCount {
   count: number;
 }
 
+// ── Theme ─────────────────────────────────────────────────────────────
+//
+// Returned by GET /api/themes. Theme CSS itself is loaded directly from
+// /api/themes/:name.css (text/css, no JSON wrapping).
+export interface Theme {
+  name: string;
+  version?: string;
+  author?: string;
+  description?: string;
+  has_css: boolean;
+}
+
 // ── Site config ───────────────────────────────────────────────────────
 //
 // Returned by GET /api/site. The frontend (Header, LayoutWrapper, footer)

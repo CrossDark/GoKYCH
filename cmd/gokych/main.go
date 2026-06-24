@@ -23,6 +23,7 @@ import (
 	"gokych/internal/core/metrics"
 	"gokych/internal/core/schema"
 	"gokych/internal/core/settings"
+	"gokych/internal/core/themes"
 	"gokych/internal/typst"
 )
 
@@ -52,6 +53,11 @@ func main() {
 	cfg.EnsureDataDirs()
 	if err := settings.Ensure(cfg.App.DataDir); err != nil {
 		slog.Warn("failed to create default settings.yml", "err", err)
+	}
+	// Seed the built-in "sunset" theme so the public /api/themes/:name.css
+	// endpoint always has at least one valid theme to serve on first boot.
+	if err := themes.EnsureDefault(cfg.App.DataDir); err != nil {
+		slog.Warn("failed to seed default theme", "err", err)
 	}
 
 	// 3. Initialize database connection pool.
