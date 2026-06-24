@@ -109,6 +109,14 @@ func (s *Server) Setup(r *gin.Engine) {
 				adminG.POST("/files", requireAdmin, s.uploadFile)
 				adminG.DELETE("/files/:id", requireAdmin, s.deleteFile)
 
+				// API keys — admins can create/revoke their own keys for
+				// scripting. The X-API-Key middleware in loadUserMiddleware
+				// lets those keys substitute for the session cookie on any
+				// other endpoint.
+				adminG.GET("/api-keys", s.listAPIKeys)
+				adminG.POST("/api-keys", s.createAPIKey)
+				adminG.DELETE("/api-keys/:id", s.deleteAPIKey)
+
 				// Metrics (admin+)
 				adminG.GET("/metrics", requireAdmin, s.getMetrics)
 

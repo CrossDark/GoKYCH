@@ -6,6 +6,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"gokych/internal/auth/apikey"
 	"gokych/internal/auth/session"
 	"gokych/internal/auth/user"
 )
@@ -27,9 +28,30 @@ func (s *Server) sessionMiddleware() gin.HandlerFunc {
 // persists the session after the handler runs.
 func (s *Server) loadUserMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		u, err := s.sessions.CurrentUser(c.Request)
-		if err == nil && u != nil {
-			c.Set(ctxUserKey, u)
+		// X-API-Key takes precedence over the session cookie — a script
+		// shouldn't have to manage a CSRF token / captcha just to call
+		// /api/articles or read its own keys. Once a valid key is presented,
+		// the corresponding user is loaded into the context exactly as if
+		// they had logged in via the web UI.
+		if key := c.GetHeader("X-API-Key"); key != "" {
+			res, err := apikey.Verify(s.DB, key)
+			if err != nil {
+				slog.Error("api key verify", "err", err)
+				// Fall through to session auth on DB error — better than
+				// 500'ing every request just because the key table is
+				// briefly unavailable.
+			} else if res.OwnerID > 0 {
+				u, err := user.GetByID(s.DB, res.OwnerID)
+				if err == nil && u != nil {
+					c.Set(ctxUserKey, u)
+				}
+			}
+		}
+		if _, set := c.Get(ctxUserKey); !set {
+			u, err := s.sessions.CurrentUser(c.Request)
+			if err == nil && u != nil {
+				c.Set(ctxUserKey, u)
+			}
 		}
 		c.Next()
 		// Persist any session mutations (e.g. last_activity refresh). Surface

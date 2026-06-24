@@ -264,4 +264,25 @@ var allTables = [...]string{
 		compiled_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		FOREIGN KEY (article_id) REFERENCES articles(id) ON DELETE CASCADE
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
+	// ═══ 14. api_keys ═══
+	//
+	// API keys let admins authenticate to the Go backend without a session
+	// cookie (useful for plugins, scripts, CI). The plaintext key is only
+	// returned ONCE at creation; we store its bcrypt hash + the visible
+	// prefix (first 8 chars) so the admin can identify the key in the
+	// list view without ever seeing the secret half again.
+	`CREATE TABLE IF NOT EXISTS api_keys (
+		id           INT AUTO_INCREMENT PRIMARY KEY,
+		owner_id     INT NOT NULL,
+		name         VARCHAR(128) NOT NULL,
+		key_prefix   VARCHAR(16) NOT NULL,
+		key_hash     VARCHAR(255) NOT NULL,
+		last_used_at DATETIME DEFAULT NULL,
+		expires_at   DATETIME DEFAULT NULL,
+		created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE,
+		INDEX idx_owner (owner_id),
+		INDEX idx_prefix (key_prefix)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 }
