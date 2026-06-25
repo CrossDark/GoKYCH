@@ -19,8 +19,8 @@ const BREADCRUMB: { match: (p: string) => boolean; label: string; parent?: strin
   { match: (p) => p.startsWith("/admin/notifications"), label: "通知管理", parent: "管理" },
   { match: (p) => p.startsWith("/admin/users"), label: "用户管理", parent: "管理" },
   { match: (p) => p.startsWith("/admin/settings"), label: "站点设置", parent: "设置" },
-  { match: (p) => p.startsWith("/admin/api-keys"), label: "API Key", parent: "设置" },
-  { match: (p) => p.startsWith("/admin/passkeys"), label: "Passkey", parent: "设置" },
+  { match: (p) => p.startsWith("/admin/api-keys"), label: "API Key", parent: "管理" },
+  { match: (p) => p.startsWith("/admin/passkeys"), label: "Passkey", parent: "管理" },
   { match: (p) => p.startsWith("/admin/profile"), label: "个人资料", parent: "设置" },
 ];
 
@@ -54,12 +54,21 @@ function AdminLayoutInner({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     getMe().then((r) => {
-      if (!r.user || (r.user.role !== "admin" && r.user.role !== "owner")) {
+      if (!r.user) {
         router.push("/auth/login?next=" + encodeURIComponent(pathname));
-      } else {
-        setUser(r.user);
-        getCsrf().then((c) => setCsrfToken(c.csrf_token));
+        return;
       }
+      // anyone logged in can reach /admin/profile (it's the self-service
+      // profile + password + passkey page). Every other /admin/* page is
+      // admin/owner only — regular users would otherwise see admin
+      // dashboards they can't use, so bounce them back to their profile.
+      const isAdminLike = r.user.role === "admin" || r.user.role === "owner";
+      if (!isAdminLike && pathname !== "/admin/profile") {
+        router.replace("/admin/profile");
+        return;
+      }
+      setUser(r.user);
+      getCsrf().then((c) => setCsrfToken(c.csrf_token));
     }).catch(() => {
       router.push("/auth/login?next=" + encodeURIComponent(pathname));
     }).finally(() => setLoading(false));
@@ -109,38 +118,46 @@ function AdminLayoutInner({ children }: { children: React.ReactNode }) {
     );
   }
 
-  const menuGroups = [
-    {
-      label: "内容",
-      items: [
-        { href: "/admin", label: "仪表盘", icon: "📊" },
-        { href: "/admin/articles", label: "文章管理", icon: "📝" },
-      ],
-    },
-    {
-      label: "管理",
-      items: [
-        { href: "/admin/home", label: "首页管理", icon: "🏠" },
-        { href: "/admin/tags", label: "标签管理", icon: "🏷️" },
-        { href: "/admin/files", label: "文件管理", icon: "📁" },
-        { href: "/admin/notifications", label: "通知管理", icon: "🔔" },
-        { href: "/admin/users", label: "用户管理", icon: "👥" },
-      ],
-    },
-    {
-      label: "设置",
-      items: [
-        { href: "/admin/settings", label: "站点设置", icon: "⚙️" },
-        { href: "/admin/passkeys", label: "Passkey", icon: "🔑" },
-        // API Key management is owner-only on the backend (requireOwner).
-        // Hide the nav entry from non-owners so they don't hit a 403.
-        ...(user.role === "owner"
-          ? [{ href: "/admin/api-keys", label: "API Key", icon: "🗝️" }]
-          : []),
-        { href: "/admin/profile", label: "个人资料", icon: "👤" },
-      ],
-    },
-  ];
+  // Regular users only see their own profile (passkey + password live
+  // there now). Admins/owners get the full sidebar. The standalone
+  // /admin/passkeys entry is gone — passkey management moved into /profile.
+  const menuGroups = user.role === "user"
+    ? [{ label: "账号", items: [{ href: "/admin/profile", label: "个人资料", icon: "👤" }] }]
+    : [
+        {
+          label: "内容",
+          items: [
+            { href: "/admin", label: "仪表盘", icon: "📊" },
+            { href: "/admin/articles", label: "文章管理", icon: "📝" },
+          ],
+        },
+        {
+          label: "管理",
+          items: [
+            { href: "/admin/home", label: "首页管理", icon: "🏠" },
+            { href: "/admin/tags", label: "标签管理", icon: "🏷️" },
+            { href: "/admin/files", label: "文件管理", icon: "📁" },
+            { href: "/admin/notifications", label: "通知管理", icon: "🔔" },
+            { href: "/admin/users", label: "用户管理", icon: "👥" },
+            // Owner-only entries: API Key + 全站 Passkey 管理. Backend
+            // gates both with requireOwner, so hide them from non-owners
+            // to avoid a wall of 403s on direct nav.
+            ...(user.role === "owner"
+              ? [
+                  { href: "/admin/api-keys", label: "API Key", icon: "🗝️" },
+                  { href: "/admin/passkeys", label: "Passkey 管理", icon: "🛡️" },
+                ]
+              : []),
+          ],
+        },
+        {
+          label: "设置",
+          items: [
+            { href: "/admin/settings", label: "站点设置", icon: "⚙️" },
+            { href: "/admin/profile", label: "个人资料", icon: "👤" },
+          ],
+        },
+      ];
 
   const crumb = getBreadcrumb(pathname);
   const avatarChar = user.nickname?.[0] || user.username[0] || "?";
