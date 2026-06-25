@@ -3,8 +3,8 @@
 import { useState, useEffect, use } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { getCsrf, getArticle, updateArticle, deleteArticle } from "@/lib/api";
-import type { Article } from "@/lib/types";
+import { getCsrf, getMe, getArticle, updateArticle, deleteArticle } from "@/lib/api";
+import type { Article, User } from "@/lib/types";
 import { useToast, useBeforeUnload } from "@/lib/admin-feedback";
 import { AdminConfirm } from "@/components/admin/AdminConfirm";
 
@@ -26,8 +26,10 @@ export default function AdminArticleDetail({ params }: PageProps) {
   const toast = useToast();
 
   const [csrf, setCsrf] = useState("");
+  const [me, setMe] = useState<User | null>(null);
   const [article, setArticle] = useState<Article | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [forbidden, setForbidden] = useState(false);
   const [form, setForm] = useState({ title: "", content: "", tags: "" });
   const [initial, setInitial] = useState({ title: "", content: "", tags: "" });
   const [saving, setSaving] = useState(false);
@@ -53,6 +55,9 @@ export default function AdminArticleDetail({ params }: PageProps) {
 
   useEffect(() => {
     getCsrf().then((r) => setCsrf(r.csrf_token));
+    getMe().then((r) => {
+      if (r.user) setMe(r.user);
+    }).catch(() => {});
     getArticle(type, slug)
       .then((d) => {
         const a = d.article;
@@ -67,6 +72,17 @@ export default function AdminArticleDetail({ params }: PageProps) {
       })
       .catch((err) => setLoadError(err.message || "加载失败。"));
   }, [type, slug]);
+
+  // Once we know both the article and the current user, decide whether the
+  // viewer is allowed to touch this row. The backend will 403 on save/delete
+  // regardless, but a friendly pre-check stops a regular user from landing
+  // on a useless editor for an article someone else owns.
+  useEffect(() => {
+    if (!article || !me) return;
+    const isOwner = article.author_id != null && article.author_id === me.id;
+    const isAdmin = me.role === "admin" || me.role === "owner";
+    if (!isOwner && !isAdmin) setForbidden(true);
+  }, [article, me]);
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -155,6 +171,37 @@ export default function AdminArticleDetail({ params }: PageProps) {
             <div className="admin-empty">
               <span className="admin-spinner admin-spinner-lg" />
               <div className="admin-empty-title" style={{ marginTop: 8 }}>加载中…</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (forbidden) {
+    // Don't render the editor — the user can't actually save anything, and
+    // showing the form just invites wasted effort. Bouncing them back to
+    // the (filtered) list is the most useful thing we can do.
+    return (
+      <div className="admin-article-detail">
+        <div className="admin-page-header">
+          <div>
+            <h1>文章详情</h1>
+            <div className="admin-page-subtitle">权限不足</div>
+          </div>
+        </div>
+        <div className="admin-card">
+          <div className="admin-card-body">
+            <div className="admin-notice admin-notice-error">
+              <span className="admin-notice-icon">⛔</span>
+              <div className="admin-notice-content">
+                您没有权限编辑此文章（该文章由其他用户创建）。
+              </div>
+            </div>
+            <div style={{ marginTop: "1rem" }}>
+              <Link href="/admin/articles" className="admin-btn admin-btn-ghost">
+                ← 返回我的文章
+              </Link>
             </div>
           </div>
         </div>

@@ -78,9 +78,16 @@ export function logout(csrfToken: string) {
 }
 
 // ── Articles ──────────────────────────────────────────────────────
-export function listArticles(type?: string, page = 1) {
+// authorId: when set, server filters to articles authored by this user (used
+// by the "我的文章" view for regular users on /admin/articles).
+export function listArticles(
+  type?: string,
+  page = 1,
+  authorId?: number
+) {
   const q = new URLSearchParams();
   if (type) q.set("type", type);
+  if (authorId) q.set("author_id", String(authorId));
   q.set("page", String(page));
   return request<import("./types").ArticleListResult>(
     `/articles?${q.toString()}`

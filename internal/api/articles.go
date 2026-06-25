@@ -11,6 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"gokych/internal/auth/user"
 	"gokych/internal/content"
 	"gokych/internal/content/parsers"
 )
@@ -32,10 +33,13 @@ const maxSlugRunes = 128
 
 // ── Article list ──────────────────────────────────────────────────────
 
-// GET /api/articles?type=md&page=1&before=123
+// GET /api/articles?type=md&page=1&before=123&author_id=42
 // `before` is a keyset cursor (article id); omit/0 for the first page. `page`
 // is kept for display only — actual pagination is cursor-based (see
-// content.ListArticles) to avoid O(offset) scans on deep pages.
+// content.ListArticles) to avoid O(offset) scans on deep pages. `author_id`
+// filters the list to articles by a specific user; the regular "我的文章"
+// view on /admin/articles passes the caller's own id here so non-admin users
+// only see what they authored.
 func (s *Server) listArticles(c *gin.Context) {
 	atype := strings.TrimSpace(c.Query("type"))
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
@@ -46,7 +50,13 @@ func (s *Server) listArticles(c *gin.Context) {
 	if before < 0 {
 		before = 0
 	}
-	result, err := content.ListArticles(s.DB, atype, page, 10, before)
+	var authorID *int
+	if a := c.Query("author_id"); a != "" {
+		if v, err := strconv.Atoi(a); err == nil && v > 0 {
+			authorID = &v
+		}
+	}
+	result, err := content.ListArticles(s.DB, atype, authorID, page, 10, before)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载文章列表失败。"})
 		return
@@ -157,7 +167,7 @@ func (s *Server) getArticle(c *gin.Context) {
 	})
 }
 
-// ── CRUD (admin only) ─────────────────────────────────────────────────
+// ── CRUD (any logged-in user; update/delete require admin/owner OR author) ──
 
 type articleInput struct {
 	Slug    string   `json:"slug"`
@@ -166,7 +176,22 @@ type articleInput struct {
 	Tags    []string `json:"tags"`
 }
 
-// POST /api/articles (admin)
+// canModifyArticle reports whether u is allowed to edit/delete the article.
+// Admin/owner always can; otherwise only the original author can. An article
+// with no author (created before author_id was tracked) can only be touched
+// by admin/owner — we don't want a regular user to be able to claim an
+// orphan row by getting its id into their session.
+func canModifyArticle(u *user.User, a *content.Article) bool {
+	if u == nil || a == nil {
+		return false
+	}
+	if user.IsAdmin(u.Role) {
+		return true
+	}
+	return a.AuthorID != nil && *a.AuthorID == u.ID
+}
+
+// POST /api/articles (any logged-in user)
 func (s *Server) createArticle(c *gin.Context) {
 	atype := strings.TrimSpace(c.Query("type"))
 	if !parsers.IsValidType(atype) {
@@ -200,6 +225,9 @@ func (s *Server) createArticle(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "slug 不能为 \".\" 或 \"..\"。"})
 		return
 	}
+	// Author is the caller's id; requireLogin on the route group guarantees
+	// u != nil here, but a defensive check keeps the linter quiet and makes
+	// the invariant explicit.
 	var authorID *int
 	if u := CurrentUserFromContext(c); u != nil {
 		authorID = &u.ID
@@ -219,10 +247,28 @@ func (s *Server) createArticle(c *gin.Context) {
 	c.JSON(http.StatusCreated, a)
 }
 
-// PUT /api/articles/{type}/{slug} (admin)
+// PUT /api/articles/{type}/{slug} (admin/owner OR the article's author)
 func (s *Server) updateArticle(c *gin.Context) {
 	atype := c.Param("type")
 	slug := c.Param("slug")
+
+	// Load the article to do the ownership check. One extra SELECT beats
+	// bolting role/author into the UPDATE WHERE clause, which would force
+	// us to leak auth context into content-layer SQL.
+	a, err := content.GetArticle(s.DB, atype, slug)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusNotFound, gin.H{"error": "文章不存在。"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载文章失败。"})
+		return
+	}
+	if !canModifyArticle(CurrentUserFromContext(c), a) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "您没有权限编辑此文章。"})
+		return
+	}
+
 	var in articleInput
 	if err := c.ShouldBindJSON(&in); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "请求格式错误。"})
@@ -233,7 +279,7 @@ func (s *Server) updateArticle(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "标题不能为空。"})
 		return
 	}
-	a, err := content.UpdateArticle(s.DB, atype, slug, in.Title, in.Content)
+	a, err = content.UpdateArticle(s.DB, atype, slug, in.Title, in.Content)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "更新文章失败。"})
 		return
@@ -244,10 +290,25 @@ func (s *Server) updateArticle(c *gin.Context) {
 	c.JSON(http.StatusOK, a)
 }
 
-// DELETE /api/articles/{type}/{slug} (admin)
+// DELETE /api/articles/{type}/{slug} (admin/owner OR the article's author)
 func (s *Server) deleteArticle(c *gin.Context) {
 	atype := c.Param("type")
 	slug := c.Param("slug")
+
+	a, err := content.GetArticle(s.DB, atype, slug)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusNotFound, gin.H{"error": "文章不存在。"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载文章失败。"})
+		return
+	}
+	if !canModifyArticle(CurrentUserFromContext(c), a) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "您没有权限删除此文章。"})
+		return
+	}
+
 	ok, err := content.DeleteArticle(s.DB, atype, slug)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "删除失败。"})

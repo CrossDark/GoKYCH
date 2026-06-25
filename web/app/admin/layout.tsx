@@ -7,12 +7,12 @@ import { getMe, getCsrf, logout } from "@/lib/api";
 import type { User } from "@/lib/types";
 import { ToastProvider, useToast } from "@/lib/admin-feedback";
 
-// Map pathname → breadcrumb label + optional parent
+// Map pathname → breadcrumb label + optional parent. The "articles" entries
+// are looked up dynamically because their label flips between "文章管理"
+// (admin) and "我的文章" (regular user) — keeping the role-aware logic
+// out of the static table avoids a second BREADCRUMB pass later.
 const BREADCRUMB: { match: (p: string) => boolean; label: string; parent?: string }[] = [
   { match: (p) => p === "/admin", label: "仪表盘", parent: "首页" },
-  // Article detail (deeper match first) — show "文章标题" with link to list page
-  { match: (p) => /^\/admin\/articles\/[^/]+\/[^/]+/.test(p), label: "文章详情", parent: "文章管理" },
-  { match: (p) => p.startsWith("/admin/articles"), label: "文章管理", parent: "内容" },
   { match: (p) => p.startsWith("/admin/home"), label: "首页管理", parent: "管理" },
   { match: (p) => p.startsWith("/admin/tags"), label: "标签管理", parent: "管理" },
   { match: (p) => p.startsWith("/admin/files"), label: "文件管理", parent: "管理" },
@@ -24,10 +24,20 @@ const BREADCRUMB: { match: (p: string) => boolean; label: string; parent?: strin
   { match: (p) => p.startsWith("/admin/profile"), label: "个人资料", parent: "设置" },
 ];
 
-function getBreadcrumb(pathname: string): { parent?: string; parentHref?: string; current: string } {
-  // Article detail — special case: parent is "文章管理" with a link to the list
+function getBreadcrumb(pathname: string, role: string): { parent?: string; parentHref?: string; current: string } {
+  // Article detail (deeper match first) — parent is role-aware.
   if (/^\/admin\/articles\/[^/]+\/[^/]+/.test(pathname)) {
-    return { parent: "文章管理", parentHref: "/admin/articles", current: "文章详情" };
+    return {
+      parent: role === "user" ? "我的文章" : "文章管理",
+      parentHref: "/admin/articles",
+      current: "文章详情",
+    };
+  }
+  if (pathname === "/admin/articles" || pathname.startsWith("/admin/articles/")) {
+    return {
+      parent: "内容",
+      current: role === "user" ? "我的文章" : "文章管理",
+    };
   }
   const m = BREADCRUMB.find((b) => b.match(pathname));
   return m ? { parent: m.parent, current: m.label } : { current: "管理后台" };
@@ -58,12 +68,20 @@ function AdminLayoutInner({ children }: { children: React.ReactNode }) {
         router.push("/auth/login?next=" + encodeURIComponent(pathname));
         return;
       }
-      // anyone logged in can reach /admin/profile (it's the self-service
-      // profile + password + passkey page). Every other /admin/* page is
-      // admin/owner only — regular users would otherwise see admin
-      // dashboards they can't use, so bounce them back to their profile.
+      // Anyone logged in can reach:
+      //   - /admin/profile               (self-service)
+      //   - /admin/articles              (regular users see only their own)
+      //   - /admin/articles/[type]/[slug] (regular users can edit/delete
+      //                                    articles they authored)
+      // Every other /admin/* page is admin/owner only — regular users
+      // would otherwise see admin dashboards they can't use, so bounce
+      // them back to their profile.
       const isAdminLike = r.user.role === "admin" || r.user.role === "owner";
-      if (!isAdminLike && pathname !== "/admin/profile") {
+      const userAllowed =
+        pathname === "/admin/profile" ||
+        pathname === "/admin/articles" ||
+        /^\/admin\/articles\/[^/]+\/[^/]+/.test(pathname);
+      if (!isAdminLike && !userAllowed) {
         router.replace("/admin/profile");
         return;
       }
@@ -118,11 +136,20 @@ function AdminLayoutInner({ children }: { children: React.ReactNode }) {
     );
   }
 
-  // Regular users only see their own profile (passkey + password live
-  // there now). Admins/owners get the full sidebar. The standalone
-  // /admin/passkeys entry is gone — passkey management moved into /profile.
+  // Regular users see their own profile plus a "我的文章" entry that
+  // links to the (author-filtered) articles list. Admins/owners get the
+  // full sidebar. The standalone /admin/passkeys entry is gone —
+  // passkey management moved into /profile.
   const menuGroups = user.role === "user"
-    ? [{ label: "账号", items: [{ href: "/admin/profile", label: "个人资料", icon: "👤" }] }]
+    ? [{
+        label: "内容",
+        items: [
+          { href: "/admin/articles", label: "我的文章", icon: "📝" },
+        ],
+      }, {
+        label: "账号",
+        items: [{ href: "/admin/profile", label: "个人资料", icon: "👤" }],
+      }]
     : [
         {
           label: "内容",
@@ -159,7 +186,7 @@ function AdminLayoutInner({ children }: { children: React.ReactNode }) {
         },
       ];
 
-  const crumb = getBreadcrumb(pathname);
+  const crumb = getBreadcrumb(pathname, user.role);
   const avatarChar = user.nickname?.[0] || user.username[0] || "?";
 
   return (

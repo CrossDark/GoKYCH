@@ -82,12 +82,16 @@ func (s *Server) Setup(r *gin.Engine) {
 			mutG.POST("/articles/:type/:slug/rating", requireLogin, s.setRating)
 			mutG.DELETE("/articles/:type/:slug/rating", requireLogin, s.deleteRating)
 
-			// Article CRUD (admin+)
-			artAdmin := mutG.Group("/articles", requireAdmin)
+			// Article CRUD. Any logged-in user can create, but PUT/DELETE
+			// additionally check ownership inside the handler — a non-admin
+			// user can only touch articles they authored (see
+			// canModifyArticle). The route group only enforces "must be
+			// logged in" so the create path stays open to everyone.
+			art := mutG.Group("/articles", requireLogin)
 			{
-				artAdmin.POST("", s.createArticle)
-				artAdmin.PUT("/:type/:slug", s.updateArticle)
-				artAdmin.DELETE("/:type/:slug", s.deleteArticle)
+				art.POST("", s.createArticle)
+				art.PUT("/:type/:slug", s.updateArticle)
+				art.DELETE("/:type/:slug", s.deleteArticle)
 			}
 
 			// Admin management.

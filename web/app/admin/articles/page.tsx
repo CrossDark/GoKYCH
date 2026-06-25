@@ -3,8 +3,8 @@
 import { useState, useEffect, Suspense } from "react";
 import Link from "next/link";
 import { useSearchParams, useRouter } from "next/navigation";
-import { getCsrf, listArticles, getArticle, createArticle, updateArticle, deleteArticle } from "@/lib/api";
-import type { Article, ArticleListResult } from "@/lib/types";
+import { getCsrf, getMe, listArticles, getArticle, createArticle, updateArticle, deleteArticle } from "@/lib/api";
+import type { Article, ArticleListResult, User } from "@/lib/types";
 import { useToast, useBeforeUnload } from "@/lib/admin-feedback";
 import { AdminConfirm } from "@/components/admin/AdminConfirm";
 
@@ -31,6 +31,7 @@ function AdminArticlesInner() {
   const router = useRouter();
   const toast = useToast();
   const [csrf, setCsrf] = useState("");
+  const [me, setMe] = useState<User | null>(null);
   const [result, setResult] = useState<ArticleListResult | null>(null);
   const [page, setPage] = useState(1);
   const [filterType, setFilterType] = useState("");
@@ -42,18 +43,34 @@ function AdminArticlesInner() {
   const [pendingDelete, setPendingDelete] = useState<Article | null>(null);
   const isDirty = !!(form.title || form.content || form.slug || form.tags);
 
+  // Regular users see only their own articles; admin/owner see everything.
+  // The list label reflects that so the page reads as "我的文章" for the
+  // regular user and "文章管理" for the admin (label flip is local; the
+  // URL stays /admin/articles either way).
+  const isRegular = me?.role === "user";
+  const myAuthorId = isRegular ? me?.id : undefined;
+  const pageTitle = isRegular ? "我的文章" : "文章管理";
+
   const load = (p: number, t: string) => {
-    listArticles(t || undefined, p).then(setResult).catch(() => {});
+    listArticles(t || undefined, p, myAuthorId).then(setResult).catch(() => {});
   };
 
   useEffect(() => {
     getCsrf().then((r) => {
       setCsrf(r.csrf_token);
-      load(1, "");
     });
+    getMe().then((r) => {
+      if (r.user) setMe(r.user);
+    }).catch(() => {});
   }, []);
 
-  useEffect(() => { load(page, filterType); }, [page, filterType]);
+  // Re-load when the author filter resolves (i.e. after /me returns) — the
+  // first load uses myAuthorId=undefined which would over-fetch for
+  // regular users.
+  useEffect(() => {
+    if (isRegular && myAuthorId === undefined) return;
+    load(page, filterType);
+  }, [page, filterType, myAuthorId, isRegular]);
 
   // Read ?type= from URL (dashboard links)
   useEffect(() => {
@@ -148,7 +165,7 @@ function AdminArticlesInner() {
     <div className="admin-articles">
       <div className="admin-page-header">
         <div>
-          <h1>文章管理</h1>
+          <h1>{pageTitle}</h1>
           <div className="admin-page-subtitle">
             {result ? `共 ${result.total} 篇` : "加载中…"}
           </div>

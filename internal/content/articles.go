@@ -34,13 +34,24 @@ type ArticleListResult struct {
 	NextBefore int `json:"next_before,omitempty"`
 }
 
-// ListArticles returns a page of articles, optionally filtered by type.
-// Pagination is keyset-based: beforeID=0 returns the newest perPage rows,
-// beforeID=N returns the perPage rows with id < N (older). This avoids the
-// O(offset) scan of LIMIT/OFFSET on deep pages. Total/TotalPages are still
-// computed (single COUNT) for UI page indicators; Page mirrors the requested
-// page number for display.
-func ListArticles(db *sql.DB, atype string, page, perPage, beforeID int) (*ArticleListResult, error) {
+// ListArticles returns a page of articles, optionally filtered by type and/or
+// author. Pass atype="" and authorID=nil for "no filter". Pagination is
+// keyset-based: beforeID=0 returns the newest perPage rows, beforeID=N returns
+// the perPage rows with id < N (older). This avoids the O(offset) scan of
+// LIMIT/OFFSET on deep pages. Total/TotalPages are still computed (single
+// COUNT) for UI page indicators; Page mirrors the requested page number for
+// display.
+//
+// authorID semantics:
+//   - nil  → no filter (all authors)
+//   - non-nil → filter by author_id; the *int value is bound directly to the
+//     SQL parameter, so a nil-valued *int (-1 / 0 with isNull=true) is not
+//     representable here. Callers wanting "only articles with no author" can
+//     pass a *int that points to a sentinel, or wrap the query — we use the
+//     simple "id = ?" form for now, and the public API doesn't expose the
+//     "unauthored" filter (the "我的文章" UI only ever asks for the caller's
+//     own ID).
+func ListArticles(db *sql.DB, atype string, authorID *int, page, perPage, beforeID int) (*ArticleListResult, error) {
 	if perPage <= 0 {
 		perPage = 10
 	}
@@ -48,43 +59,50 @@ func ListArticles(db *sql.DB, atype string, page, perPage, beforeID int) (*Artic
 		page = 1
 	}
 
-	var total int
-	var rows *sql.Rows
-	var err error
-
-	if atype == "" {
-		err = db.QueryRow(`SELECT COUNT(*) FROM articles`).Scan(&total)
-		if err != nil {
-			return nil, err
-		}
-		if beforeID > 0 {
-			rows, err = db.Query(
-				`SELECT id, type, slug, title, LEFT(content, 200) AS content, author_id, created_at, updated_at
-			 FROM articles WHERE id < ? ORDER BY id DESC LIMIT ?`,
-				beforeID, perPage)
-		} else {
-			rows, err = db.Query(
-				`SELECT id, type, slug, title, LEFT(content, 200) AS content, author_id, created_at, updated_at
-			 FROM articles ORDER BY id DESC LIMIT ?`,
-				perPage)
-		}
-	} else {
-		err = db.QueryRow(`SELECT COUNT(*) FROM articles WHERE type = ?`, atype).Scan(&total)
-		if err != nil {
-			return nil, err
-		}
-		if beforeID > 0 {
-			rows, err = db.Query(
-				`SELECT id, type, slug, title, LEFT(content, 200) AS content, author_id, created_at, updated_at
-			 FROM articles WHERE type = ? AND id < ? ORDER BY id DESC LIMIT ?`,
-				atype, beforeID, perPage)
-		} else {
-			rows, err = db.Query(
-				`SELECT id, type, slug, title, LEFT(content, 200) AS content, author_id, created_at, updated_at
-			 FROM articles WHERE type = ? ORDER BY id DESC LIMIT ?`,
-				atype, perPage)
-		}
+	// Build the WHERE clause + bind list once, then reuse it for both the
+	// COUNT and the SELECT. Two-arm if/else (with/without type filter) keeps
+	// the SQL readable — the alternative is fmt.Sprintf-templated SQL, which
+	// is harder to grep for and easy to get the bind order wrong.
+	var (
+		whereSQL string
+		args     []any
+	)
+	if atype != "" {
+		whereSQL += "type = ?"
+		args = append(args, atype)
 	}
+	if authorID != nil {
+		if whereSQL != "" {
+			whereSQL += " AND "
+		}
+		whereSQL += "author_id = ?"
+		args = append(args, *authorID)
+	}
+	if whereSQL == "" {
+		whereSQL = "1=1"
+	}
+
+	var total int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM articles WHERE `+whereSQL, args...).Scan(&total); err != nil {
+		return nil, err
+	}
+
+	// Build the keyset-filtered list query. The keyset clause is conditional,
+	// so the bind list has to grow with it — Go's database/sql rejects a
+	// mismatch between `?` count and arg count, so we always bind the limit
+	// but only bind the cursor when the keyset clause is present.
+	listSQL := `SELECT id, type, slug, title, LEFT(content, 200) AS content, author_id, created_at, updated_at
+		 FROM articles WHERE ` + whereSQL
+	listArgs := append(append([]any{}, args...), perPage)
+	if beforeID > 0 {
+		listSQL += " AND id < ?"
+		// Insert beforeID before the trailing limit, matching the new `?` we
+		// just appended to the SQL.
+		listArgs = append(listArgs[:len(listArgs)-1], beforeID, perPage)
+	}
+	listSQL += " ORDER BY id DESC LIMIT ?"
+
+	rows, err := db.Query(listSQL, listArgs...)
 	if err != nil {
 		return nil, err
 	}
