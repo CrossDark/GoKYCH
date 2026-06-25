@@ -42,6 +42,26 @@ func (s *Server) uploadDir() string {
 	return filepath.Join(s.DataDir, "uploads")
 }
 
+// publicAssetURL turns a server-relative path like "/uploads/abc.jpg"
+// into an absolute URL by prepending PublicURL. When PublicURL is
+// empty (dev) the path is returned unchanged — the Next.js dev
+// server's /uploads/* rewrite covers it there. In production the
+// frontend lives on a different origin (CF Pages), so the browser
+// can't resolve a relative /uploads/* against its own host; the
+// absolute form points it straight at the API.
+func (s *Server) publicAssetURL(relPath string) string {
+	if s.PublicURL == "" {
+		return relPath
+	}
+	// Trim a single trailing slash on PublicURL so we don't end up
+	// with "https://api.example.com//uploads/..." (which some
+	// strict parsers / CDNs reject).
+	base := strings.TrimRight(s.PublicURL, "/")
+	// relPath is always already absolute-style (starts with "/"),
+	// so we just concatenate.
+	return base + relPath
+}
+
 // extFromMIME returns a sensible file extension for a MIME type, falling back
 // to the standard library lookup so uncommon types still get something usable.
 func extFromMIME(m string) string {
@@ -181,7 +201,7 @@ func (s *Server) uploadFile(c *gin.Context) {
 			c.JSON(http.StatusOK, gin.H{
 				"status":   "ok",
 				"filename": filename,
-				"url":      "/uploads/" + filename,
+				"url":      s.publicAssetURL("/uploads/" + filename),
 				"deduped":  true,
 			})
 			return
@@ -193,7 +213,7 @@ func (s *Server) uploadFile(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{
 		"status":   "ok",
 		"filename": filename,
-		"url":      "/uploads/" + filename,
+		"url":      s.publicAssetURL("/uploads/" + filename),
 	})
 }
 

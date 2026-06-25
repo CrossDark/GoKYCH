@@ -27,6 +27,23 @@ type Server struct {
 	DataDir        string   // filesystem path to the runtime data directory
 	trustedProxies []string // trusted reverse-proxy CIDRs/IPs; empty = trust none
 
+	// PublicURL is the absolute base URL the backend is reachable at
+	// from the public internet (e.g. "https://api.example.com"). It
+	// prefixes paths returned in API responses — currently only
+	// /uploads/<file> — so cross-origin frontends (Cloudflare Pages,
+	// separate admin tools) get a URL the browser can fetch directly
+	// without same-origin rewrites. Empty in dev (the Next.js
+	// /uploads/* rewrite covers it).
+	PublicURL string
+
+	// CORSAllowedOrigins is the whitelist of origins that may make
+	// credentialed cross-origin requests to the API. Each entry must
+	// include scheme + host[:port] (e.g. "https://gokych.example.com");
+	// wildcards are not allowed when credentials are sent. When nil or
+	// empty the CORS middleware is effectively a no-op — only same-
+	// origin requests succeed.
+	CORSAllowedOrigins []string
+
 	// WebAuthn configuration: the relying-party ID (domain) and the
 	// list of accepted origins. Passkey origin validation is
 	// byte-exact (scheme + host + port must all match clientDataJSON.origin),

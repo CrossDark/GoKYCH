@@ -179,4 +179,10 @@ export interface AdminFile {
   file_size: number;
   mime_type: string;
   created_at: string;
+  // Absolute public URL of the file (PUBLIC_URL + /uploads/<filename> in
+  // production). Use this in <img src> / <a href> so cross-origin
+  // deployments (CF Pages + separate API host) resolve correctly.
+  // Falls back to a relative /uploads/<filename> in dev (where the
+  // Next.js rewrite handles it).
+  url: string;
 }

@@ -73,7 +73,7 @@ export default function AdminSettings() {
   // File picker state
   const [filePickerOpen, setFilePickerOpen] = useState(false);
   const [filePickerTarget, setFilePickerTarget] = useState<string>("");
-  const [uploadedFiles, setUploadedFiles] = useState<{ filename: string; original_name: string; id: number }[]>([]);
+  const [uploadedFiles, setUploadedFiles] = useState<import("@/lib/types").AdminFile[]>([]);
 
   useEffect(() => {
     getCsrf().then((r) => {
@@ -340,7 +340,7 @@ export default function AdminSettings() {
               >
                 <div className="file-grid-preview">
                   {f.filename.match(/\.(png|jpg|jpeg|gif|webp|svg|ico)$/i) ? (
-                    <img src={`/uploads/${f.filename}`} alt={f.original_name} />
+                    <img src={f.url || `/uploads/${f.filename}`} alt={f.original_name} />
                   ) : (
                     <span className="file-grid-icon">📄</span>
                   )}

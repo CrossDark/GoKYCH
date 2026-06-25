@@ -84,6 +84,22 @@ func main() {
 	// typst.SetDB lets typst.CompileHTMLCached consult typst_cache.
 	typst.SetDB(db)
 	srv := api.NewServer(db, sess, limiter, m, cfg.App.DataDir, cfg.App.TrustedProxies)
+	// PublicURL is the absolute base URL the backend is reachable at
+	// from the public internet — used to build absolute /uploads/*
+	// responses for cross-origin frontends (Cloudflare Pages). Empty in
+	// dev, where Next.js rewrites /uploads/* → backend.
+	srv.PublicURL = cfg.App.PublicURL
+	// CORS allowlist: comma-separated env, empty in dev. When empty the
+	// CORS middleware is a no-op and only same-origin requests succeed —
+	// fine for the dev shell, but production must set this or the CF
+	// Pages frontend can't talk to the API at all.
+	srv.CORSAllowedOrigins = cfg.App.CORSAllowedOrigins
+	if len(srv.CORSAllowedOrigins) > 0 {
+		slog.Info("cors allowed origins", "origins", srv.CORSAllowedOrigins)
+	}
+	if srv.PublicURL != "" {
+		slog.Info("public url", "url", srv.PublicURL)
+	}
 
 	// Configure WebAuthn relying-party identity. RPID is the bare domain
 	// ("localhost" or your public hostname) — browsers compare it against

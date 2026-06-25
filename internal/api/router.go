@@ -25,6 +25,12 @@ func (s *Server) Setup(r *gin.Engine) {
 
 	r.Use(securityHeaders())
 	r.Use(s.requestIDMiddleware())
+	// CORS runs BEFORE session/CSRF so an OPTIONS preflight short-circuits
+	// with 204 — CSRF would otherwise 403 the preflight (no session token
+	// presented) and the browser would never get to send the real mutation
+	// request. Same-origin requests are unaffected because the middleware
+	// only sets headers when an Origin header is present.
+	r.Use(corsMiddleware(s.CORSAllowedOrigins))
 	r.Use(s.sessionMiddleware())
 	r.Use(s.loadUserMiddleware())
 

@@ -194,7 +194,11 @@ export default function AdminFiles() {
               </thead>
               <tbody>
                 {files.map((f) => {
-                  const url = `/uploads/${f.filename}`;
+                  // The API now returns a fully-qualified `url` (PUBLIC_URL +
+                  // /uploads/<filename> in prod, /uploads/<filename> in dev).
+                  // We use it directly so cross-origin deployments (CF Pages
+                  // + separate API host) don't 404 on relative paths.
+                  const url = f.url || `/uploads/${f.filename}`;
                   const isImage = IMAGE_EXTS.test(f.filename) ||
                     (f.mime_type?.startsWith("image/") ?? false);
                   return (

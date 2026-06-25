@@ -45,6 +45,19 @@ type AppConfig struct {
 	// WebAuthnDomain is the bare host ("example.com" or "localhost") used
 	// as the WebAuthn relying-party ID. Leave empty to disable passkey.
 	WebAuthnDomain string
+	// PublicURL is the absolute base URL the backend is reachable at
+	// (e.g. "https://api.example.com"). It's prepended to /uploads/* and
+	// /avatars/* paths in API responses so cross-origin frontends (CF
+	// Pages) can resolve image URLs without a same-origin /uploads
+	// rewrite. Leave empty in dev (Next.js rewrites cover it) — when
+	// empty, paths are returned as-is.
+	PublicURL string
+	// CORSAllowedOrigins is the whitelist of origins allowed to make
+	// credentialed cross-origin requests to the API. Comma-separated
+	// in the env (CORS_ALLOWED_ORIGINS). Each value must include the
+	// scheme (e.g. "https://gokych.example.com") — credentials can't be
+	// sent with a wildcard origin, so the env is the source of truth.
+	CORSAllowedOrigins []string
 }
 
 // mysqlYAML is the YAML file structure (top-level key "mysql").
@@ -178,6 +191,8 @@ func (c *Config) applyEnvOverrides() {
 	c.App.DataDir = envOr("DATA_DIR", c.App.DataDir)
 	c.App.TrustedProxies = envListOr("TRUSTED_PROXIES", c.App.TrustedProxies)
 	c.App.WebAuthnDomain = envOr("APP_DOMAIN", c.App.WebAuthnDomain)
+	c.App.PublicURL = envOr("PUBLIC_URL", c.App.PublicURL)
+	c.App.CORSAllowedOrigins = envListOr("CORS_ALLOWED_ORIGINS", c.App.CORSAllowedOrigins)
 }
 
 // DataRoot returns the absolute path to the data directory.

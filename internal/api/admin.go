@@ -680,6 +680,12 @@ func (s *Server) listFiles(c *gin.Context) {
 		FileSize     int64     `json:"file_size"`
 		MimeType     string    `json:"mime_type"`
 		CreatedAt    time.Time `json:"created_at"`
+		// URL is the absolute public URL of the file (publicAssetURL
+		// prepends PublicURL when set; same as the field on the
+		// upload response). Frontend renders this directly so it works
+		// whether the API and frontend share an origin (dev) or not
+		// (CF Pages + Ubuntu VM in prod).
+		URL string `json:"url"`
 	}
 	rows, err := s.DB.Query(
 		`SELECT id, filename, original_name, file_size, mime_type, created_at
@@ -695,6 +701,7 @@ func (s *Server) listFiles(c *gin.Context) {
 		if err := rows.Scan(&f.ID, &f.Filename, &f.OriginalName, &f.FileSize, &f.MimeType, &f.CreatedAt); err != nil {
 			continue
 		}
+		f.URL = s.publicAssetURL("/uploads/" + f.Filename)
 		out = append(out, f)
 	}
 	c.JSON(http.StatusOK, out)
