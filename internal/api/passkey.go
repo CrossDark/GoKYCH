@@ -217,6 +217,15 @@ func (s *Server) finishPasskeyLogin(c *gin.Context) {
 	// resolver maps the credential id → user exactly as before.
 	cred, err := wa.ValidateDiscoverableLogin(resolver, *sessionData, parsedAssertion)
 	if err != nil {
+		// The credential_id the authenticator presented wasn't in our table —
+		// usually a stale browser cache pointing at a revoked passkey.
+		// Surface that specifically so the user knows to re-register or
+		// pick a different one, instead of a generic "验证失败".
+		if errors.Is(err, passkey.ErrCredentialNotFound) {
+			slog.Warn("finishPasskeyLogin: credential unknown to server", "err", err)
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "此 Passkey 已在本站撤销。请用密码登录后重新登记，或换一个 Passkey。"})
+			return
+		}
 		slog.Warn("finishPasskeyLogin: verify", "err", err)
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Passkey 验证失败。"})
 		return

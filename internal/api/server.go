@@ -89,6 +89,16 @@ func (s *Server) webAuthnInstance() (*webauthn.WebAuthn, error) {
 			RPDisplayName: s.webAuthnRPName,
 			RPOrigins:     origins,
 			AuthenticatorSelection: protocol.AuthenticatorSelection{
+				// ResidentKey=preferred (not required) lets any modern
+				// authenticator — Touch ID, Windows Hello, hardware keys —
+				// create a client-side discoverable credential. We need
+				// that because the login flow is discoverable (no username
+				// prompt); without a resident credential the browser can't
+				// even surface the passkey in the login chooser.
+				// VerificationPreferred covers the common case (Touch ID
+				// / Hello verify the user; PIN-required roaming keys still
+				// work without forcing UV).
+				ResidentKey:      protocol.ResidentKeyRequirementPreferred,
 				UserVerification: protocol.VerificationPreferred,
 			},
 		})

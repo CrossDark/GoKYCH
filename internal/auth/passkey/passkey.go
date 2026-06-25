@@ -125,6 +125,13 @@ func ListForUser(db *sql.DB, userID int) ([]Credential, error) {
 
 // SaveCredential persists a freshly-registered credential. The Credential
 // struct comes from webauthn lib's FinishRegistration output.
+//
+// backup_eligible is set from c.Flags.BackupEligible. The go-webauthn lib
+// compares that stored value against the authenticator-data flags on every
+// login and rejects the assertion with "Backup Eligible flag inconsistency"
+// if it ever flips — so we MUST persist it now, otherwise every credential
+// registered by an authenticator that reports BE=1 (i.e. anything that
+// supports cloud sync or device transfer) fails to log in.
 func SaveCredential(db *sql.DB, userID int, name string, c *webauthn.Credential) error {
 	if c == nil {
 		return errors.New("nil credential")
@@ -142,11 +149,15 @@ func SaveCredential(db *sql.DB, userID int, name string, c *webauthn.Credential)
 		transportStrs = append(transportStrs, string(t))
 	}
 	transports := strings.Join(transportStrs, ",")
+	be := 0
+	if c.Flags.BackupEligible {
+		be = 1
+	}
 	_, err := db.Exec(
 		`INSERT INTO webauthn_credentials
-		 (user_id, name, credential_id, public_key, sign_count, transports)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		userID, name, credB64, pubB64, c.Authenticator.SignCount, transports)
+		 (user_id, name, credential_id, public_key, sign_count, transports, backup_eligible)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		userID, name, credB64, pubB64, c.Authenticator.SignCount, transports, be)
 	return err
 }
 
@@ -175,9 +186,14 @@ func HasAny(db *sql.DB, userID int) (bool, error) {
 
 // loadCredentials returns the user's stored passkeys as webauthn.Credential
 // values (the form expected by webauthn lib's User interface).
+//
+// We restore Flags.BackupEligible from the stored column. Without it the
+// lib sees a zero-value Flags struct (BE=false) and rejects every login
+// from an authenticator that reported BE=true at registration — see
+// SaveCredential's comment for why this matters.
 func loadCredentials(db *sql.DB, userID int) ([]webauthn.Credential, error) {
 	rows, err := db.Query(
-		`SELECT credential_id, public_key, sign_count, transports
+		`SELECT credential_id, public_key, sign_count, transports, backup_eligible
 		 FROM webauthn_credentials WHERE user_id = ?`, userID)
 	if err != nil {
 		return nil, err
@@ -187,7 +203,8 @@ func loadCredentials(db *sql.DB, userID int) ([]webauthn.Credential, error) {
 	for rows.Next() {
 		var credB64, pubB64, transports string
 		var signCount uint32
-		if err := rows.Scan(&credB64, &pubB64, &signCount, &transports); err != nil {
+		var backupEligible int
+		if err := rows.Scan(&credB64, &pubB64, &signCount, &transports, &backupEligible); err != nil {
 			return nil, err
 		}
 		credID, err := base64.RawURLEncoding.DecodeString(credB64)
@@ -201,6 +218,7 @@ func loadCredentials(db *sql.DB, userID int) ([]webauthn.Credential, error) {
 		out = append(out, webauthn.Credential{
 			ID:        credID,
 			PublicKey: pubKey,
+			Flags:     webauthn.CredentialFlags{BackupEligible: backupEligible != 0},
 			Authenticator: webauthn.Authenticator{
 				SignCount: signCount,
 			},
@@ -214,6 +232,13 @@ func loadCredentials(db *sql.DB, userID int) ([]webauthn.Credential, error) {
 // navigator.credentials.get() call returns an assertion, the
 // authenticator only sent the credential_id (no username). The
 // webauthn lib calls this with that id to find the owning user.
+//
+// The "credential_id not found" path is wrapped in a sentinel error so
+// the API layer can translate it into a friendlier Chinese message —
+// otherwise the lib just says "Failed to lookup Client-side Discoverable
+// Credential: sql: no rows in result set" which leaves the user guessing
+// (this commonly happens when their browser cached a passkey that was
+// later revoked from the server).
 func LookupByCredentialID(db *sql.DB, credID []byte) (*User, error) {
 	credB64 := base64.RawURLEncoding.EncodeToString(credID)
 	var userID int
@@ -221,10 +246,19 @@ func LookupByCredentialID(db *sql.DB, credID []byte) (*User, error) {
 		`SELECT user_id FROM webauthn_credentials WHERE credential_id = ? LIMIT 1`,
 		credB64).Scan(&userID)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrCredentialNotFound
+		}
 		return nil, err
 	}
 	return LoadUser(db, userID)
 }
+
+// ErrCredentialNotFound is returned by LookupByCredentialID when the
+// authenticator presented a credential_id that no longer exists in the
+// webauthn_credentials table — typically because the server-side passkey
+// was revoked but the browser / password manager still has it cached.
+var ErrCredentialNotFound = errors.New("passkey credential not found")
 
 // PersistSignCount updates the sign_count after a successful assertion.
 // The webauthn lib detects cloning by tracking that the counter strictly

@@ -47,6 +47,12 @@ func runMigrations(db *sql.DB) error {
 		{"ratings", "user_id", "ALTER TABLE ratings ADD COLUMN user_id INT DEFAULT NULL AFTER article_id"},
 		{"ratings", "voter_key", "ALTER TABLE ratings ADD COLUMN voter_key VARCHAR(141) NOT NULL DEFAULT 'n:匿名' AFTER author_name"},
 		{"webauthn_credentials", "name", "ALTER TABLE webauthn_credentials ADD COLUMN name VARCHAR(128) NOT NULL DEFAULT '未命名 Passkey' AFTER user_id"},
+		// backup_eligible: the go-webauthn lib compares the stored credential's
+		// Flags.BackupEligible against the assertion's authenticator-data flag
+		// on every login ("Backup Eligible flag inconsistency detected during
+		// login validation"). We never persisted it, so the stored value was
+		// always false, breaking login for any authenticator that sets BE=1.
+		{"webauthn_credentials", "backup_eligible", "ALTER TABLE webauthn_credentials ADD COLUMN backup_eligible TINYINT(1) NOT NULL DEFAULT 0 AFTER transports"},
 	}
 	for _, m := range migrations {
 		var n int
@@ -228,6 +234,7 @@ var allTables = [...]string{
 		public_key    BLOB NOT NULL,
 		sign_count    BIGINT DEFAULT 0,
 		transports    VARCHAR(255) DEFAULT '',
+		backup_eligible TINYINT(1) NOT NULL DEFAULT 0,
 		created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
 		INDEX idx_user (user_id)
