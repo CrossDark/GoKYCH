@@ -35,6 +35,61 @@ func TestNormalizeWebAuthnDomain(t *testing.T) {
 	}
 }
 
+// TestBuildWebAuthnOrigins locks in the origin-set derivation. WebAuthn's
+// origin check is byte-exact (scheme+host+port), so the dev server on
+// :3000 needs http://localhost:3000 to be in the accepted list even when
+// APP_DOMAIN was the bare "localhost". Production hosts keep strict
+// same-scheme matching to avoid silently allowing http://example.com on
+// a https site.
+func TestBuildWebAuthnOrigins(t *testing.T) {
+	cases := []struct {
+		name    string
+		primary string
+		rpid    string
+		want    []string
+	}{
+		{
+			name:    "bare localhost pulls in dev ports + https peer",
+			primary: "http://localhost", rpid: "localhost",
+			want: []string{
+				"http://localhost", "https://localhost",
+				"http://localhost:3000", "http://localhost:8000", "http://localhost:8080",
+				"https://localhost:3000", "https://localhost:8000", "https://localhost:8080",
+			},
+		},
+		{
+			name:    "localhost:3000 primary dedups the :3000 variant",
+			primary: "http://localhost:3000", rpid: "localhost",
+			want: []string{
+				"http://localhost:3000", "http://localhost", "https://localhost",
+				"http://localhost:8000", "http://localhost:8080",
+				"https://localhost:3000", "https://localhost:8000", "https://localhost:8080",
+			},
+		},
+		{
+			name:    "production https host keeps same scheme, no http peer",
+			primary: "https://kych.example.com", rpid: "kych.example.com",
+			want: []string{
+				"https://kych.example.com",
+				"https://kych.example.com:3000", "https://kych.example.com:8000", "https://kych.example.com:8080",
+			},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := buildWebAuthnOrigins(c.primary, c.rpid)
+			if len(got) != len(c.want) {
+				t.Fatalf("got %v, want %v", got, c.want)
+			}
+			for i, o := range c.want {
+				if got[i] != o {
+					t.Errorf("idx %d: got %q, want %q", i, got[i], o)
+				}
+			}
+		})
+	}
+}
+
 // TestBuildWebAuthnOrigins covers the origin-expansion logic that turns a
 // single APP_DOMAIN into the full list the webauthn lib accepts. The bug
 // we're guarding against: with only the primary origin in RPOrigins, every

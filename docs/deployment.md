@@ -1,9 +1,11 @@
-# GoKYCH 部署方案 — Ubuntu 24 (后端) + Cloudflare Pages (前端)
+# GoKYCH 部署方案 — Ubuntu 24 (后端) + 腾讯云 EdgeOne (前端 CDN/HTTPS)
 
 > 范围：把 `main` 分支当前状态（≥ commit `90498db`，即 "feat(deploy):
 > CORS middleware + absolute PUBLIC_URL for cross-origin frontends"
 > 之后）以生产形态部署。后端单实例跑在 Ubuntu 24.04 LTS VM 上
-> （systemd + nginx + MySQL 8），前端静态化部署到 Cloudflare Pages。
+> （systemd + nginx + MySQL 8），前端在同一台 VM 上跑 Next.js
+> standalone `server.js`（systemd + nginx 反代），由腾讯云 EdgeOne
+> 做 CDN / HTTPS 边缘加速，回源到 VM。前端代码零改动，保留全部 SSR。
 
 > 之前的版本里把"补 CORS + PUBLIC_URL"列为 §0 的阻塞项 —
 > 那个 PR（`90498db`）已经合到 main 了，本方案按"已就位"来写。
@@ -14,43 +16,53 @@
 
 ## 0. 一句话总结
 
-后端 systemd 起一个 Go binary，nginx 在前面收 TLS，MySQL 在同机；
-前端 CF Pages 静态托管 Next.js；跨域用 CORS 中间件 + 绝对 PUBLIC_URL
-解决。开始动手前先确认环境域名（`gokych.example.com` /
-`api.example.com`）的 DNS 都能指到位。
+后端 systemd 起一个 Go binary，nginx 在前面收 TLS；MySQL 在同机；
+前端在同一 VM 上跑 Next.js standalone `server.js`（systemd `next-server`
++ nginx 反代 :3000），由腾讯云 EdgeOne 做 CDN/HTTPS 边缘节点回源。
+`kych.net` 和 `api.kych.net` 直连 VM（A 记录），`eo.kych.net` 走
+EdgeOne（CNAME）。前端 `eo.kych.net` 的 `/api/*` 由 nginx 同 origin
+转发到 :8000，不触发 CORS。
 
 ---
 
 ## 1. 整体架构
 
 ```
-                      ┌──────────────────────────────────────┐
-                      │           Cloudflare                 │
-   用户 ────────────▶ │  gokych.example.com  (Pages)         │
-                      │      ↘ 跨域 fetch 带 cookie          │
-                      │       api.example.com  ──────────────┼──┐
-                      └──────────────────────────────────────┘  │
-                                                                 │
-                          ┌──────────────────────────────────────┴────────┐
-                          │  Ubuntu 24.04 LTS VM                          │
-                          │                                                │
-                          │  :443 nginx (TLS, ACME via certbot)           │
-                          │    ├─ /api/*       ─▶ :8000  gokych (systemd)│
-                          │    ├─ /uploads/*   ─▶ :8000  gokych          │
-                          │    └─ /avatars/*   ─▶ :8000  gokych          │
-                          │                                                │
-                          │  :3306  mysqld (systemd)                      │
-                          │                                                │
-                          │  /opt/gokych/         (binary + data)         │
-                          │  /var/backups/gokych/ (daily mysqldump+rsync) │
-                          └────────────────────────────────────────────────┘
+                       ┌────────────────────────────────────────────┐
+                       │            腾讯云 EdgeOne                   │
+   用户 ────────────▶  │  eo.kych.net      (CDN/HTTPS 边缘)   │
+                       │  api.kych.net         (CDN/HTTPS 边缘)   │
+                       │      ↓ 边缘缓存 + 回源                     │
+                       └────────────────┬───────────────────────────┘
+                                        │
+                           ┌────────────▼─────────────────────────────┐
+                           │  Ubuntu 24.04 LTS VM                    │
+                           │                                          │
+                           │  :443 nginx (TLS via EdgeOne 回源证书   │
+                           │               或本机 certbot，二选一)  │
+                           │    ├─ eo.kych.net                 │
+                           │    │     └─ /  ─▶ :3000 next-server     │
+                           │    ├─ api.kych.net                    │
+                           │    │     ├─ /api/*     ─▶ :8000 gokych   │
+                           │    │     ├─ /uploads/* ─▶ :8000 gokych   │
+                           │    │     └─ /avatars/* ─▶ :8000 gokych   │
+                           │                                          │
+                           │  :3306 mysqld (systemd)                 │
+                           │                                          │
+                           │  /opt/gokych/        (后端 binary+data) │
+                           │  /opt/next-server/   (前端 standalone)  │
+                           │  /var/backups/       (daily backup)     │
+                           └──────────────────────────────────────────┘
 ```
 
 域名分配（推荐）：
-- `gokych.example.com` → CF Pages（前端）
-- `api.example.com` → 你的 VM，nginx 收 443 转发 8000
+- `eo.kych.net` → EdgeOne → VM nginx `gokych` server 块 → :3000
+- `api.kych.net` → EdgeOne → VM nginx `api` server 块 → :8000
 
-API 都挂在 `api.example.com` 下，前端通过 `API_BASE_URL` 知道。
+两个域名都接入 EdgeOne（站点加速 + HTTPS），回源指向 VM 公网 IP。
+API 都挂在 `api.kych.net` 下，前端 SSR 通过 `API_BASE_URL` 知道；
+浏览器端 fetch 走相对路径（同 origin），EdgeOne 把 `eo.kych.net`
+的 `/api/*` 透传回源到 VM。
 
 ---
 
@@ -101,8 +113,8 @@ sudo chown -R deploy:deploy /opt/gokych   # 假设有 deploy 用户，没有就�
 # 在开发机：
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
   go build -ldflags='-s -w' -o gokych.linux.amd64 ./cmd/gokych
-scp gokych.linux.amd64 deploy@api.example.com:/opt/gokych/bin/gokych
-ssh deploy@api.example.com 'chmod +x /opt/gokych/bin/gokych'
+scp gokych.linux.amd64 deploy@api.kych.net:/opt/gokych/bin/gokych
+ssh deploy@api.kych.net 'chmod +x /opt/gokych/bin/gokych'
 ```
 
 > CGO_ENABLED=0 + alpine runtime 兼容（Dockerfile 用的也是这套），目标
@@ -141,19 +153,20 @@ DATA_DIR=/opt/gokych/data
 # ── WebAuthn / Passkey ──
 # RPID 是 eTLD+1（无 scheme / port），浏览器按它来 scope passkey。
 # 用前端实际访问的 host 即可（不是 API 域名），例如
-# https://gokych.example.com。空则禁用 Passkey，登录页 503。
-APP_DOMAIN=https://gokych.example.com
+# https://eo.kych.net。空则禁用 Passkey，登录页 503。
+APP_DOMAIN=https://eo.kych.net
 
 # ── 跨域 ──
 # PUBLIC_URL：后端对外可访问的绝对基础 URL，拼接在 /uploads/* 和
-# /avatars/* 路径前面，让 CF Pages 那边能直接 fetch 图片（不依赖
-# Next.js 的 rewrite — CF Pages 没有那个代理）。
+# /avatars/* 路径前面，让前端（EdgeOne 边缘节点或浏览器）能直接
+# fetch 图片（不走 Next.js rewrite——生产路径下 Next.js standalone
+# server 没有跨域代理）。
 # CORS_ALLOWED_ORIGINS：允许跨域 fetch 的 origin 列表，逗号分隔。
 # 带 cookie 的请求不能用通配符 origin（CORS 规范），所以必须显式列。
 # 多个 origin 写一起即可。dev 阶段经常要同时跑前/后端两个端口，
 # 把 http://localhost:3000 加上；纯 prod 环境就只留前端域名。
-PUBLIC_URL=https://api.example.com
-CORS_ALLOWED_ORIGINS=https://gokych.example.com
+PUBLIC_URL=https://api.kych.net
+CORS_ALLOWED_ORIGINS=https://eo.kych.net
 
 # ── 反向代理信任 ──
 # nginx 在 127.0.0.1，所以信它（c.ClientIP() 才不会被打到 client 的
@@ -202,46 +215,45 @@ sudo systemctl status gokych        # 看到 "server starting" + "passkey config
 sudo journalctl -u gokych -f        # 排错
 ```
 
-### 2.6 nginx `/etc/nginx/sites-available/gokych`
+### 2.6 nginx + SSL 证书（鸡生蛋问题）
+
+#### 鸡生蛋问题
+
+nginx 启动 `listen 443 ssl` 需要 SSL 证书文件存在；certbot 用 HTTP-01
+challenge 签证书需要 nginx 的 `listen 80` 端口能响应验证请求。
+如果先写包含 `ssl_certificate` 的配置，`nginx -t` 会因为证书文件不存在
+**直接失败退出**，nginx 起不来，certbot 也无法验证域名，死锁。
+
+#### 解法：HTTP-first
+
+先只写 `listen 80` 的纯 HTTP 配置（**不引用任何证书文件**），nginx 能
+正常启动；然后 `certbot --nginx` 自动用 80 端口跑 HTTP-01 验证、签
+证书、往配置里自动插入 `listen 443 ssl` 块 + 证书路径 + 80→443 跳转，
+最后 reload nginx。全程零手动编辑证书路径。
+
+#### 配置 `/etc/nginx/sites-available/gokych`
+
+三个域名三个 server 块，**全部只有 `listen 80`**：
 
 ```nginx
+# ─ api.kych.net ─ 后端 API + 静态资源 ─
 server {
     listen 80;
-    server_name api.example.com;
-    return 301 https://$host$request_uri;
-}
+    server_name api.kych.net;
 
-server {
-    listen 443 ssl http2;
-    server_name api.example.com;
-
-    ssl_certificate     /etc/letsencrypt/live/api.example.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/api.example.com/privkey.pem;
-    include /etc/letsencrypt/options-ssl-nginx.conf;
-    ssl_stapling on;
-
-    # 上传/下载：给大点 body 限制
     client_max_body_size 50m;
 
-    # HSTS（一年 + subdomains，进了 HSTS preload list 后改不回来，谨慎）
-    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
-
-    # ── API ──
     location /api/ {
         proxy_pass http://127.0.0.1:8000;
-        proxy_http_version 1.1;
         proxy_set_header Host              $host;
         proxy_set_header X-Real-IP         $remote_addr;
         proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_read_timeout 60s;
     }
-
-    # ── 上传 + 头像（gin.Static 已经在后端 8000 暴露了） ──
     location /uploads/ {
         proxy_pass http://127.0.0.1:8000;
         proxy_set_header Host $host;
-        # 上传内容基本不会变 → 30 天缓存
         expires 30d;
         add_header Cache-Control "public, immutable";
     }
@@ -251,18 +263,84 @@ server {
         expires 7d;
         add_header Cache-Control "public";
     }
-
-    # ── 健康检查（不进 access log） ──
     location = /healthz { proxy_pass http://127.0.0.1:8000/api/health; access_log off; }
+}
+
+# ─ eo.kych.net ─ 前端 SSR + API 顺路转发(同 origin, 不触发 CORS) ─
+server {
+    listen 80;
+    server_name eo.kych.net;
+
+    client_max_body_size 50m;
+
+    # 浏览器 /api/* 请求同 origin 命中这里 → 转给后端 :8000
+    location /api/ {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 60s;
+    }
+    location /uploads/ {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host $host;
+        expires 30d;
+        add_header Cache-Control "public, immutable";
+    }
+    location /avatars/ {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host $host;
+        expires 7d;
+        add_header Cache-Control "public";
+    }
+    # Next.js standalone server.js
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade           $http_upgrade;
+        proxy_set_header Connection        "upgrade";
+        proxy_read_timeout 60s;
+    }
+}
+
+# ─ kych.net ─ 主域名 301 跳转到 EdgeOne 加速的前端 ─
+server {
+    listen 80;
+    server_name kych.net;
+    return 301 https://eo.kych.net$request_uri;
 }
 ```
 
+#### 启动 + 签证书
+
 ```bash
-sudo ln -s /etc/nginx/sites-available/gokych /etc/nginx/sites-enabled/
-sudo nginx -t
-sudo certbot --nginx -d api.example.com --agree-tos -m you@example.com
-sudo systemctl reload nginx
+sudo ln -sf /etc/nginx/sites-available/gokych /etc/nginx/sites-enabled/
+sudo rm -f /etc/nginx/sites-enabled/default
+sudo nginx -t          # ← 这步现在能过，因为配置里没有任何 ssl_certificate 引用
+sudo systemctl restart nginx    # nginx 在 80 端口正常运行
+
+# certbot --nginx 会:
+#   1. 用 80 端口跑 HTTP-01 验证（nginx 已在响应）
+#   2. 签发 3 个域名的证书
+#   3. 自动往 nginx 配置里插入 listen 443 ssl + 证径路径
+#   4. 自动给每个 listen 80 块加 return 301 → https
+#   5. reload nginx
+sudo certbot --nginx \
+  -d api.kych.net -d eo.kych.net -d kych.net \
+  --non-interactive --agree-tos -m you@kych.net --redirect
 ```
+
+> **`--redirect`** 让 certbot 顺手给每个 80 块加 301 跳转到 443，
+> 不用手动编辑。签好后 `nginx -t` 看一眼完整配置会有 6 个 server
+> 块（3 个 80 跳转 + 3 个 443 ssl）。
+>
+> 续期：certbot 装好后自动加了一条 systemd timer
+> (`certbot.timer`)，每天检查一次，到期前 30 天自动续。不用管。
 
 ### 2.7 备份
 
@@ -304,7 +382,7 @@ find "$DEST" -mtime +14 -name 'data-*' -type d -exec rm -rf {} +
 ```bash
 # 开发机
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o gokych.linux.amd64 ./cmd/gokych
-scp gokych.linux.amd64 deploy@api.example.com:/tmp/gokych.new
+scp gokych.linux.amd64 deploy@api.kych.net:/tmp/gokych.new
 
 # VM
 sudo systemctl stop gokych
@@ -312,7 +390,7 @@ sudo cp /opt/gokych/bin/gokych /opt/gokych/bin/gokych.prev   # 回滚保险
 sudo cp /tmp/gokych.new /opt/gokych/bin/gokych
 sudo systemctl start gokych
 sudo journalctl -u gokych -n 50 --no-pager
-# 冒烟：curl -fsS https://api.example.com/healthz
+# 冒烟：curl -fsS https://api.kych.net/healthz
 ```
 
 > 任何 schema 改动（commit 信息里有 `feat:`/`refactor:` 但涉及表结构
@@ -321,106 +399,249 @@ sudo journalctl -u gokych -n 50 --no-pager
 
 ---
 
-## 3. 前端（Cloudflare Pages）
+## 3. 前端（EdgeOne 回源 + VM 跑 Next.js standalone）
 
-### 3.1 项目结构 + 构建
+### 3.1 形态选择说明
 
-仓库里 `web/` 已经是标准的 Next.js 15 app router 项目。CF Pages
-对 Next.js 的支持走 `@cloudflare/next-on-pages` 适配器，把
-`output: "standalone"` 的 Next.js 编译产物转成 Workers 兼容的格式。
+EdgeOne 同时支持「Pages 静态导出」和「边缘函数（V8 isolate）」两
+种托管方式。本项目大量页面（首页、文章详情、admin）用了 Next.js
+App Router 的 Server Components + `cookies()`，迁静态导出要逐页
+改客户端 fetch、丢 SSR；迁边缘函数要逐个验证 `dompurify` 等 Node
+依赖的兼容性。为了**零代码改动 + 保留 SSR/SEO**，这里选第三条路：
+**在 VM 上跑 Next.js standalone `server.js`（systemd `next-server`），
+EdgeOne 只做 CDN / HTTPS 边缘节点，回源到 VM 的 :443 nginx**。
 
-**`web/next.config.ts` 改动**（部署前）：
+代价是一个常驻 Node 进程（~80 MB RSS，远小于多一个 VM），换来的是
+前端代码、`cookies()`、SSR 行为全部不动。
+
+### 3.2 `web/next.config.ts`（已在仓库中）
 
 ```ts
-import type { NextConfig } from "next";
-
-const nextConfig: NextConfig = {
-  // 必要：让 next-on-pages 拿到 server.js。standalone 输出会把
-  // node_modules 里实际用到的依赖打包成 .next/standalone/node_modules，
-  // 比默认的 server build 小 ~95%。
-  output: "standalone",
-
-  // Dev rewrites 保留 — 它们在本地开发时把 /api/*、/uploads/*、
-  // /avatars/* 代理到后端 8000 端口。生产模式下 frontend 不跑
-  // Next.js server，所以 rewrites 不会执行；CORS + PUBLIC_URL
-  // 已经把跨域问题解决了，不需要 rewrite。
-  // （保留原 dev rewrites 即可，下面只是注释提示；不需要改代码。）
-
-  // 允许 next-on-pages 的 edge runtime
-  experimental: { runtime: "edge" },
-};
-
-export default nextConfig;
+output: "standalone",
+// dev rewrites 保持原样——生产路径不跑 next dev，
+// 跨域走 CORS + PUBLIC_URL。
 ```
 
-> Dev 的 rewrites 实际是「`web/next.config.ts:9-22`」里那条
-> `source: "/api/:path*"` 等条目。**不要删** — dev 模式（`next dev`）
-> 还在用它们，删了 dev 起来反而会 404。生产模式只是不读它们而已。
+`output: "standalone"` 让 `next build` 把用到的 `node_modules`
+子树打包进 `.next/standalone/`，并生成 `.next/standalone/server.js`，
+运行时只需要这一个目录 + `.next/static` + `public/`，不再需要仓库
+根的 `node_modules`。Dockerfile 早就在按这个假设 COPY，但仓库实际
+没设过——现已补上（commit 见附录 B）。
 
-**`web/package.json` 加脚本**：
+### 3.3 编译并发布到 VM
 
-```json
-{
-  "scripts": {
-    "build:cf": "next build && next-on-pages"
-  },
-  "devDependencies": {
-    "@cloudflare/next-on-pages": "^1.13.0"
-  }
+开发机一次性交叉编译并把 standalone 产物推到 VM：
+
+```bash
+# 在仓库根
+cd web
+npm ci
+npm run build                                   # 产出 .next/standalone / .next/static
+
+# 打包成可发布 tarball（只含运行时必需的目录）
+tar -czf /tmp/next-server.tgz \
+  -C .next/standalone . \
+  -C .. .next/static \
+  -C .. public
+
+scp /tmp/next-server.tgz deploy@api.kych.net:/tmp/
+ssh deploy@api.kych.net '
+  set -e
+  sudo mkdir -p /opt/next-server
+  sudo rm -rf /opt/next-server/*
+  sudo tar -xzf /tmp/next-server.tgz -C /opt/next-server
+  sudo cp -r /opt/next-server/.next/static /opt/next-server/.next/static
+  sudo cp -r /opt/next-server/public /opt/next-server/public 2>/dev/null || true
+  sudo chown -R nextjs:nextjs /opt/next-server
+  sudo systemctl restart next-server
+  sleep 2
+  curl -fsS http://127.0.0.1:3000/ -o /dev/null && echo "next-server ok"
+'
+```
+
+> 也可以在 VM 上 `git clone && cd web && npm ci && npm run build`
+> 就地构建，省掉 scp——和后端 `scripts/deploy-backend.sh` 的思路
+> 一致，选哪种看团队习惯。**后续更新**复用同一脚本即可。
+
+### 3.4 systemd unit `/etc/systemd/system/next-server.service`
+
+```ini
+[Unit]
+Description=GoKYCH Next.js frontend (standalone server.js)
+After=network.target gokych.service
+Wants=gokych.service
+
+[Service]
+Type=simple
+User=nextjs
+Group=nextjs
+WorkingDirectory=/opt/next-server
+Environment=NODE_ENV=production
+Environment=PORT=3000
+Environment=HOSTNAME=127.0.0.1
+Environment=API_BASE_URL=http://127.0.0.1:8000
+ExecStart=/usr/bin/node /opt/next-server/server.js
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/next-server
+PrivateTmp=true
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo useradd --system --home-dir /opt/next-server --shell /usr/sbin/nologin nextjs
+sudo systemctl daemon-reload
+sudo systemctl enable --now next-server
+sudo systemctl status next-server
+sudo journalctl -u next-server -f          # 看到 "> Ready" 就行
+```
+
+> `API_BASE_URL=http://127.0.0.1:8000`：SSR 在同机回环调后端，
+> 不走外网 / EdgeOne，最快也最稳。浏览器端 fetch 走相对路径，
+> 命中 EdgeOne 的 `eo.kych.net/api/*` → 回源到 nginx → :8000。
+
+### 3.5 nginx 站点 `/etc/nginx/sites-available/gokych-frontend`
+
+新建第二个 server 块，专门接前端域名：
+
+```nginx
+# HTTP → HTTPS（EdgeOne 回源如果走 HTTPS，证书用 EdgeOne 下发
+# 的"回源证书"或本机 certbot 任选其一；纯 HTTP 回源也行，但强烈
+# 建议开启 EdgeOne 到源站的 HTTPS 回源，避免链路裸明文）。
+server {
+    listen 80;
+    server_name eo.kych.net;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name eo.kych.net;
+
+    # 方案 A：用本机 certbot 签的证书（域名归你管，EdgeOne 回源校验关）
+    # 方案 B：用 EdgeOne 控制台"源站证书"下发的证书
+    ssl_certificate     /etc/letsencrypt/live/eo.kych.net/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/eo.kych.net/privkey.pem;
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+
+    client_max_body_size 50m;
+
+    # Next.js standalone 是个常驻 server，反代到 :3000
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        # Next.js WebSocket（HMR，dev 才用；prod 留着无害）
+        proxy_set_header Upgrade           $http_upgrade;
+        proxy_set_header Connection        "upgrade";
+        proxy_read_timeout 60s;
+    }
+
+    # 浏览器端 /api/*、/uploads/*、/avatars/* 与前端同 origin，
+    # nginx 直接把它们转给后端 :8000，省得跨域跳到 api.kych.net。
+    # （后端 CORS 配置仍然保留，因为 SSR 走 127.0.0.1 不经过 CORS，
+    #  浏览器同源请求也不触发 CORS preflight——这层 nginx 只是顺路。）
+    location /api/    { proxy_pass http://127.0.0.1:8000; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for; proxy_set_header X-Forwarded-Proto $scheme; }
+    location /uploads/{ proxy_pass http://127.0.0.1:8000; proxy_set_header Host $host; expires 30d; add_header Cache-Control "public, immutable"; }
+    location /avatars/{ proxy_pass http://127.0.0.1:8000; proxy_set_header Host $host; expires 7d;  add_header Cache-Control "public"; }
 }
 ```
 
-### 3.2 Cloudflare Pages 配置
+```bash
+sudo ln -s /etc/nginx/sites-available/gokych-frontend /etc/nginx/sites-enabled/
+sudo certbot --nginx -d eo.kych.net --agree-tos -m you@kych.net
+sudo nginx -t && sudo systemctl reload nginx
+```
 
-在 Cloudflare 控制台 **Workers & Pages → Create → Pages → Connect to Git**：
+> 这样 `eo.kych.net` 与 `api.kych.net` 都是独立 server 块，
+> 浏览器看到的是**同 origin**（`/api/*` 在 `eo.kych.net` 上），
+> 完全不触发 CORS，cookie 天然带上。后端 `.env` 里 `CORS_ALLOWED_ORIGINS`
+> 此时可填 `https://eo.kych.net`（同源场景其实用不到，但留着
+> 兼容 dev/proxy 备用路径，0 成本）。
 
-| 字段              | 值                                                                 |
-|-------------------|--------------------------------------------------------------------|
-| Build command     | `cd web && npm ci && npm run build:cf`                             |
-| Build output      | `web/.vercel/output/static`                                         |
-| Root directory    | `web`                                                              |
-| Node version      | `20`                                                               |
+### 3.6 腾讯云 EdgeOne 接入
 
-**环境变量**（在 Pages 项目 → Settings → Environment variables）：
+EdgeOne 控制台路径与字段名以腾讯云实际界面为准（平台会迭代），下面
+只列客观不变的配置项：
 
-| 变量             | Production                         | Preview (可选)              |
-|------------------|------------------------------------|-----------------------------|
-| `API_BASE_URL`   | `https://api.example.com`          | `https://api-stg.example.com` |
-| `NODE_VERSION`   | `20`                               | `20`                        |
+1. **添加站点**：把 `kych.net`（你拥有的主域）加入 EdgeOne，
+   套餐选"安全加速"或"内容加速"均可（本场景无大文件下载，基础即可）。
+2. **接入子域名加速**：
+   - `eo.kych.net`：加速类型选"网页/动态加速"或"通用加速"，
+     **源站配置**填 `<VM 公网 IP>:443`，协议选 HTTPS 回源，回源
+     Host 填 `eo.kych.net`。回源 SNI 同上。
+   - `api.kych.net`：同上，源站 `<VM 公网 IP>:443`，回源协议
+     HTTPS，回源 Host `api.kych.net`。
+3. **HTTPS 证书**：EdgeOne 控制台"域名管理 → HTTPS 证书"上传 /
+   申请新证书（EdgeOne 支持免费 DV 证书一键签发），绑定到两个子域。
+4. **DNS 切换**：EdgeOne 会给出一个 `xxx.eo.dnsecdn.com` 形式的
+   CNAME，把它加到你 DNS 里 `eo.kych.net` / `api.kych.net`
+   的 CNAME 记录。如果主域本身也托管在 EdgeOne（Edge DNS 模式），
+   直接在 EdgeOne 里加 NS 记录即可。
+5. **缓存策略**（可选但推荐）：
+   - `eo.kych.net/.next/static/*` → 缓存 30 天 immutable
+     （Next 用 hashed filename，长期缓存安全）
+   - `eo.kych.net/_next/static/*`（同上，老命名）
+   - `eo.kych.net/api/*` → 遵循源站 Cache-Control，
+     不强制缓存（动态接口不缓存）
+   - `api.kych.net/uploads/*`、`/avatars/*` → 缓存 7 天
+     （uploads 内容哈希命名，缓存安全）
+6. **回源健康检查**：开启对 `api.kych.net/api/health` 的探探测，
+   异常时 EdgeOne 告警。
 
-> `API_BASE_URL` 只影响服务端渲染时的 fetch（Next.js 15 在 server
-> 组件里直接调 `getArticle()` 等），客户端 fetch 走 `relative`
-> URL — 实际访问的是 CF Pages 的 origin，由浏览器自己 resolve 成
-> `https://gokych.example.com/api/...`，再经 CORS 跨域到
-> `https://api.example.com`。
->
-> 上传/头像的 URL **不**走 `API_BASE_URL` — 后端 `PUBLIC_URL` 直接
-> 在响应里返回绝对地址（commit `90498db`），浏览器拿到就是
-> `https://api.example.com/uploads/xxx.jpg`，直接 fetch 即可。
+> EdgeOne 没有内置的 Git 自动构建 / PR preview 第一类集成
+> 集成；前端发布走 §3.3 的 `tar → scp → systemctl restart` 流程，
+> 或挂 CI（GitHub Actions / Gitee Go）跑同一脚本即可。要做"预览
+> 环境"就再开一台小 VM 跑同样一套，CNAME 一个 `gokych-stg.kych.net`
+> 到它的 EdgeOne 加速域名。
 
-### 3.3 自定义域名
+### 3.7 自动发布（可选，CI 接管）
 
-1. Pages 项目 → **Custom domains** → `gokych.example.com`
-2. CF 自动加 CNAME，等生效（~5 分钟）
-3. SSL 自动签发（CF 一等公民，零配置）
+仓库可以加一条 `.github/workflows/deploy-frontend.yml`（或 Gitee Go
+的等价流水线），`on: push to main` 时跑：
 
-### 3.4 预览环境（推荐）
-
-CF Pages 每次 PR 自动开 preview URL，绑一个 staging 后端就够
-了 — 比如 `api-stg.example.com`，配 `Preview` 环境变量。
+```yaml
+- run: cd web && npm ci && npm run build
+- run: tar -czf next-server.tgz -C .next/standalone . -C .. .next/static -C .. public
+- uses: appleboy/scp-action@v0.1.7
+  with: { host: api.kych.net, username: deploy, key: ${{secrets.SSH_KEY}}, source: next-server.tgz, target: /tmp/ }
+- uses: appleboy/ssh-action@v1.0.3
+  with:
+    host: api.kych.net
+    username: deploy
+    key: ${{secrets.SSH_KEY}}
+    script: |
+      sudo rm -rf /opt/next-server/* && sudo tar -xzf /tmp/next-server.tgz -C /opt/next-server
+      sudo cp -r /opt/next-server/.next/static /opt/next-server/.next/static
+      sudo chown -R nextjs:nextjs /opt/next-server
+      sudo systemctl restart next-server
+```
 
 ---
 
 ## 4. DNS
 
-| 记录 | 名称                       | 类型  | 值                                  |
-|------|----------------------------|-------|-------------------------------------|
-| A    | `api.example.com`          | A     | `<VM 公网 IP>`                      |
-| AAAA | `api.example.com`          | AAAA  | `<VM IPv6>`（如有）                 |
-| CNAME| `gokych.example.com`       | CNAME | `<your-project>.pages.dev`          |
+| 记录 | 名称              | 类型  | 值                              |
+|------|-------------------|-------|---------------------------------|
+| A    | `kych.net`        | A     | `<VM 公网 IP>`                  |
+| AAAA | `kych.net`        | AAAA  | `<VM IPv6>`（如有）             |
+| A    | `api.kych.net`    | A     | `<VM 公网 IP>`                  |
+| AAAA | `api.kych.net`    | AAAA  | `<VM IPv6>`（如有）            |
+| CNAME| `eo.kych.net`     | CNAME | `<EdgeOne 分配的加速域名>`      |
 
-> 如果 `example.com` 托管在 Cloudflare，CNAME 直接生效；否则
-> 走传统 DNS。
+> `kych.net` 和 `api.kych.net` 直连 VM（A 记录），certbot 在 VM
+> 上签它们的 Let's Encrypt 证书。`eo.kych.net` 走 EdgeOne
+> （CNAME），EdgeOne 自动签发/管理边缘 HTTPS 证书；EdgeOne 边缘
+> 节点回源到 VM 的 :443，源站证书由 certbot 签（上面 §2.6 一起搞了）。
 
 ---
 
@@ -428,9 +649,9 @@ CF Pages 每次 PR 自动开 preview URL，绑一个 staging 后端就够
 
 部署完后按这个顺序过一遍：
 
-1. `curl -fsS https://api.example.com/healthz` → `{"db":"ok","status":"ok"}`
-2. `curl -fsS https://gokych.example.com/` → 200 渲染首页（不要 curl /api/*，那是后端）
-3. 浏览器开 `https://gokych.example.com/admin`，登录 admin
+1. `curl -fsS https://api.kych.net/healthz` → `{"db":"ok","status":"ok"}`
+2. `curl -fsS https://eo.kych.net/` → 200 渲染首页（不要 curl /api/*，那是后端）
+3. 浏览器开 `https://eo.kych.net/admin`，登录 admin
 4. 创建一个 md 文章，看列表里出现，前台 `/md/<slug>` 能访问
 5. **Passkey 登录**（最严苛）：开无痕窗口 → `/auth/login` →
    「使用 Passkey 登录」→ 浏览器弹出 authenticator → 登录成功 →
@@ -442,10 +663,10 @@ CF Pages 每次 PR 自动开 preview URL，绑一个 staging 后端就够
 
 Passkey 特别说明：浏览器弹的认证框子里写的是 `localhost` 是因为
 RPID 用了 `localhost` — 这只在 `APP_DOMAIN=localhost:3000` 时发生。
-生产 `APP_DOMAIN=https://gokych.example.com` 会弹出来是
-`gokych.example.com`，完全正确。**RPID 必须是 eTLD+1**（不能跨
+生产 `APP_DOMAIN=https://eo.kych.net` 会弹出来是
+`eo.kych.net`，完全正确。**RPID 必须是 eTLD+1**（不能跨
 主域），所以前端域名和后端域名必须是同一棵域树的子域（都挂在
-`example.com` 下）。
+`kych.net` 下）。
 
 ---
 
@@ -453,8 +674,9 @@ RPID 用了 `localhost` — 这只在 `APP_DOMAIN=localhost:3000` 时发生。
 
 最小集：
 
-- **uptime**：Cloudflare 自己的 [Uptime Monitoring](https://developers.cloudflare.com/fundamentals/turnstile/)（免费，配置 5 分钟）
-  监控 `https://api.example.com/healthz` 和 `https://gokych.example.com/`
+- **uptime**：EdgeOne 控制台自带"实时监控"（请求量 / 状态码 / 回源健康），
+  配 `https://api.kych.net/api/health` 与 `https://eo.kych.net/`
+  两个 URL 探测；也可叠加云监控 / UptimeRobot 等外部探针
 - **日志**：后端写 stdout → journald，配一个 rsyslog → 远程 syslog
   （papertrail/betterstack 都行）或者直接 `journalctl --since today -u gokych`
   每周翻一次
@@ -468,8 +690,8 @@ RPID 用了 `localhost` — 这只在 `APP_DOMAIN=localhost:3000` 时发生。
 
 | 坑 | 说明 | 规避 |
 |----|------|------|
-| Passkey 需要 HTTPS | WebAuthn 协议硬性要求 secure context | CF Pages 自动 HTTPS；VM 走 certbot |
-| RPID 域要匹配 | RPID 必须是 eTLD+1，且必须等于 `APP_DOMAIN` 解析出的 host | 前/后端都用 `*.example.com` 子域 |
+| Passkey 需要 HTTPS | WebAuthn 协议硬性要求 secure context | EdgeOne 自动 HTTPS（边缘节点）；VM 源站走 certbot 或 EdgeOne 回源证书 |
+| RPID 域要匹配 | RPID 必须是 eTLD+1，且必须等于 `APP_DOMAIN` 解析出的 host | 前/后端都用 `*.kych.net` 子域 |
 | Session cookie `Secure` | release 模式自动开 Secure，开发用 HTTP 测 cookie 不会带 | `.env` 一定设 `GIN_MODE=release` |
 | MySQL `caching_sha2_password` | Go driver 默认支持，但需要 MySQL 8.0+ | 已在 docker-compose 锁定 8.0 |
 | 时间戳时区 | `created_at` 走 MySQL server time；用 UTC | `data/` 里 `settings.yml` 改 timezone 或忽略（展示走浏览器 locale） |
@@ -478,7 +700,7 @@ RPID 用了 `localhost` — 这只在 `APP_DOMAIN=localhost:3000` 时发生。
 | 跨域 cookie | CORS + `credentials: "include"` 不允许 `*` 源 | 后端用 `CORS_ALLOWED_ORIGINS` 显式列 |
 | 上传 URL 相对路径 | 跨域下浏览器 404 | 已修：后端用 `PUBLIC_URL` 拼绝对路径（commit `90498db`），前端 `f.url` 直接用 |
 | Passkey 突然 503 | `APP_DOMAIN` 改错 / RPID 跟前端 host 不匹配 | `journalctl -u gokych | grep passkey` 看 startup log；RPID 必须是 eTLD+1 |
-| `next-on-pages` 兼容性 | Next.js 15 + 适配器 1.13+ 验证过；用前先在 PR preview URL 跑一遍 | Pages PR preview 是免费的，先开一个 dry-run |
+| Node 版本不一致 | standalone `server.js` 要求运行时 Node ≥ 20（与构建端一致） | VM 上装 `nodejs-20`；systemd unit 显式 `/usr/bin/node` 校验路径 |
 | CORS preflight 走错中间件 | OPTIONS 请求如果被 CSRF 中间件拦了，浏览器永远收不到 204 → 实际 mutation 也发不出去 | CORS 已在 `csrfMiddleware` 之前安装，preflight 直接 204 短路（commit `90498db`） |
 
 ---
@@ -489,7 +711,7 @@ RPID 用了 `localhost` — 这只在 `APP_DOMAIN=localhost:3000` 时发生。
 |-------------------------|------------------------------------------------------|
 | 后端起不来              | `sudo systemctl restart gokych`；不行就 `cp gokych.prev gokych` 然后 restart |
 | Passkey 突然挂          | 看 `journalctl -u gokych | grep passkey`；`APP_DOMAIN` 改错就 503 |
-| 前端构建失败            | CF Pages 会保留上一次成功部署，UI 上点 "Rollback to this deployment" |
+| 前端构建失败            | tar 包没推上去前先在本地 `npm run build` 跑一遍；上线失败用 §3.3 脚本回滚到 `/opt/next-server.prev/` 并 restart |
 | 数据库升级挂了          | `mv /var/backups/gokych/db-latest.sql.gz /tmp/`，从备份恢复（drop + create + 灌入） |
 | 整个翻车                | 重新跑 §2 整套；10 分钟内能恢复（VM 不挂 + DNS 不挂就 OK） |
 
@@ -497,10 +719,14 @@ RPID 用了 `localhost` — 这只在 `APP_DOMAIN=localhost:3000` 时发生。
 
 ## 9. 一行话总结
 
-> **Ubuntu 24 VM 上跑 gokych 单实例（systemd + nginx + MySQL 8），
-> CF Pages 静态托管 Next.js，跨域用 CORS + `PUBLIC_URL` 绝对 URL
-> 解决。`.env` 里 CORS_ALLOWED_ORIGINS / PUBLIC_URL / APP_DOMAIN
-> 这三个是生产正确性的关键 — 改完 .env 必须 `systemctl restart gokych`。**
+> **Ubuntu 24 VM 上跑 gokych 单实例（systemd + nginx + MySQL 8）+ 同机
+> `next-server`（standalone `server.js`），腾讯云 EdgeOne 在边缘接
+> CDN/HTTPS 并回源到 VM。同 origin 部署（nginx 把 `/api/*` 顺路转给
+> :8000）让浏览器几乎不触发 CORS；CORS + `PUBLIC_URL` 仍是 dev /
+> 跨域备用路径的兜底。`.env` 里 `CORS_ALLOWED_ORIGINS` /
+> `PUBLIC_URL` / `APP_DOMAIN` 这三个是生产正确性的关键 — 改完
+> `.env` 必须 `systemctl restart gokych`，改完前端必须
+> `systemctl restart next-server`。**
 
 ### 一键部署（macOS / Linux 都能跑）
 
@@ -536,20 +762,34 @@ GOKYCH_HOST=gitcode curl ... | bash
 systemd / nginx / MySQL / TLS（首次部署 + `--update` 后续更新都支持）：
 
 ```bash
-# 首次部署：自动建用户、装包、初始化 MySQL、写 systemd、签 TLS
+# 首次部署：自动建用户、装包、初始化 MySQL、写 systemd、写 nginx(HTTP-only)、
+#           certbot --nginx 签 TLS（3 个域名：api.kych.net / eo.kych.net / kych.net）
 ./scripts/deploy-backend.sh
 
-# 后续更新：只重传二进制 + 重启（.env 里的 DB_PASSWORD / SESSION_SECRET 自动保留）
+# 后续更新：只重传二进制 + 重启（.env 里的密钥自动从远端读回保留）
 ./scripts/deploy-backend.sh --update
 
 # ARM64 Ubuntu VM（AWS Graviton / 树莓派）
 GOARCH=arm64 ./scripts/deploy-backend.sh
 ```
 
-三个脚本的职责切分：
-- `build-release.sh`  → 多平台二进制 + 哈希
-- `install-backend.sh` → 单机装（适合 macOS 本地、临时测试、容器）
-- `deploy-backend.sh`  → 远程 VM 整套（适合生产）
+**`scripts/deploy-frontend.sh`** — 本地构建 Next.js standalone，推到
+VM 的 `/opt/next-server/`，装 Node.js 20 + 写 next-server systemd
+（首次部署 + `--update` 后续更新都支持）：
+
+```bash
+# 首次：装 Node 20 + 建 nextjs 用户 + 写 next-server.service + 推产物
+./scripts/deploy-frontend.sh
+
+# 后续更新：只构建 + 推 + 重启
+./scripts/deploy-frontend.sh --update
+```
+
+四个脚本的职责切分：
+- `build-release.sh`    → 多平台二进制 + 哈希
+- `install-backend.sh`  → 单机装（适合 macOS 本地、临时测试、容器）
+- `deploy-backend.sh`   → 远程 VM 后端整套（适合生产）
+- `deploy-frontend.sh`  → 远程 VM 前端 Next.js standalone（适合生产）
 
 ---
 
@@ -559,7 +799,7 @@ GOARCH=arm64 ./scripts/deploy-backend.sh
 |-----------|--------------------------------------------------------------|
 | (pending) | chore: add scripts/deploy-backend.sh (一键部署)              |
 | `90498db` | feat(deploy): CORS middleware + absolute PUBLIC_URL          |
-| `192cbb9` | docs: deployment plan for Ubuntu 24 + Cloudflare Pages       |
+| `192cbb9` | docs: deployment plan for Ubuntu 24 + Cloudflare Pages (已废弃，被本文件 EdgeOne 方案取代) |
 | `1db5623` | docs(env): document APP_DOMAIN in .env.example              |
 | `cef28c9` | docs: add TODO + integration/profile/unicode test scripts    |
 | `aed9200` | feat(article): regular users can CRUD their own articles    |
@@ -568,4 +808,27 @@ GOARCH=arm64 ./scripts/deploy-backend.sh
 `90498db` 是把"跨域可工作"这件事从方案层面落到代码的 PR — 部署前
 请确认仓库 ≥ 这个 commit，否则需要先把缺的代码补上。`scripts/deploy-backend.sh`
 是后续加的，把 §2 的手抄步骤封装成一条命令。
+
+---
+
+## 附录 B：本方案落地涉及的代码改动
+
+把前端从"计划上 CF Pages"切到"EdgeOne 回源 + VM 跑 Node standalone"
+对代码的改动极小，**只动一个文件**：
+
+- `web/next.config.ts` 新增 `output: "standalone"`。
+  - 之前仓库里一直没设这一项；`web/Dockerfile` 第 35 行的
+    `COPY --from=builder /app/.next/standalone ./` 已经在按"standalone
+    已开启"的假设组装运行时镜像——属于一个长期存在的隐式不一致。
+    本方案顺手修上，CI 的 `npm run build` / EdgeOne 源站构建都走同一条
+    standalone 输出，行为一致。
+  - **不要**配套加 `@cloudflare/next-on-pages`、`experimental.runtime:"edge"`、
+    `build:cf` 脚本——那些是 CF Pages 的 V8-isolate 路线专属，本方案
+    走 Node server，加了反而会触发 Edge runtime 约束把 `dompurify`
+    等依赖干掉。
+
+- 其它（§3 的 systemd unit、nginx 站点、EdgeOne 控制台配置）都是
+  VM / 云控制台层面的操作，不进仓库；把 §3.3 那段 `tar → scp →
+  systemctl restart` 包成 `scripts/deploy-frontend.sh` 的话再单独
+  提一个 commit，与现有 `scripts/deploy-backend.sh` 并列。
 
