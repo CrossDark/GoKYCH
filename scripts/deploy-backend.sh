@@ -3,9 +3,12 @@
 # gokych 后端一键部署脚本 — Ubuntu 24.04 VM
 #
 # 域名架构:
-#   kych.net        → 301 跳转到 eo.kych.net（主域名，直连 VM）
+#   kych.net        → 301 跳转到 eo.kych.net（主域名）
 #   api.kych.net    → VM → :8000（后端 API + 上传/头像静态资源）
-#   eo.kych.net     → EdgeOne → VM → nginx → :3000(前端) + :8000(/api/*)
+#   eo.kych.net     → EdgeOne Makers 边缘节点跑 Next.js SSR
+#                    （浏览器跨域 fetch 到 api.kych.net，CORS 兜底）
+#   前端代码不复管理 Node/standalone，由 EdgeOne Makers 连 GitHub 仓库
+#   自动构建部署；本脚本只管 VM 上的后端 + nginx + TLS。
 #
 # SSL 证书鸡生蛋问题:
 #   nginx 启动 443 需要 SSL 证书；certbot 签证书需要域名通过 HTTP-01
@@ -92,7 +95,7 @@ cat <<EOF
   REMOTE_HOST:     $REMOTE_HOST
   MAIN_DOMAIN:     $MAIN_DOMAIN  (→ 301 跳转到 $EO_DOMAIN)
   API_DOMAIN:      $API_DOMAIN   (→ VM :8000)
-  EO_DOMAIN:      $EO_DOMAIN    (→ EdgeOne → VM :3000)
+  EO_DOMAIN:      $EO_DOMAIN    (→ EdgeOne Makers 边缘运行)
   APP_DOMAIN:      $APP_DOMAIN   (Passkey)
   PUBLIC_URL:      $PUBLIC_URL   (uploads 绝对 URL)
   CORS_ORIGIN:     $CORS_ORIGIN
@@ -168,7 +171,7 @@ mkdir -p /home/deploy/.ssh
 cp /root/.ssh/authorized_keys /home/deploy/.ssh/ 2>/dev/null || true
 chown -R deploy:deploy /home/deploy/.ssh
 chmod 700 /home/deploy/.ssh
-echo "deploy ALL=(ALL) NOPASSWD: /bin/systemctl restart gokych, /bin/systemctl restart next-server, /bin/systemctl status gokych, /bin/systemctl status next-server" \
+echo "deploy ALL=(ALL) NOPASSWD: /bin/systemctl restart gokych, /bin/systemctl status gokych" \
   >/etc/sudoers.d/deploy-gokych
 REMOTE
   ok "用户就绪"
@@ -191,8 +194,7 @@ REMOTE
   rsh bash -s <<'REMOTE'
 set -euo pipefail
 mkdir -p /opt/gokych/bin /opt/gokych/data/{uploads,avatars,settings,plugins,themes,typst}
-mkdir -p /opt/next-server
-chown -R deploy:deploy /opt/gokych /opt/next-server
+chown -R deploy:deploy /opt/gokych
 REMOTE
   ok "目录就绪"
 
@@ -239,47 +241,7 @@ server {
     location = /healthz { proxy_pass http://127.0.0.1:8000/api/health; access_log off; }
 }
 
-# ─ ${EO} ─ 前端(SSR) + API 顺路转发(同 origin, 不触发 CORS) ─
-server {
-    listen 80;
-    server_name ${EO};
-
-    client_max_body_size 50m;
-
-    location /api/ {
-        proxy_pass http://127.0.0.1:8000;
-        proxy_set_header Host              \$host;
-        proxy_set_header X-Real-IP         \$remote_addr;
-        proxy_set_header X-Forwarded-For   \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_read_timeout 60s;
-    }
-    location /uploads/ {
-        proxy_pass http://127.0.0.1:8000;
-        proxy_set_header Host \$host;
-        expires 30d;
-        add_header Cache-Control "public, immutable";
-    }
-    location /avatars/ {
-        proxy_pass http://127.0.0.1:8000;
-        proxy_set_header Host \$host;
-        expires 7d;
-        add_header Cache-Control "public";
-    }
-    location / {
-        proxy_pass http://127.0.0.1:3000;
-        proxy_http_version 1.1;
-        proxy_set_header Host              \$host;
-        proxy_set_header X-Real-IP         \$remote_addr;
-        proxy_set_header X-Forwarded-For   \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_set_header Upgrade           \$http_upgrade;
-        proxy_set_header Connection        "upgrade";
-        proxy_read_timeout 60s;
-    }
-}
-
-# ─ ${MAIN} ─ 主域名 301 跳转到 EdgeOne 加速的前端 ─
+# ─ ${MAIN} ─ 主域名 301 跳转到 EdgeOne Makers 部署的前端 ─
 server {
     listen 80;
     server_name ${MAIN};
@@ -305,7 +267,7 @@ REMOTE
   rsh bash -s <<REMOTE
 set -euo pipefail
 certbot --nginx \
-  -d ${API_DOMAIN} -d ${EO_DOMAIN} -d ${MAIN_DOMAIN} \
+  -d ${API_DOMAIN} -d ${MAIN_DOMAIN} \
   --non-interactive --agree-tos -m ${EMAIL} --redirect
 REMOTE
   ok "TLS 证书已签发 + HTTPS 自动配置完成"
@@ -420,11 +382,15 @@ ok "后端部署完成 🚀"
 echo
 cat <<NEXT
 下一步：
-  1. 浏览器打开 https://${EO_DOMAIN}/admin，用 admin / admin123 登录
-     （需先跑 deploy-frontend.sh 部署前端）
-  2. ./scripts/deploy-frontend.sh   ← 部署 Next.js 前端
-  3. EdgeOne 控制台：把 ${EO_DOMAIN} CNAME 到 EdgeOne 加速域名，
-     回源地址填 ${REMOTE_HOST}，回源 Host 填 ${EO_DOMAIN}，协议 HTTPS
+  1. EdgeOne Makers 控制台连 GitHub 仓库 → 自动构建部署前端
+     环境变量（生产）：
+       NEXT_PUBLIC_API_BASE_URL=https://${API_DOMAIN}
+     自定义域名：${EO_DOMAIN}
+  2. DNS:
+       ${API_DOMAIN}    A → ${REMOTE_HOST}
+       ${MAIN_DOMAIN}   A → ${REMOTE_HOST}
+       ${EO_DOMAIN}     CNAME → EdgeOne Makers 域名
+  3. 浏览器打开 https://${EO_DOMAIN}/admin，用 admin / admin123 登录
   4. 备份：crontab -e 加一行  30 3 * * * /opt/gokych/bin/backup.sh
   5. 关键凭据在 /opt/gokych/.env (chmod 600):
      SESSION_SECRET, DB_PASSWORD
