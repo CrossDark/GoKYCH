@@ -47,7 +47,7 @@ while [[ $# -gt 0 ]]; do
     --update|-u) UPDATE_ONLY=1; shift ;;
     --help|-h)
       sed -n '2,30p' "$0"; exit 0 ;;
-    *) die "未知参数: $1（试试 --help）" ;;
+    *) die "unknown arg: $1 (try --help)" ;;
   esac
 done
 
@@ -125,7 +125,7 @@ fi
 ok "ssh root@$REMOTE_HOST OK"
 
 # ── 3. 本地编译 ──
-log "本地交叉编译二进制 (linux/$GOARCH)…"
+log "本地交叉编译二进制 (linux/${GOARCH})…"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BIN_PATH="/tmp/gokych.linux.$GOARCH"
@@ -336,7 +336,7 @@ log "上传二进制…"
 rsh "if [ -f '$REMOTE_BIN' ]; then cp '$REMOTE_BIN' '$REMOTE_BIN.prev'; fi"
 rsync_to "$BIN_PATH" "$REMOTE_BIN"
 rsh "chown deploy:deploy '$REMOTE_BIN' && chmod +x '$REMOTE_BIN'"
-ok "二进制就位（回滚: cp $REMOTE_BIN.prev $REMOTE_BIN）"
+ok "二进制就位 (rollback: cp ${REMOTE_BIN}.prev ${REMOTE_BIN})"
 
 # ── 7. 重启服务 ──
 log "systemctl restart gokych…"

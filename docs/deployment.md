@@ -504,7 +504,36 @@ RPID 用了 `localhost` — 这只在 `APP_DOMAIN=localhost:3000` 时发生。
 
 ### 一键部署（macOS / Linux 都能跑）
 
-不想手抄 §2 的话，仓库里有 `scripts/deploy-backend.sh`，从开发机一行命令搞定：
+仓库里有两条脚本，覆盖"打 release"和"装 release"两件事：
+
+**`scripts/build-release.sh`** — 维护者打 release 时跑。打 4 个平台
+二进制到 `dist/`，生成 `SHA256SUMS`，可选 `--upload` 直接 `gh release create`：
+
+```bash
+VERSION=v0.1.0 ./scripts/build-release.sh
+VERSION=v0.1.0 ./scripts/build-release.sh --upload   # 自动创建 GitHub Release
+```
+
+**`scripts/install-backend.sh`** — 任何机器（包括目标 Ubuntu VM 自身）
+从 GitHub / GitCode Release 拉对应平台的二进制，校验 hash，装到
+`/usr/local/bin/gokych`：
+
+```bash
+# 目标 VM 上跑：装到 /usr/local/bin（要 sudo）
+curl -fsSL https://raw.githubusercontent.com/CrossDark/GoKYCH/main/scripts/install-backend.sh | sudo bash
+
+# 装到用户目录（不要 sudo）
+PREFIX=$HOME/.local curl ... | bash
+
+# 装特定版本
+GOKYCH_VERSION=v0.1.0 curl ... | bash
+
+# 强制走 GitCode（GitHub 在国内慢）
+GOKYCH_HOST=gitcode curl ... | bash
+```
+
+**`scripts/deploy-backend.sh`** — 跨平台编译后推到目标 VM，初始化
+systemd / nginx / MySQL / TLS（首次部署 + `--update` 后续更新都支持）：
 
 ```bash
 # 首次部署：自动建用户、装包、初始化 MySQL、写 systemd、签 TLS
@@ -517,9 +546,10 @@ RPID 用了 `localhost` — 这只在 `APP_DOMAIN=localhost:3000` 时发生。
 GOARCH=arm64 ./scripts/deploy-backend.sh
 ```
 
-脚本是幂等的 — 大部分步骤检查"已就位就跳过"。跨平台编译用
-`CGO_ENABLED=0 GOOS=linux`，产物是静态二进制，目标机器不需要
-装 Go runtime。
+三个脚本的职责切分：
+- `build-release.sh`  → 多平台二进制 + 哈希
+- `install-backend.sh` → 单机装（适合 macOS 本地、临时测试、容器）
+- `deploy-backend.sh`  → 远程 VM 整套（适合生产）
 
 ---
 

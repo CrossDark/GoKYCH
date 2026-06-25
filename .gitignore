@@ -60,3 +60,10 @@ web/*.log
 # TypeScript incremental build cache (regenerated on every build)
 web/tsconfig.tsbuildinfo
 web/tsconfig.tsbuildinfo.*
+
+# ── Release artifacts ────────────────────────────────────────
+# scripts/build-release.sh 产出的多平台二进制 + SHA256SUMS；不进仓库，
+# 改用 GitHub/GitCode Release 配发（scripts/install-backend.sh 拉取）。
+# 仓库里想保留 4 个 25MB 的二进制没什么意义。
+dist/
+gokych-*
