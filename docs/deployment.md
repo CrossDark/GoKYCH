@@ -502,12 +502,32 @@ RPID 用了 `localhost` — 这只在 `APP_DOMAIN=localhost:3000` 时发生。
 > 解决。`.env` 里 CORS_ALLOWED_ORIGINS / PUBLIC_URL / APP_DOMAIN
 > 这三个是生产正确性的关键 — 改完 .env 必须 `systemctl restart gokych`。**
 
+### 一键部署（macOS / Linux 都能跑）
+
+不想手抄 §2 的话，仓库里有 `scripts/deploy-backend.sh`，从开发机一行命令搞定：
+
+```bash
+# 首次部署：自动建用户、装包、初始化 MySQL、写 systemd、签 TLS
+./scripts/deploy-backend.sh
+
+# 后续更新：只重传二进制 + 重启（.env 里的 DB_PASSWORD / SESSION_SECRET 自动保留）
+./scripts/deploy-backend.sh --update
+
+# ARM64 Ubuntu VM（AWS Graviton / 树莓派）
+GOARCH=arm64 ./scripts/deploy-backend.sh
+```
+
+脚本是幂等的 — 大部分步骤检查"已就位就跳过"。跨平台编译用
+`CGO_ENABLED=0 GOOS=linux`，产物是静态二进制，目标机器不需要
+装 Go runtime。
+
 ---
 
 ## 附录 A：相关 commit 一览（按时间倒序）
 
 | commit    | 主题                                                         |
 |-----------|--------------------------------------------------------------|
+| (pending) | chore: add scripts/deploy-backend.sh (一键部署)              |
 | `90498db` | feat(deploy): CORS middleware + absolute PUBLIC_URL          |
 | `192cbb9` | docs: deployment plan for Ubuntu 24 + Cloudflare Pages       |
 | `1db5623` | docs(env): document APP_DOMAIN in .env.example              |
@@ -516,5 +536,6 @@ RPID 用了 `localhost` — 这只在 `APP_DOMAIN=localhost:3000` 时发生。
 | `7154585` | fix(auth): persist BackupEligible + require discoverable     |
 
 `90498db` 是把"跨域可工作"这件事从方案层面落到代码的 PR — 部署前
-请确认仓库 ≥ 这个 commit，否则需要先把缺的代码补上。
+请确认仓库 ≥ 这个 commit，否则需要先把缺的代码补上。`scripts/deploy-backend.sh`
+是后续加的，把 §2 的手抄步骤封装成一条命令。
 
