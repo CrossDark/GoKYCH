@@ -13,6 +13,28 @@ const BASE =
   process.env.NEXT_PUBLIC_API_BASE_URL ||
   (typeof window === "undefined" ? process.env.API_BASE_URL || "http://localhost:8000" : "");
 
+/**
+ * Build the absolute URL for a backend endpoint.
+ *
+ * In production the Next.js frontend runs on EdgeOne Makers (a separate
+ * origin from the Go backend), so any fetch that the BROWSER makes
+ * against `/api/...` must be rewritten to `https://<api host>/api/...`
+ * — otherwise it would hit EdgeOne's edge runtime, which doesn't proxy
+ * arbitrary paths to the backend.
+ *
+ * On the SSR side the BASE already resolves to a usable URL
+ * (`API_BASE_URL` or `http://localhost:8000`), so the same helper works
+ * for server components / route handlers too.
+ *
+ * When no env is set (local `next dev`), BASE is empty on the browser
+ * and the relative path is preserved — `next.config.ts` rewrites it to
+ * `http://localhost:8000` for the dev server.
+ */
+export function apiUrl(path: string): string {
+  if (!path.startsWith("/")) path = "/" + path;
+  return `${BASE}${path}`;
+}
+
 async function getServerCookies(): Promise<string> {
   if (typeof window !== "undefined") return "";
   try {
@@ -451,7 +473,7 @@ export function uploadFile(csrf: string, file: File) {
       const jar = await cookies();
       const cookieStr = jar.getAll().map((c) => `${c.name}=${c.value}`).join("; ");
       headers["Cookie"] = cookieStr;
-      const res = await fetch(`${process.env.API_BASE_URL || "http://localhost:8000"}/api/admin/files`, {
+      const res = await fetch(apiUrl("/api/admin/files"), {
         method: "POST",
         headers,
         body: fd,
@@ -463,7 +485,7 @@ export function uploadFile(csrf: string, file: File) {
       return res.json() as Promise<{ status: string; filename: string; url: string; deduped?: boolean }>;
     });
   }
-  return fetch(`/api/admin/files`, {
+  return fetch(apiUrl("/api/admin/files"), {
     method: "POST",
     headers,
     body: fd,

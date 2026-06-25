@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
-import { getCsrf, getMe } from "@/lib/api";
+import { getCsrf, getMe, apiUrl } from "@/lib/api";
 import { useToast, useBeforeUnload } from "@/lib/admin-feedback";
 import { AdminModal } from "@/components/admin/AdminModal";
 
@@ -58,7 +58,7 @@ export default function AdminAPIKeys() {
   }, []);
 
   const loadKeys = (token: string) => {
-    fetch("/api/admin/api-keys", { headers: { "X-CSRF-Token": token } })
+    fetch(apiUrl("/api/admin/api-keys"), { headers: { "X-CSRF-Token": token } })
       .then((r) => r.json())
       .then((d) => { setKeys(d); setLoading(false); })
       .catch(() => setLoading(false));
@@ -71,7 +71,7 @@ export default function AdminAPIKeys() {
     }
     setCreating(true);
     try {
-      const res = await fetch("/api/admin/api-keys", {
+      const res = await fetch(apiUrl("/api/admin/api-keys"), {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf },
         body: JSON.stringify({ name: newName.trim() }),
@@ -95,7 +95,7 @@ export default function AdminAPIKeys() {
     if (!pendingDelete) return;
     setDeletingId(pendingDelete.id);
     try {
-      const res = await fetch(`/api/admin/api-keys/${pendingDelete.id}`, {
+      const res = await fetch(apiUrl(`/api/admin/api-keys/${pendingDelete.id}`), {
         method: "DELETE",
         headers: { "X-CSRF-Token": csrf },
       });

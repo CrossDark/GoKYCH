@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { getCsrf, getMe } from "@/lib/api";
+import { getCsrf, getMe, apiUrl } from "@/lib/api";
 import { useToast } from "@/lib/admin-feedback";
 import { AdminModal } from "@/components/admin/AdminModal";
 
@@ -44,7 +44,7 @@ export default function AdminPasskeys() {
   }, []);
 
   const loadKeys = (token: string) => {
-    fetch("/api/admin/passkeys", { headers: { "X-CSRF-Token": token } })
+    fetch(apiUrl("/api/admin/passkeys"), { headers: { "X-CSRF-Token": token } })
       .then((r) => r.json())
       .then((d: AnyUserPasskey[]) => { setKeys(d || []); setLoading(false); })
       .catch(() => setLoading(false));
@@ -54,7 +54,7 @@ export default function AdminPasskeys() {
     if (!pendingDelete) return;
     setDeletingId(pendingDelete.id);
     try {
-      const res = await fetch(`/api/admin/passkeys/${pendingDelete.id}`, {
+      const res = await fetch(apiUrl(`/api/admin/passkeys/${pendingDelete.id}`), {
         method: "DELETE",
         headers: { "X-CSRF-Token": csrf },
       });

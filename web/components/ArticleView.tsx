@@ -5,7 +5,7 @@ import Link from "next/link";
 import type { ArticleDetail, Comment } from "@/lib/types";
 import { RatingWidget } from "./RatingWidget";
 import { CommentSection } from "./CommentSection";
-import { getMe, getCsrf, addLineComment } from "@/lib/api";
+import { getMe, getCsrf, addLineComment, apiUrl } from "@/lib/api";
 
 interface Props {
   data: ArticleDetail;
@@ -350,7 +350,7 @@ useEffect(() => {
           {article.created_at !== article.updated_at && <time className="updated-at">· 更新于 {new Date(article.updated_at).toLocaleDateString("zh-CN")}</time>}
           {article.type === "typst" && (
             <a
-              href={`/api/articles/${article.type}/${article.slug}/pdf`}
+              href={apiUrl(`/api/articles/${article.type}/${article.slug}/pdf`)}
               className="edit-link"
               download
               title="下载 PDF（首次点击会触发 typst 编译，约 1–2 秒）"

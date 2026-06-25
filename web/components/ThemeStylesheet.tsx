@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { getSite } from "@/lib/api";
+import { getSite, apiUrl } from "@/lib/api";
 
 /**
  * ThemeStylesheet — loads /api/themes/<style_theme>.css into the document
@@ -28,7 +28,7 @@ export function ThemeStylesheet() {
           // a user switches themes in another tab. The endpoint is already
           // cache-friendly (max-age=300), so this only matters across that
           // 5-min window.
-          setHref(`/api/themes/${name}?v=${Date.now()}`);
+          setHref(apiUrl(`/api/themes/${name}?v=${Date.now()}`));
         } else {
           setHref(null);
         }
