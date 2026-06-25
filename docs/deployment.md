@@ -1,53 +1,23 @@
 # GoKYCH 部署方案 — Ubuntu 24 (后端) + Cloudflare Pages (前端)
 
-> 范围：把 `main` 分支当前状态（commit `1db5623` 之后）以生产形态部署。
-> 后端单实例跑在 Ubuntu 24.04 LTS VM 上（systemd + nginx + MySQL 8），
-> 前端静态化部署到 Cloudflare Pages。整套方案在开始动手前需要先补两个
-> 跨域改动（见 §0），否则生产环境 90% 的功能会坏在第一步。
+> 范围：把 `main` 分支当前状态（≥ commit `90498db`，即 "feat(deploy):
+> CORS middleware + absolute PUBLIC_URL for cross-origin frontends"
+> 之后）以生产形态部署。后端单实例跑在 Ubuntu 24.04 LTS VM 上
+> （systemd + nginx + MySQL 8），前端静态化部署到 Cloudflare Pages。
+
+> 之前的版本里把"补 CORS + PUBLIC_URL"列为 §0 的阻塞项 —
+> 那个 PR（`90498db`）已经合到 main 了，本方案按"已就位"来写。
+> 如果你的部署起点早于那个 commit，参考那个 commit 的 message
+> 里的前置条件清单。
 
 ---
 
-## 0. 必须先做的代码改动（部署前）
+## 0. 一句话总结
 
-跨域场景（CF Pages 和后端在不同域名）下，仓库当前状态有两个真坑，
-不修直接部署就是各种 404 / CORS / 死链：
-
-### 0.1 后端缺 CORS 中间件
-
-`web/lib/api.ts` 的 `BASE` 在生产环境是 `https://api.example.com`，
-浏览器从 `https://gokych.example.com` 调过去是**跨源**请求。`web/lib/api.ts`
-走的是 `credentials: "include"`（带 cookie），按 CORS 规范这要求后端
-显式 `Access-Control-Allow-Origin: <具体 origin>`，不能用 `*`。
-而当前后端 `internal/api/router.go` 没装任何 CORS 中间件 → 浏览器
-直接拦掉所有 `fetch`。
-
-**修法**：在 `internal/api/router.go` 的 `r.Use(...)` 链路里加一个
-`cors(allowedOrigins []string)` 中间件（建议实现而不是用第三方库 —
-只有 ~30 行）。配置走环境变量 `CORS_ALLOWED_ORIGINS`，逗号分隔多个
-origin（dev 是 `http://localhost:3000`，prod 是
-`https://gokych.example.com`）。预检 (OPTIONS) 必须直接 204 返回，
-不能走到业务 handler。
-
-### 0.2 上传/头像 URL 是相对路径，跨域场景会 404
-
-`internal/api/files.go` 的 upload 响应里 `url` 是 `"/uploads/xxx"`，
-`internal/api/server.go` 静态服务也是 `/uploads`、`/avatars` 路径。
-当前 dev 模式靠 `web/next.config.ts` 的 `rewrites` 把 `/uploads/*`
-代理到后端，但生产在 CF Pages 上没有这个代理 — 浏览器会向
-`gokych.example.com/uploads/xxx.jpg` 发请求，CF Pages 当然 404。
-
-**修法（推荐）**：后端读新环境变量 `PUBLIC_URL`（如
-`https://api.example.com`），在 upload/avatar 响应里把相对路径
-改成 `PUBLIC_URL + "/uploads/xxx"`。前端无需改 — 浏览器拿到
-绝对 URL 直接到后端域名拉。
-
-如果暂时不想动后端，临时替代：把 CF Pages 的 `_redirects` /
-`next.config.ts` 的 `rewrites` 配置成把 `/uploads/*` 和 `/avatars/*`
-反向打到后端域名（CF Pages 支持跨域 rewrite，Workers Free 配额下
-单文件 100MB 限制够用）。但这条路比改后端脆（如果换 CDN 就全坏），
-且损失 Cloudflare 缓存/优化，建议长期走 §0.2 推荐方案。
-
-> 建议把 §0.1 + §0.2 作为一个 PR 一起合，再开始 §1 部署。
+后端 systemd 起一个 Go binary，nginx 在前面收 TLS，MySQL 在同机；
+前端 CF Pages 静态托管 Next.js；跨域用 CORS 中间件 + 绝对 PUBLIC_URL
+解决。开始动手前先确认环境域名（`gokych.example.com` /
+`api.example.com`）的 DNS 都能指到位。
 
 ---
 
@@ -169,17 +139,25 @@ ADMIN_PASSWORD=<一次性密码，首次登录后立刻改>
 DATA_DIR=/opt/gokych/data
 
 # ── WebAuthn / Passkey ──
-# 必须等于前端实际访问的 origin（浏览器会字节级对比），否则登录页 503
+# RPID 是 eTLD+1（无 scheme / port），浏览器按它来 scope passkey。
+# 用前端实际访问的 host 即可（不是 API 域名），例如
+# https://gokych.example.com。空则禁用 Passkey，登录页 503。
 APP_DOMAIN=https://gokych.example.com
-# 上传/头像响应里用的绝对 URL 前缀（§0.2）
-PUBLIC_URL=https://api.example.com
 
-# ── CORS ──
-# 逗号分隔；dev 加 http://localhost:3000，prod 只有 gokych.example.com
+# ── 跨域 ──
+# PUBLIC_URL：后端对外可访问的绝对基础 URL，拼接在 /uploads/* 和
+# /avatars/* 路径前面，让 CF Pages 那边能直接 fetch 图片（不依赖
+# Next.js 的 rewrite — CF Pages 没有那个代理）。
+# CORS_ALLOWED_ORIGINS：允许跨域 fetch 的 origin 列表，逗号分隔。
+# 带 cookie 的请求不能用通配符 origin（CORS 规范），所以必须显式列。
+# 多个 origin 写一起即可。dev 阶段经常要同时跑前/后端两个端口，
+# 把 http://localhost:3000 加上；纯 prod 环境就只留前端域名。
+PUBLIC_URL=https://api.example.com
 CORS_ALLOWED_ORIGINS=https://gokych.example.com
 
 # ── 反向代理信任 ──
-# nginx 在 127.0.0.1，所以信它
+# nginx 在 127.0.0.1，所以信它（c.ClientIP() 才不会被打到 client 的
+# 真实 IP 上，从而绕开 rate-limit / IP 检查）
 TRUSTED_PROXIES=127.0.0.1
 ```
 
@@ -357,9 +335,16 @@ sudo journalctl -u gokych -n 50 --no-pager
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  output: "standalone",       // 必要：让 next-on-pages 拿到 server.js
-  // 不再需要 dev 的 rewrites — 生产模式下前端直接 fetch API_BASE_URL
-  async rewrites() { return []; },
+  // 必要：让 next-on-pages 拿到 server.js。standalone 输出会把
+  // node_modules 里实际用到的依赖打包成 .next/standalone/node_modules，
+  // 比默认的 server build 小 ~95%。
+  output: "standalone",
+
+  // Dev rewrites 保留 — 它们在本地开发时把 /api/*、/uploads/*、
+  // /avatars/* 代理到后端 8000 端口。生产模式下 frontend 不跑
+  // Next.js server，所以 rewrites 不会执行；CORS + PUBLIC_URL
+  // 已经把跨域问题解决了，不需要 rewrite。
+  // （保留原 dev rewrites 即可，下面只是注释提示；不需要改代码。）
 
   // 允许 next-on-pages 的 edge runtime
   experimental: { runtime: "edge" },
@@ -367,6 +352,10 @@ const nextConfig: NextConfig = {
 
 export default nextConfig;
 ```
+
+> Dev 的 rewrites 实际是「`web/next.config.ts:9-22`」里那条
+> `source: "/api/:path*"` 等条目。**不要删** — dev 模式（`next dev`）
+> 还在用它们，删了 dev 起来反而会 404。生产模式只是不读它们而已。
 
 **`web/package.json` 加脚本**：
 
@@ -399,9 +388,15 @@ export default nextConfig;
 | `API_BASE_URL`   | `https://api.example.com`          | `https://api-stg.example.com` |
 | `NODE_VERSION`   | `20`                               | `20`                        |
 
-> `API_BASE_URL` 走 §0.2 推荐的「后端返回绝对 URL」方案时只影响
-> 服务端渲染时的 fetch；浏览器里 fetch 也直接拼这个值，跨源请求
-> 带 cookie 走 CORS 中间件放行。
+> `API_BASE_URL` 只影响服务端渲染时的 fetch（Next.js 15 在 server
+> 组件里直接调 `getArticle()` 等），客户端 fetch 走 `relative`
+> URL — 实际访问的是 CF Pages 的 origin，由浏览器自己 resolve 成
+> `https://gokych.example.com/api/...`，再经 CORS 跨域到
+> `https://api.example.com`。
+>
+> 上传/头像的 URL **不**走 `API_BASE_URL` — 后端 `PUBLIC_URL` 直接
+> 在响应里返回绝对地址（commit `90498db`），浏览器拿到就是
+> `https://api.example.com/uploads/xxx.jpg`，直接 fetch 即可。
 
 ### 3.3 自定义域名
 
@@ -481,8 +476,10 @@ RPID 用了 `localhost` — 这只在 `APP_DOMAIN=localhost:3000` 时发生。
 | Uploads 体积 | nginx 默认 `client_max_body_size 1m` | 上面 nginx 配置改成 `50m` |
 | 数据目录权限 | systemd `ProtectSystem=strict` 不给 /opt/gokych/data 写权限就起不来 | 配 `ReadWritePaths=/opt/gokych/data`（已加） |
 | 跨域 cookie | CORS + `credentials: "include"` 不允许 `*` 源 | 后端用 `CORS_ALLOWED_ORIGINS` 显式列 |
-| 上传 URL 相对路径 | 跨域下浏览器 404 | 改后端用 `PUBLIC_URL` 拼绝对路径（§0.2） |
+| 上传 URL 相对路径 | 跨域下浏览器 404 | 已修：后端用 `PUBLIC_URL` 拼绝对路径（commit `90498db`），前端 `f.url` 直接用 |
+| Passkey 突然 503 | `APP_DOMAIN` 改错 / RPID 跟前端 host 不匹配 | `journalctl -u gokych | grep passkey` 看 startup log；RPID 必须是 eTLD+1 |
 | `next-on-pages` 兼容性 | Next.js 15 + 适配器 1.13+ 验证过；用前先在 PR preview URL 跑一遍 | Pages PR preview 是免费的，先开一个 dry-run |
+| CORS preflight 走错中间件 | OPTIONS 请求如果被 CSRF 中间件拦了，浏览器永远收不到 204 → 实际 mutation 也发不出去 | CORS 已在 `csrfMiddleware` 之前安装，preflight 直接 204 短路（commit `90498db`） |
 
 ---
 
@@ -502,4 +499,22 @@ RPID 用了 `localhost` — 这只在 `APP_DOMAIN=localhost:3000` 时发生。
 
 > **Ubuntu 24 VM 上跑 gokych 单实例（systemd + nginx + MySQL 8），
 > CF Pages 静态托管 Next.js，跨域用 CORS + `PUBLIC_URL` 绝对 URL
-> 解决。先合 §0 的 PR，再按 §2→§3 顺序部署。**
+> 解决。`.env` 里 CORS_ALLOWED_ORIGINS / PUBLIC_URL / APP_DOMAIN
+> 这三个是生产正确性的关键 — 改完 .env 必须 `systemctl restart gokych`。**
+
+---
+
+## 附录 A：相关 commit 一览（按时间倒序）
+
+| commit    | 主题                                                         |
+|-----------|--------------------------------------------------------------|
+| `90498db` | feat(deploy): CORS middleware + absolute PUBLIC_URL          |
+| `192cbb9` | docs: deployment plan for Ubuntu 24 + Cloudflare Pages       |
+| `1db5623` | docs(env): document APP_DOMAIN in .env.example              |
+| `cef28c9` | docs: add TODO + integration/profile/unicode test scripts    |
+| `aed9200` | feat(article): regular users can CRUD their own articles    |
+| `7154585` | fix(auth): persist BackupEligible + require discoverable     |
+
+`90498db` 是把"跨域可工作"这件事从方案层面落到代码的 PR — 部署前
+请确认仓库 ≥ 这个 commit，否则需要先把缺的代码补上。
+
