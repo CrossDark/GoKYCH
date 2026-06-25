@@ -15,7 +15,20 @@ import (
 	"gokych/internal/content/parsers"
 )
 
-var slugRe = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+// slugRe defines the charset an article slug may use. We allow any Unicode
+// letter or digit plus . _ - so users can title non-English articles
+// natively (e.g. "/md/我第一篇笔记"), but reject everything else —
+// whitespace, control chars, path separators (/ \), the segment "..",
+// quotes, brackets, and other "special" characters — because the slug
+// ends up in URL paths, Content-Disposition filenames, and is used as a
+// key for path-based lookups (gin.Param, Next.js dynamic routes).
+var slugRe = regexp.MustCompile(`^[\p{L}\p{N}._-]+$`)
+
+// maxSlugRunes caps slug length. MySQL utf8mb4 + VARCHAR(255) holds up to
+// 255 chars; we cap at 128 runes so the URL stays reasonably short and a
+// future filename derived from the slug (typst_files, Content-Disposition)
+// can't blow past common filesystem name limits (~255 bytes).
+const maxSlugRunes = 128
 
 // ── Article list ──────────────────────────────────────────────────────
 
@@ -172,7 +185,19 @@ func (s *Server) createArticle(c *gin.Context) {
 		return
 	}
 	if !slugRe.MatchString(in.Slug) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "slug 只能包含字母、数字、连字符和下划线。"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "slug 只能包含字母、数字以及 . _ -。"})
+		return
+	}
+	if len([]rune(in.Slug)) > maxSlugRunes {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "slug 过长（最多 128 个字符）。"})
+		return
+	}
+	// The charset above already excludes "/" and "\\", but a slug made of
+	// dots alone ("." / "..") would still look like a relative-segment
+	// traversal in URL assembly; reject them explicitly so /md/.. can
+	// never be confused with a parent path.
+	if in.Slug == "." || in.Slug == ".." {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "slug 不能为 \".\" 或 \"..\"。"})
 		return
 	}
 	var authorID *int

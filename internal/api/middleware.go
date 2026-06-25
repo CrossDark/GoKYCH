@@ -15,6 +15,15 @@ import (
 const ctxUserKey = "currentUser"
 const ctxSessionKey = "sessionMgr"
 
+// ctxAuthMethodKey records how the current user was authenticated
+// ("apikey" vs the implicit session-cookie path). CSRF middleware skips
+// its token check for apikey-authenticated requests: a script carrying a
+// valid X-API-Key has no session to derive a CSRF token from, and the
+// key itself is a bearer secret that already proves intent. Without this
+// skip, every mutating endpoint (POST/PUT/DELETE) would 403 a key user,
+// making API keys read-only — the opposite of the feature's intent.
+const ctxAuthMethodKey = "authMethod"
+
 // registerSessionMgr stores the Manager on the engine for handlers to access.
 func (s *Server) sessionMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -44,6 +53,7 @@ func (s *Server) loadUserMiddleware() gin.HandlerFunc {
 				u, err := user.GetByID(s.DB, res.OwnerID)
 				if err == nil && u != nil {
 					c.Set(ctxUserKey, u)
+					c.Set(ctxAuthMethodKey, "apikey")
 				}
 			}
 		}
@@ -86,6 +96,16 @@ func (s *Server) csrfMiddleware() gin.HandlerFunc {
 		method := c.Request.Method
 		if method != http.MethodPost && method != http.MethodPut &&
 			method != http.MethodPatch && method != http.MethodDelete {
+			c.Next()
+			return
+		}
+		// Requests authenticated with X-API-Key carry no session cookie,
+		// so they have no CSRF token to present. The key is itself a bearer
+		// secret (256-bit random, bcrypt-hashed), so it already proves the
+		// caller's intent for writes. Bypass the token check only for the
+		// apikey path — a bogus/missing key never sets this flag, so cookie
+		// users still need the token.
+		if v, ok := c.Get(ctxAuthMethodKey); ok && v == "apikey" {
 			c.Next()
 			return
 		}

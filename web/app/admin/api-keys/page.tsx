@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { getCsrf } from "@/lib/api";
+import { useRouter } from "next/navigation";
+import { getCsrf, getMe } from "@/lib/api";
 import { useToast, useBeforeUnload } from "@/lib/admin-feedback";
 import { AdminModal } from "@/components/admin/AdminModal";
 
@@ -26,6 +27,7 @@ function fmtDate(s?: string | null) {
 }
 
 export default function AdminAPIKeys() {
+  const router = useRouter();
   const [csrf, setCsrf] = useState("");
   const [keys, setKeys] = useState<APIKey[]>([]);
   const [loading, setLoading] = useState(true);
@@ -40,10 +42,19 @@ export default function AdminAPIKeys() {
   const toast = useToast();
 
   useEffect(() => {
-    getCsrf().then((r) => {
-      setCsrf(r.csrf_token);
-      loadKeys(r.csrf_token);
-    });
+    // Backend gates these endpoints with requireOwner; mirror that here so
+    // a non-owner who hits /admin/api-keys directly gets sent back to the
+    // dashboard instead of a wall of 403s.
+    getMe().then((r) => {
+      if (!r.user || r.user.role !== "owner") {
+        router.replace("/admin");
+        return;
+      }
+      getCsrf().then((c) => {
+        setCsrf(c.csrf_token);
+        loadKeys(c.csrf_token);
+      });
+    }).catch(() => setLoading(false));
   }, []);
 
   const loadKeys = (token: string) => {

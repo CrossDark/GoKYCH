@@ -230,22 +230,22 @@ func CompilePDFCached(articleID int, source string) ([]byte, error) {
 	if err != nil || len(pdf) == 0 {
 		return pdf, err
 	}
-	// Persist alongside whatever's already there for html_content — this
-	// is a separate path from CompileHTMLCached so the two formats can be
-	// compiled at different times (e.g. user opened the article before
-	// the PDF button was ever clicked).
+	// Persist the PDF into typst_cache. We use INSERT ... ON DUPLICATE KEY
+	// UPDATE so a PDF-first visit (no prior HTML render → no cache row yet)
+	// caches just as well as the HTML-first path. The previous code did an
+	// UPDATE then a conditional INSERT, but db.Exec returns a nil error
+	// even when the UPDATE matched zero rows, so the INSERT fallback never
+	// ran and PDFs were recompiled on every request when no HTML view had
+	// seeded the row.
+	//
+	// We only touch pdf_content + compiled_at here so a cached HTML result
+	// is preserved when the article was already HTML-rendered.
 	if _, werr := db.Exec(
-		`UPDATE typst_cache SET pdf_content = ?, compiled_at = CURRENT_TIMESTAMP
-		 WHERE article_id = ?`, pdf, articleID); werr != nil {
-		// No row yet (this article has never been HTML-rendered)? Insert a
-		// fresh one with both fields empty except the PDF.
-		if _, werr2 := db.Exec(
-			`INSERT INTO typst_cache (article_id, html_content, pdf_content)
-			 VALUES (?, '', ?)
-			 ON DUPLICATE KEY UPDATE pdf_content = VALUES(pdf_content), compiled_at = CURRENT_TIMESTAMP`,
-			articleID, pdf); werr2 != nil {
-			slog.Error("typst pdf cache write", "article_id", articleID, "err", werr, "err2", werr2)
-		}
+		`INSERT INTO typst_cache (article_id, html_content, pdf_content)
+		 VALUES (?, ?, ?)
+		 ON DUPLICATE KEY UPDATE pdf_content = VALUES(pdf_content), compiled_at = CURRENT_TIMESTAMP`,
+		articleID, "", pdf); werr != nil {
+		slog.Error("typst pdf cache write", "article_id", articleID, "err", werr)
 	}
 	return pdf, nil
 }

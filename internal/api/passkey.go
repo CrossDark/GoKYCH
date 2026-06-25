@@ -2,12 +2,14 @@ package api
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/go-webauthn/webauthn/protocol"
@@ -289,6 +291,96 @@ func (s *Server) deleteMyPasskey(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Passkey 不存在。"})
 		return
 	}
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+}
+
+// ── Owner-only: manage ANY user's passkeys ───────────────────────────
+
+// GET /api/admin/passkeys — list every passkey across all users, joined with
+// the owning username so the owner-side panel can show "device — belongs to
+// @user". Owner-only (route is gated with requireOwner).
+//
+// We deliberately don't expose the raw public key or credential bytes —
+// the per-row summary (id, user_id, user_name, name, credential_id preview,
+// transports, created_at) is enough for the admin UI.
+func (s *Server) listAllPasskeys(c *gin.Context) {
+	rows, err := s.DB.Query(
+		`SELECT wc.id, wc.user_id, u.username, u.nickname, wc.name,
+		        wc.credential_id, wc.transports, wc.sign_count, wc.created_at
+		 FROM webauthn_credentials wc
+		 JOIN users u ON u.id = wc.user_id
+		 ORDER BY u.username, wc.created_at DESC`)
+	if err != nil {
+		slog.Error("listAllPasskeys", "err", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载 Passkey 列表失败。"})
+		return
+	}
+	defer rows.Close()
+	type rowPasskey struct {
+		ID           int64    `json:"id"`
+		UserID       int      `json:"user_id"`
+		UserName     string   `json:"user_name"`
+		UserNickname string   `json:"user_nickname"`
+		Name         string   `json:"name"`
+		CredentialID string   `json:"credential_id"`
+		Transports   []string `json:"transports"`
+		SignCount    uint32   `json:"sign_count"`
+		CreatedAt    string   `json:"created_at"`
+	}
+	out := make([]rowPasskey, 0)
+	for rows.Next() {
+		var r rowPasskey
+		var transports, nickname sql.NullString
+		if err := rows.Scan(&r.ID, &r.UserID, &r.UserName, &nickname, &r.Name,
+			&r.CredentialID, &transports, &r.SignCount, &r.CreatedAt); err != nil {
+			continue
+		}
+		r.UserNickname = nickname.String
+		if transports.Valid && transports.String != "" {
+			r.Transports = strings.Split(transports.String, ",")
+		}
+		out = append(out, r)
+	}
+	c.JSON(http.StatusOK, out)
+}
+
+// DELETE /api/admin/passkeys/:id — revoke any user's passkey by its DB id.
+// Owner-only. The WHERE clause is *not* scoped to the caller's user id (the
+// whole point is the owner can act on other accounts), but we still log the
+// caller + target so an audit trail exists.
+func (s *Server) deleteAnyPasskey(c *gin.Context) {
+	caller := CurrentUserFromContext(c)
+	if caller == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "请先登录。"})
+		return
+	}
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的 ID。"})
+		return
+	}
+	// Look up the owning user first, so the log entry is meaningful and we
+	// can return a 404 (rather than 200-with-no-rows) when the id is stale.
+	var ownerID int
+	var ownerName string
+	err = s.DB.QueryRow(
+		`SELECT wc.user_id, u.username FROM webauthn_credentials wc
+		 JOIN users u ON u.id = wc.user_id WHERE wc.id = ?`, id).Scan(&ownerID, &ownerName)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Passkey 不存在。"})
+		return
+	}
+	res, err := s.DB.Exec(`DELETE FROM webauthn_credentials WHERE id = ?`, id)
+	if err != nil {
+		slog.Error("deleteAnyPasskey", "id", id, "err", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "删除失败。"})
+		return
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Passkey 不存在。"})
+		return
+	}
+	slog.Info("owner deleted passkey", "caller", caller.ID, "target_user", ownerID, "target_username", ownerName, "passkey_id", id)
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 

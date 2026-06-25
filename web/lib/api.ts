@@ -374,6 +374,16 @@ export function updateProfile(csrf: string, body: { nickname?: string; bio?: str
   });
 }
 
+// Self-service password change. Any logged-in user can change their own
+// password; the handler verifies the old one before accepting the new.
+export function changeMyPassword(csrf: string, body: { old_password: string; new_password: string }) {
+  return request<{ status: string; message?: string }>("/admin/profile/password", {
+    method: "PUT",
+    headers: { "X-CSRF-Token": csrf },
+    body: JSON.stringify(body),
+  });
+}
+
 // ── Admin: Tags (full CRUD) ─────────────────────────────────────────
 // Used by /admin/tags — the public /api/labels endpoint only returns tags
 // that have at least one article, so admins need a separate route to manage

@@ -8,7 +8,7 @@ Go 1.26+ · Gin · MySQL 8 · Next.js 15 前端在 `web/`
 
 ## 项目简介
 
-GoKYCH 是一个个人 wiki/blog 平台，参考 [PyKYCH](https://...) 实现。后端用 Go 写，
+GoKYCH 是一个个人 wiki/blog 平台，参考 PyKYCH（同作者的 Python 前身，见 `../../Python/PyKYCH`）实现。后端用 Go 写，
 前端用 Next.js 15。数据落在 MySQL，静态资源走文件系统。
 
 支持 5 种文章类型：
@@ -96,6 +96,7 @@ docker run -d --name gokych \
 | `ADMIN_PASSWORD`    | `admin123`                | ⚠️  首次启动后立刻改                    |
 | `DATA_DIR`          | `data`                    | 数据/上传/主题/插件目录                 |
 | `TRUSTED_PROXIES`   | （空）                    | 逗号分隔的代理 CIDR/IP，空=不信任任何代理 |
+| `APP_DOMAIN`        | （空）                    | Passkey 依赖域名。可为裸域名 `example.com`、`host:port` 或完整 `https://example.com`；空则禁用 Passkey |
 
 ### YAML 配置
 
@@ -210,8 +211,8 @@ npm run build
 
 - **主题** — `data/themes/<name>/theme.yaml` + `static/theme.css`，后台选择。详细见 [`docs/主题开发指南.md`](docs/主题开发指南.md)
 - **Typst** — `internal/typst/typst.go` 包装 `typst` CLI；写自己的 `.typ` 模块丢到文章目录里
-- **API Key** — `internal/api/apikey.go`（待实现：CRUD + 中间件鉴权）
-- **Passkey** — schema 已有 `webauthn_credentials` 表，待补注册/认证 handler
+- **API Key** — `internal/api/apikey.go` + `internal/api/apikeys` 路由（站长专属：`/api/admin/api-keys` CRUD，`X-API-Key` 头在 `loadUserMiddleware` 替代会话鉴权，写操作跳过 CSRF）
+- **Passkey** — `internal/auth/passkey` + `internal/api/passkey.go`，登录页发现式登录；账号绑定 Passkey 后密码登录自动禁用（owner 豁免）
 
 ---
 

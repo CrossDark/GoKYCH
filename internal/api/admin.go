@@ -741,6 +741,69 @@ func (s *Server) updateProfile(c *gin.Context) {
 	c.JSON(http.StatusOK, u2)
 }
 
+type changePasswordInput struct {
+	OldPassword string `json:"old_password"`
+	NewPassword string `json:"new_password"`
+}
+
+// PUT /api/profile/password — self-service password change. Any authenticated
+// user (user / admin / owner) may change their own password; they must prove
+// knowledge of the current password first (defense against a shared-session
+// attacker silently hijacking the account).
+//
+// Passkey note: if the caller is not the owner AND has at least one passkey
+// registered, password login is normally disabled (see postLogin). That gate
+// only blocks the *public* login path — the still-valid credential here is
+// the existing session. We let users keep their password in sync even while
+// passkey-first; should they later remove all passkeys, password login
+// immediately works again with the new value.
+func (s *Server) changeMyPassword(c *gin.Context) {
+	u := CurrentUserFromContext(c)
+	if u == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "请先登录。"})
+		return
+	}
+	var in changePasswordInput
+	if err := c.ShouldBindJSON(&in); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请求格式错误。"})
+		return
+	}
+	in.OldPassword = strings.TrimSpace(in.OldPassword)
+	in.NewPassword = strings.TrimSpace(in.NewPassword)
+	if in.OldPassword == "" || in.NewPassword == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "旧密码和新密码不能为空。"})
+		return
+	}
+	if msg := password.ValidateStrength(in.NewPassword); msg != "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": msg})
+		return
+	}
+	if in.OldPassword == in.NewPassword {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "新密码不能与旧密码相同。"})
+		return
+	}
+	cur, err := user.GetWithPassword(s.DB, u.Username)
+	if err != nil || cur == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载账号失败。"})
+		return
+	}
+	if !password.Verify(cur.PasswordHash, in.OldPassword) {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "旧密码错误。"})
+		return
+	}
+	hash, err := password.Hash(in.NewPassword)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "密码加密失败。"})
+		return
+	}
+	if _, err := user.UpdatePassword(s.DB, u.Username, hash); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "更新密码失败。"})
+		return
+	}
+	slog.Info("user changed own password", "user_id", u.ID, "username", u.Username)
+	c.JSON(http.StatusOK, gin.H{"status": "ok", "message": "密码已修改。"})
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────
 //
 // (defaultSettings used to live here as a stub with only three fields — the

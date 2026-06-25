@@ -27,12 +27,12 @@ func TestSanitizeURLAllowsSafeURLs(t *testing.T) {
 func TestSanitizeURLRejectsDangerousSchemes(t *testing.T) {
 	rejected := []string{
 		"javascript:alert(1)",
-		"JAVASCRIPT:alert(1)",     // case-insensitive scheme match
+		"JAVASCRIPT:alert(1)", // case-insensitive scheme match
 		"vbscript:msgbox",
 		"data:text/html,<script>alert(1)</script>",
 		"file:///etc/passwd",
-		"  javascript:alert(1)",    // leading whitespace shouldn't bypass
-		"Java\nscript:alert(1)",    // embedded newline / obfuscation
+		"  javascript:alert(1)", // leading whitespace shouldn't bypass
+		"Java\nscript:alert(1)", // embedded newline / obfuscation
 	}
 	for _, u := range rejected {
 		if got := sanitizeURLForAttr(u); got != "" {
@@ -91,14 +91,14 @@ func TestSanitizeCSSAllowsSafeValues(t *testing.T) {
 
 func TestSanitizeCSSRejectsMetacharacters(t *testing.T) {
 	rejected := []string{
-		"red; background: url(javascript:alert(1))",   // semicolon + url()
-		"red} body { display:none",                    // closing brace
-		"red { color:red }",                            // opening brace
-		"expression(alert(1))",                        // IE CSS expression
-		"url(javascript:alert(1))",                    // url() in any form
-		"JAVASCRIPT:alert(1)",                          // obfuscated
-		"@import url(http://evil)",                     // @import injection
-		"red)foo(bar",                                  // parentheses
+		"red; background: url(javascript:alert(1))", // semicolon + url()
+		"red} body { display:none",                  // closing brace
+		"red { color:red }",                         // opening brace
+		"expression(alert(1))",                      // IE CSS expression
+		"url(javascript:alert(1))",                  // url() in any form
+		"JAVASCRIPT:alert(1)",                       // obfuscated
+		"@import url(http://evil)",                  // @import injection
+		"red)foo(bar",                               // parentheses
 	}
 	for _, v := range rejected {
 		if got := sanitizeCSSValue(v); got != "" {

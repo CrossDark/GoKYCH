@@ -136,6 +136,16 @@ func (s *Server) Setup(r *gin.Engine) {
 
 				adminG.GET("/profile", s.getProfile)
 				adminG.PUT("/profile", s.updateProfile)
+				// Self-service password change — any authenticated user can change
+				// their own password from their profile page. (adminG is inside
+				// mutG, so CSRF + a logged-in session already gate this; no
+				// role check needed — the handler scopes updates to the caller.)
+				adminG.PUT("/profile/password", s.changeMyPassword)
+
+				// Owner-only: list + revoke ANY user's passkey from the profile
+				// page's admin section.
+				adminG.GET("/passkeys", requireOwner, s.listAllPasskeys)
+				adminG.DELETE("/passkeys/:id", requireOwner, s.deleteAnyPasskey)
 			}
 		}
 	}

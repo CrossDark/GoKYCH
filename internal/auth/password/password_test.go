@@ -18,14 +18,17 @@ func TestValidateStrength(t *testing.T) {
 		{name: "empty rejected", pw: "", wantOK: false, wantInMsg: "不能为空"},
 		{name: "too short rejected", pw: "Aa1", wantOK: false, wantInMsg: "8"},
 		{name: "too long rejected (bcrypt 72-byte cap)", pw: strings.Repeat("A", 73) + "a1", wantOK: false, wantInMsg: "72"},
-		{name: "whitespace rejected", pw: "Good Pass1", wantOK: false, wantInMsg: "空白"},
+		{name: "whitespace rejected", pw: "Good Pass1", wantOK: false, wantInMsg: "空格"},
+		{name: "control char rejected", pw: "Good\tPass1", wantOK: false, wantInMsg: "控制"},
 		{name: "no uppercase rejected", pw: "all-lower1!", wantOK: false, wantInMsg: "大写"},
 		{name: "no lowercase rejected", pw: "ALL-UPPER1!", wantOK: false, wantInMsg: "小写"},
 		{name: "no digit rejected", pw: "NoDigitsHere!", wantOK: false, wantInMsg: "数字"},
 		{name: "ok", pw: "GoodPass1", wantOK: true},
 		{name: "unicode ok", pw: "你好Password1", wantOK: true},
+		{name: "unicode-only categories satisfy checks", pw: "密码Ｐa1", wantOK: true},
 		{name: "exactly 8 ok", pw: "Aa1aaaa!", wantOK: true},
 		{name: "exactly 72 ok", pw: "Aa1" + strings.Repeat("x", 69), wantOK: true},
+		{name: "emoji content ok", pw: "🚀Aa1234567890", wantOK: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -56,11 +59,18 @@ func TestValidateUsername(t *testing.T) {
 		{name: "empty rejected", input: "", wantOK: false, wantInMsg: "不能为空"},
 		{name: "trimmed empty rejected", input: "   ", wantOK: false, wantInMsg: "不能为空"},
 		{name: "too short rejected", input: "ab", wantOK: false, wantInMsg: "3"},
-		{name: "too long rejected", input: strings.Repeat("a", 65), wantOK: false, wantInMsg: "64"},
-		{name: "whitespace rejected", input: "ab cd", wantOK: false, wantInMsg: "空白"},
-		{name: "ok lower", input: "alice", wantOK: true},
+		{name: "too long rejected", input: strings.Repeat("字", 65), wantOK: false, wantInMsg: "64"},
+		{name: "whitespace inside rejected", input: "ab cd", wantOK: false, wantInMsg: "字母"},
+		{name: "special char rejected", input: "user@test", wantOK: false, wantInMsg: "字母"},
+		{name: "path separator rejected", input: "a/b", wantOK: false, wantInMsg: "字母"},
+		{name: "emoji rejected", input: "user😀", wantOK: false, wantInMsg: "字母"},
+		{name: "ok lower ascii", input: "alice", wantOK: true},
 		{name: "ok mixed case + digits + dash", input: "Bob-2024", wantOK: true},
-		{name: "ok unicode", input: "用户1", wantOK: true},
+		{name: "ok unicode CJK", input: "用户一号", wantOK: true},
+		{name: "ok unicode + digits", input: "用户1", wantOK: true},
+		{name: "ok Cyrillic", input: "Иван_2024", wantOK: true},
+		{name: "ok accented Latin", input: "Jérôme.OB", wantOK: true},
+		{name: "ok exactly 64 runes", input: strings.Repeat("字", 64), wantOK: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

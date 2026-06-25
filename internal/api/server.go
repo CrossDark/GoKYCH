@@ -28,16 +28,21 @@ type Server struct {
 	trustedProxies []string // trusted reverse-proxy CIDRs/IPs; empty = trust none
 
 	// WebAuthn configuration: the relying-party ID (domain) and the
-	// allowed origins. Filled in by main.go from APP_DOMAIN + the
-	// request's Origin header. WebAuthn itself is constructed lazily
-	// on first passkey request so a misconfigured domain doesn't break
-	// the rest of the API at startup.
-	webAuthnRPID     string
-	webAuthnRPName   string
-	webAuthnRPOrigin string
-	webAuthnOnce     sync.Once
-	webAuthn         *webauthn.WebAuthn
-	webAuthnErr      error
+	// list of accepted origins. Passkey origin validation is
+	// byte-exact (scheme + host + port must all match clientDataJSON.origin),
+	// so a single bare http://localhost <Origin> setting rejects any
+	// request coming from the Next.js dev server on :3000. We keep an
+	// explicit slice populated by ConfigureWebAuthn instead: the primary
+	// origin derived from APP_DOMAIN plus convenience local-dev variants
+	// for the same host so the salt-of-the-earth `localhost` setup "just
+	// works" without the operator having to set APP_DOMAIN=localhost:3000.
+	// Production deployments still match via their primary origin.
+	webAuthnRPID      string
+	webAuthnRPName    string
+	webAuthnRPOrigins []string
+	webAuthnOnce      sync.Once
+	webAuthn          *webauthn.WebAuthn
+	webAuthnErr       error
 }
 
 // NewServer creates a Server with the given dependencies.
@@ -52,14 +57,17 @@ func NewServer(db *sql.DB, sess *session.Manager, limiter *ratelimit.Limiter, m 
 	}
 }
 
-// ConfigureWebAuthn stores the RPID / display name / origin to use when
-// serving passkey challenges. RPID is the bare domain (no scheme/port);
-// origin is the full https://host. Called from main.go after we know
-// the bind address.
-func (s *Server) ConfigureWebAuthn(rpid, rpName, origin string) {
+// ConfigureWebAuthn stores the RPID / display name / accepted origins to use
+// when serving passkey challenges. RPID is the bare registrable domain (no
+// scheme/port); origins are the full scheme://host[:port] values the
+// browser may report as window.origin during a WebAuthn ceremony — the match
+// is byte-exact (port included), so callers must list each origin the site is
+// reachable from. main.go expands a single APP_DOMAIN into this slice and
+// folds in a few localhost variants for convenience.
+func (s *Server) ConfigureWebAuthn(rpid, rpName string, origins []string) {
 	s.webAuthnRPID = rpid
 	s.webAuthnRPName = rpName
-	s.webAuthnRPOrigin = origin
+	s.webAuthnRPOrigins = origins
 }
 
 // webAuthnInstance returns the lazily-built *webauthn.WebAuthn. Safe to
@@ -71,10 +79,15 @@ func (s *Server) webAuthnInstance() (*webauthn.WebAuthn, error) {
 			s.webAuthnErr = errPasskeyNotConfigured
 			return
 		}
+		origins := s.webAuthnRPOrigins
+		if len(origins) == 0 {
+			s.webAuthnErr = errPasskeyNotConfigured
+			return
+		}
 		w, err := webauthn.New(&webauthn.Config{
 			RPID:          s.webAuthnRPID,
 			RPDisplayName: s.webAuthnRPName,
-			RPOrigins:     []string{s.webAuthnRPOrigin},
+			RPOrigins:     origins,
 			AuthenticatorSelection: protocol.AuthenticatorSelection{
 				UserVerification: protocol.VerificationPreferred,
 			},

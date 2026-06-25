@@ -39,17 +39,20 @@ async function loginWithPasskey() {
     const err = await begin.json().catch(() => ({}));
     throw new Error(err.error || "无法开始 Passkey 登录。");
   }
-  const options = await begin.json();
+  // go-webauthn returns protocol.CredentialAssertion = { publicKey: {...} }.
+  // Unpack publicKey once then lift the ArrayBuffer-shaped fields out of it.
+  const { publicKey: pk }: { publicKey: any } = await begin.json();
+  if (!pk || !pk.challenge) throw new Error("服务器返回的登录选项格式不正确。");
 
   // 2. Hand to the authenticator.
-  const challengeBuf = base64UrlToArrayBuffer(options.challenge);
-  const allowCreds = options.allowCredentials?.map((c: any) => ({
+  const challengeBuf = base64UrlToArrayBuffer(pk.challenge);
+  const allowCreds = pk.allowCredentials?.map((c: any) => ({
     ...c,
     id: base64UrlToArrayBuffer(c.id),
   }));
   const cred = await navigator.credentials.get({
     publicKey: {
-      ...options,
+      ...pk,
       challenge: challengeBuf,
       allowCredentials: allowCreds,
     },

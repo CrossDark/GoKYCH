@@ -205,7 +205,13 @@ func (s *Server) postLogin(c *gin.Context) {
 	}
 	s.limiter.Reset(username, ip)
 
-	// Safe redirect target (open-redirect guard).
+	// Safe redirect target (open-redirect guard). Default landing page
+	// depends on role: regular users have nothing to do in the admin
+	// dashboard, so send them straight to their profile (where password
+	// + passkey management live); admins/owners keep going to /admin.
+	if req.Next == "" && !user.IsAdmin(uwp.Role) {
+		req.Next = "/admin/profile"
+	}
 	next := sanitizeNext(req.Next)
 
 	c.JSON(http.StatusOK, gin.H{
