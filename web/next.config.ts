@@ -1,15 +1,16 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  // Standalone output is what the Node-server deployment (源站 + EdgeOne
-  // 加速) needs: Next.js trims node_modules to only the deps actually
-  // used and emits .next/standalone/server.js, so the runtime image / VM
-  // ships a single self-contained dir instead of the full node_modules.
-  // Dev / CI are unaffected — `next dev` and `next build` still work.
-  // NOTE: this is NOT the Cloudflare "edge runtime" mode; if you ever go
-  // back to a V8-isolate host (CF Pages + @cloudflare/next-on-pages), drop
-  // this and use that adapter's requirements instead.
-  output: "standalone",
+  // EdgeOne Makers (the current prod target) auto-detects Next.js and
+  // builds with its own adapter — leave output un-set so its build picks
+  // the right mode itself. Setting `output: "standalone"` here would
+  // change the build shape and could conflict with EdgeOne's adapter.
+  //
+  // The docker-compose fallback still prefers standalone, so we keep a
+  // STANDALONE=1 opt-in that only the VM-style Node-server path uses.
+  // (EdgeOne's build pipeline doesn't set this env, so it's invisible
+  // to that path.)
+  ...(process.env.STANDALONE === "1" ? { output: "standalone" as const } : {}),
 
   // Proxy /api/*, /uploads/*, and /avatars/* to the Go backend in development.
   // /uploads and /avatars are served by Gin.Static in main.go; without these
