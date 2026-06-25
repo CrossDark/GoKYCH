@@ -1,7 +1,17 @@
+// Base URL of the Go backend API. Now that the frontend deployment target
+// split from the backend (EdgeOne Makers edge runtime for Next.js, separate
+// VM for the Go API), the browser-side fetch can't rely on same-origin
+// relative paths anymore — it must hit `https://api.<host>` directly,
+// which is a cross-origin request handled by the backend CORS middleware.
+//
+// `NEXT_PUBLIC_*` is required so the value is inlined into the client
+// bundle at build time (bare `process.env.API_BASE_URL` is invisible to
+// browser code). SSR (running on EdgeOne's edge function) sees the env at
+// runtime, so reads it directly with the older `API_BASE_URL` as a fallback
+// for legacy deployments that only set that name.
 const BASE =
-  typeof window === "undefined"
-    ? process.env.API_BASE_URL || "http://localhost:8000"
-    : "";
+  process.env.NEXT_PUBLIC_API_BASE_URL ||
+  (typeof window === "undefined" ? process.env.API_BASE_URL || "http://localhost:8000" : "");
 
 async function getServerCookies(): Promise<string> {
   if (typeof window !== "undefined") return "";
