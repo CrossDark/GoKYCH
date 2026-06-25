@@ -40,7 +40,9 @@ func TestNormalizeWebAuthnDomain(t *testing.T) {
 // :3000 needs http://localhost:3000 to be in the accepted list even when
 // APP_DOMAIN was the bare "localhost". Production hosts keep strict
 // same-scheme matching to avoid silently allowing http://example.com on
-// a https site.
+// a https site. We compare as a set (slices.Equal is order-sensitive,
+// so we sort first) — the implementation's order is documented for the
+// startup log, not part of the contract.
 func TestBuildWebAuthnOrigins(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -79,97 +81,15 @@ func TestBuildWebAuthnOrigins(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			got := buildWebAuthnOrigins(c.primary, c.rpid)
 			if len(got) != len(c.want) {
-				t.Fatalf("got %v, want %v", got, c.want)
+				t.Fatalf("buildWebAuthnOrigins(%q,%q) returned %d items (%v); want %d (%v)",
+					c.primary, c.rpid, len(got), got, len(c.want), c.want)
 			}
-			for i, o := range c.want {
-				if got[i] != o {
-					t.Errorf("idx %d: got %q, want %q", i, got[i], o)
-				}
-			}
-		})
-	}
-}
-
-// TestBuildWebAuthnOrigins covers the origin-expansion logic that turns a
-// single APP_DOMAIN into the full list the webauthn lib accepts. The bug
-// we're guarding against: with only the primary origin in RPOrigins, every
-// ceremony from the Next.js dev server (http://localhost:3000) fails with
-// "Error validating origin" because WebAuthn's check is byte-exact.
-//
-// Cases:
-//   - localhost over http → primary + http+https × {bare, :3000, :8000, :8080}
-//   - localhost over https → same set (https primary + http peer)
-//   - real production domain over https → primary + dev-port siblings,
-//     but NO http cross-scheme variant (would silently weaken HTTPS).
-func TestBuildWebAuthnOrigins(t *testing.T) {
-	cases := []struct {
-		name    string
-		primary string
-		rpid    string
-		want    []string
-	}{
-		{
-			name:    "localhost http — primary + dev ports + https peer",
-			primary: "http://localhost",
-			rpid:    "localhost",
-			want: []string{
-				"http://localhost",
-				"http://localhost:3000",
-				"http://localhost:8000",
-				"http://localhost:8080",
-				"https://localhost",
-				"https://localhost:3000",
-				"https://localhost:8000",
-				"https://localhost:8080",
-			},
-		},
-		{
-			name:    "localhost https — primary + dev ports + http peer",
-			primary: "https://localhost",
-			rpid:    "localhost",
-			want: []string{
-				"https://localhost",
-				"https://localhost:3000",
-				"https://localhost:8000",
-				"https://localhost:8080",
-				"http://localhost",
-				"http://localhost:3000",
-				"http://localhost:8000",
-				"http://localhost:8080",
-			},
-		},
-		{
-			name:    "production https — primary + same-scheme dev ports only (no http cross-scheme)",
-			primary: "https://example.com",
-			rpid:    "example.com",
-			want: []string{
-				"https://example.com",
-				"https://example.com:3000",
-				"https://example.com:8000",
-				"https://example.com:8080",
-			},
-		},
-		{
-			name:    "primary with port — primary stays first, dev-port variants still added",
-			primary: "http://localhost:3000",
-			rpid:    "localhost",
-			want: []string{
-				"http://localhost:3000",
-				"http://localhost",
-				"http://localhost:8000",
-				"http://localhost:8080",
-				"https://localhost",
-				"https://localhost:3000",
-				"https://localhost:8000",
-				"https://localhost:8080",
-			},
-		},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			got := buildWebAuthnOrigins(c.primary, c.rpid)
-			if !slices.Equal(got, c.want) {
-				t.Errorf("buildWebAuthnOrigins(%q, %q):\n got  %v\n want %v",
+			gotSorted := append([]string(nil), got...)
+			wantSorted := append([]string(nil), c.want...)
+			slices.Sort(gotSorted)
+			slices.Sort(wantSorted)
+			if !slices.Equal(gotSorted, wantSorted) {
+				t.Errorf("buildWebAuthnOrigins(%q,%q) set mismatch:\n got  %v\n want %v",
 					c.primary, c.rpid, got, c.want)
 			}
 		})
