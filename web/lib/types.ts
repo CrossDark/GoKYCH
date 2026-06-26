@@ -60,6 +60,9 @@ export interface Comment {
   line_number: number | null;
   author_name: string;
   content: string;
+  /** Server-rendered, sanitized markdown HTML. Use for display; the
+   *  frontend should still pass this through DOMPurify as defense in depth. */
+  content_html?: string;
   created_at: string;
 }
 
@@ -105,7 +108,10 @@ export interface Notification {
   id: number;
   title: string;
   content: string;
+  /** Server-rendered, sanitized markdown HTML. */
+  content_html?: string;
   is_important: boolean;
+  is_active?: boolean;
   updated_at: string;
 }
 

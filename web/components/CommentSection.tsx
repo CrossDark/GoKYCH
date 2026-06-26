@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import Link from "next/link";
 import { addComment, getCsrf, getMe } from "@/lib/api";
 import type { Comment } from "@/lib/types";
+import { SafeMarkdown } from "@/components/SafeMarkdown";
 
 interface Props {
   articleType: string;
@@ -81,7 +82,9 @@ export function CommentSection({
                     {new Date(cm.created_at).toLocaleString("zh-CN")}
                   </time>
                 </div>
-                <div className="comment-content">{cm.content}</div>
+                <div className="comment-content">
+                  <SafeMarkdown html={cm.content_html} text={cm.content} />
+                </div>
               </div>
             </div>
           ))}

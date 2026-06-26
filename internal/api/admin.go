@@ -14,6 +14,7 @@ import (
 	"gokych/internal/auth/password"
 	"gokych/internal/auth/user"
 	"gokych/internal/content"
+	"gokych/internal/content/parsers"
 	"gokych/internal/core/settings"
 )
 
@@ -290,6 +291,7 @@ func (s *Server) listAdminNotifications(c *gin.Context) {
 		ID          int       `json:"id"`
 		Title       string    `json:"title"`
 		Content     string    `json:"content"`
+		ContentHTML string    `json:"content_html"`
 		IsImportant bool      `json:"is_important"`
 		IsActive    bool      `json:"is_active"`
 		UpdatedAt   time.Time `json:"updated_at"`
@@ -311,6 +313,7 @@ func (s *Server) listAdminNotifications(c *gin.Context) {
 		}
 		n.IsImportant = imp == 1
 		n.IsActive = act == 1
+		n.ContentHTML = parsers.RenderSafeMarkdown(n.Content)
 		out = append(out, n)
 	}
 	c.JSON(http.StatusOK, out)

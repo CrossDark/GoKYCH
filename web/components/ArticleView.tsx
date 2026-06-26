@@ -5,6 +5,7 @@ import Link from "next/link";
 import type { ArticleDetail, Comment } from "@/lib/types";
 import { RatingWidget } from "./RatingWidget";
 import { CommentSection } from "./CommentSection";
+import { SafeMarkdown } from "./SafeMarkdown";
 import { getMe, getCsrf, addLineComment, apiUrl } from "@/lib/api";
 
 interface Props {
@@ -80,7 +81,9 @@ function LineCommentBubble({
               <span className="line-bubble-avatar">{(c.author_name || "匿")[0]}</span>
               <span className="line-bubble-name">{c.author_name || "匿名"}</span>
               <span className="line-bubble-time">· {formatBubbleTime(c.created_at)}</span>
-              <span className="line-bubble-content">{c.content}</span>
+      <span className="line-bubble-content">
+        <SafeMarkdown html={c.content_html} text={c.content} />
+      </span>
             </div>
           ))}
         </div>
@@ -411,7 +414,11 @@ useEffect(() => {
                     }
                   }}>
                     <span className="line-comment-line-num">L{ln}</span>
-                    <span className="line-comment-text">{latest || "—"}</span>
+                    <span className="line-comment-text">
+                      {latest
+                        ? <SafeMarkdown html={(cmts[cmts.length - 1] as any).content_html} text={latest} />
+                        : "—"}
+                    </span>
                     {count > 1 && <span className="line-comment-count">{count}</span>}
                   </div>
                 );
@@ -428,7 +435,7 @@ useEffect(() => {
           <button className="line-comment-popup-close" onClick={closePopup}>×</button>
         </div>
         <div className="line-comment-popup-comments">{popupComments.length === 0 ? <div className="line-comment-popup-empty">暂无评论，来说两句吧</div> :
-          popupComments.map((c, i) => <div key={i} className="line-comment-popup-item"><div className="line-comment-popup-avatar">{(c.author_name || "匿")[0]}</div><div className="line-comment-popup-body"><div className="line-comment-popup-author">{c.author_name} · {new Date(c.created_at).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</div><div className="line-comment-popup-content">{c.content}</div></div></div>)}</div>
+          popupComments.map((c, i) => <div key={i} className="line-comment-popup-item"><div className="line-comment-popup-avatar">{(c.author_name || "匿")[0]}</div><div className="line-comment-popup-body"><div className="line-comment-popup-author">{c.author_name} · {new Date(c.created_at).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</div><div className="line-comment-popup-content"><SafeMarkdown html={c.content_html} text={c.content} /></div></div></div>)}</div>
         {isLoggedIn ? <div className="line-comment-popup-form"><div className="line-comment-input-wrap"><input type="text" className="line-comment-input" maxLength={20} placeholder="输入短评（最多20字）..." value={popupInput} onChange={(e) => setPopupInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !submitting) handleLineCommentSubmit(); if (e.key === "Escape") closePopup(); }} disabled={submitting} /><span className={`line-comment-counter ${popupInput.length >= 20 ? "overlimit" : ""}`}>{popupInput.length}/20</span></div><button className="line-comment-submit" onClick={handleLineCommentSubmit} disabled={submitting || !popupInput.trim()}>{submitting ? "…" : "发送"}</button></div>
         : <div className="line-comment-popup-form"><div className="line-comment-login-hint"><Link href={`/auth/login?next=/${articleType}/${articleSlug}`}>登录</Link>后添加行评论</div></div>}
       </div>}

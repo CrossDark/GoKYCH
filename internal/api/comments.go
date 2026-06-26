@@ -37,6 +37,7 @@ func (s *Server) listComments(c *gin.Context) {
 	if comments == nil {
 		comments = []content.Comment{}
 	}
+	renderCommentHTML(comments)
 	c.JSON(http.StatusOK, comments)
 }
 
@@ -83,6 +84,7 @@ func (s *Server) addComment(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "添加评论失败。"})
 		return
 	}
+	cm.ContentHTML = parsers.RenderSafeMarkdown(cm.Content)
 	c.JSON(http.StatusCreated, cm)
 }
 
@@ -108,6 +110,7 @@ func (s *Server) listLineComments(c *gin.Context) {
 		if comments == nil {
 			comments = []content.Comment{}
 		}
+		renderCommentHTML(comments)
 		c.JSON(http.StatusOK, comments)
 		return
 	}
@@ -119,6 +122,7 @@ func (s *Server) listLineComments(c *gin.Context) {
 	if comments == nil {
 		comments = []content.Comment{}
 	}
+	renderCommentHTML(comments)
 	c.JSON(http.StatusOK, comments)
 }
 
@@ -163,7 +167,16 @@ func (s *Server) addLineComment(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "添加行评论失败。"})
 		return
 	}
+	cm.ContentHTML = parsers.RenderSafeMarkdown(cm.Content)
 	c.JSON(http.StatusCreated, cm)
+}
+
+// renderCommentHTML populates ContentHTML on every comment in the slice.
+// Modifies the slice in place. Safe to call with nil/empty input.
+func renderCommentHTML(comments []content.Comment) {
+	for i := range comments {
+		comments[i].ContentHTML = parsers.RenderSafeMarkdown(comments[i].Content)
+	}
 }
 
 // errInvalidArticleType is returned by articleIDFromParams when the {type}

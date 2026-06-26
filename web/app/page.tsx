@@ -1,6 +1,7 @@
 import { getHome } from "@/lib/api";
 import type { HomeData } from "@/lib/types";
 import Link from "next/link";
+import { SafeMarkdown } from "@/components/SafeMarkdown";
 
 export const dynamic = "force-dynamic";
 
@@ -23,7 +24,7 @@ export default async function HomePage() {
               className={`home-notification ${n.is_important ? "important" : ""}`}
             >
               <strong>{n.title}</strong>
-              <span>{n.content}</span>
+              <SafeMarkdown html={n.content_html} text={n.content} />
             </div>
           ))
         ) : (

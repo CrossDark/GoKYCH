@@ -125,12 +125,14 @@ func (s *Server) getArticle(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载评论失败。"})
 		return
 	}
+	renderCommentHTML(comments)
 	lineComments, err := content.GetLineComments(s.DB, a.ID)
 	if err != nil {
 		slog.Error("getArticle: load line comments", "article_id", a.ID, "err", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载行评论失败。"})
 		return
 	}
+	renderCommentHTML(lineComments)
 	lineCounts, err := content.GetLineCommentCounts(s.DB, a.ID)
 	if err != nil {
 		slog.Error("getArticle: load line comment counts", "article_id", a.ID, "err", err)

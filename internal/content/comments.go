@@ -19,6 +19,11 @@ const (
 var ErrCommentTooLong = errors.New("评论内容过长")
 
 // Comment represents a full-text or line comment.
+//
+// ContentHTML is populated by the API layer (markdown rendered with the
+// safe goldmark instance) so the frontend can inject it directly without
+// re-parsing. It's not filled in by the data-layer helpers — callers that
+// return comments over the wire must run them through the renderer.
 type Comment struct {
 	ID         int       `json:"id"`
 	ArticleID  int       `json:"article_id"`
@@ -26,6 +31,7 @@ type Comment struct {
 	UserID     *int      `json:"user_id,omitempty"`
 	AuthorName string    `json:"author_name"`
 	Content    string    `json:"content"`
+	ContentHTML string   `json:"content_html,omitempty"`
 	CreatedAt  time.Time `json:"created_at"`
 }
 

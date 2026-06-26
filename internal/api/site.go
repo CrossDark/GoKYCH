@@ -8,6 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"gokych/internal/content"
+	"gokych/internal/content/parsers"
 	"gokych/internal/core/settings"
 )
 
@@ -128,6 +129,7 @@ func (s *Server) getHome(c *gin.Context) {
 		ID          int       `json:"id"`
 		Title       string    `json:"title"`
 		Content     string    `json:"content"`
+		ContentHTML string    `json:"content_html"`
 		IsImportant bool      `json:"is_important"`
 		UpdatedAt   time.Time `json:"updated_at"`
 	}
@@ -146,6 +148,7 @@ func (s *Server) getHome(c *gin.Context) {
 		var imp int
 		if err := rows3.Scan(&n.ID, &n.Title, &n.Content, &imp, &n.UpdatedAt); err == nil {
 			n.IsImportant = imp == 1
+			n.ContentHTML = parsers.RenderSafeMarkdown(n.Content)
 			notifs = append(notifs, n)
 		}
 	}
@@ -164,6 +167,7 @@ func (s *Server) listNotifications(c *gin.Context) {
 		ID          int       `json:"id"`
 		Title       string    `json:"title"`
 		Content     string    `json:"content"`
+		ContentHTML string    `json:"content_html"`
 		IsImportant bool      `json:"is_important"`
 		UpdatedAt   time.Time `json:"updated_at"`
 	}
@@ -183,6 +187,7 @@ func (s *Server) listNotifications(c *gin.Context) {
 			continue
 		}
 		n.IsImportant = imp == 1
+		n.ContentHTML = parsers.RenderSafeMarkdown(n.Content)
 		notifs = append(notifs, n)
 	}
 	c.JSON(http.StatusOK, notifs)

@@ -210,6 +210,51 @@ func TestRenderWikidotStripsImageScheme(t *testing.T) {
 	}
 }
 
+// ── Safe markdown renderer (user content: comments, notifications) ─
+
+func TestRenderSafeMarkdownEscapesRawHTML(t *testing.T) {
+	// Raw <script> in markdown source must NOT be emitted as live markup.
+	// Goldmark's safe mode (no WithUnsafe) OMITS raw HTML with a
+	// "<!-- raw HTML omitted -->" comment rather than escaping it — which
+	// is actually a stronger XSS protection than entity-escaping (the bytes
+	// are never in the DOM at all).
+	in := `Hello <script>alert(1)</script> world`
+	out := RenderSafeMarkdown(in)
+	if contains(out, `<script>`) {
+		t.Fatalf("SafeMarkdown allowed raw <script> through: %q", out)
+	}
+	if !contains(out, `raw HTML omitted`) {
+		t.Fatalf("SafeMarkdown didn't strip the script tag: %q", out)
+	}
+}
+
+func TestRenderSafeMarkdownEscapesRawEventHandlers(t *testing.T) {
+	// A malicious link that injects an event handler via raw HTML.
+	in := `<a href="x" onclick="alert(1)">click</a>`
+	out := RenderSafeMarkdown(in)
+	if contains(out, `onclick="alert(1)"`) {
+		t.Fatalf("SafeMarkdown allowed onclick attribute: %q", out)
+	}
+}
+
+func TestRenderSafeMarkdownRendersBasicMarkdown(t *testing.T) {
+	// Sanity check: legitimate markdown features still work.
+	cases := []struct {
+		in, want string
+	}{
+		{"**bold**", `<strong>bold</strong>`},
+		{"*em*", `<em>em</em>`},
+		{"[link](https://example.com)", `<a href="https://example.com">link</a>`},
+		{"`code`", `<code>code</code>`},
+	}
+	for _, c := range cases {
+		out := RenderSafeMarkdown(c.in)
+		if !contains(out, c.want) {
+			t.Errorf("RenderSafeMarkdown(%q) = %q, want to contain %q", c.in, out, c.want)
+		}
+	}
+}
+
 func contains(haystack, needle string) bool {
 	return len(haystack) >= len(needle) && indexOf(haystack, needle) >= 0
 }
