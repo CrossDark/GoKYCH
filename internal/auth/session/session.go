@@ -30,7 +30,12 @@ func New(db *sql.DB, secret string, secure bool) *Manager {
 		MaxAge:   sessionMaxAge,
 		HttpOnly: true,
 		Secure:   secure,
-		SameSite: http.SameSiteLaxMode,
+		// SameSite=None: 前端 (eo.kych.net) → 后端 (api.kych.net) 是
+		// 跨域 fetch,Chrome 80+ 默认拒绝 Lax 跨域 cookie,导致 session
+		// 不带过去 → 401。None + Secure=true 允许跨域带 cookie。
+		// 本地 dev (next.config.ts rewrites 把 /api/* 代理到 localhost:8000)
+		// 是同源,SameSite 设置不生效,不影响。
+		SameSite: http.SameSiteNoneMode,
 	}
 	return &Manager{store: s, db: db}
 }
