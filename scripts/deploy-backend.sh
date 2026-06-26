@@ -337,7 +337,13 @@ REMOTE
   rsh bash -s <<REMOTE
 set -euo pipefail
 
-cat >/etc/nginx/sites-available/gokych <<NGINX
+# NOTE: 内层 heredoc 用 <<'NGINX' (quoted) — nginx.conf 里的 $host / $remote_addr
+# 等是 nginx 的变量,不是 bash 的。inner 'NGINX' 不会展开,字面量写进文件;
+# 而 ${API_DOMAIN} / ${MAIN_DOMAIN} / ${EO_DOMAIN} 由外层 <<REMOTE (unquoted) 在
+# outer shell 阶段就展开成字面量,inner bash 收到的 body 里已经是 api.kych.net
+# 之类,不再二次展开。如果用 <<NGINX (unquoted),inner bash 会试着展开 $host
+# 触发 set -u → host: unbound variable 退出。
+cat >/etc/nginx/sites-available/gokych <<'NGINX'
 # ─ ${API_DOMAIN} ─ 后端 API + 静态资源 ─
 server {
     listen 80;
