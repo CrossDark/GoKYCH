@@ -38,7 +38,7 @@ var db *sql.DB
 func SetDB(d *sql.DB) { db = d }
 
 // workspaceDir is the directory typst compiles in. Relative imports
-// (e.g. `#import "preview.typ"`) resolve from here, and any image / asset
+// (e.g. `#import "template.typ"`) resolve from here, and any image / asset
 // references the user puts in the article can sit alongside the .typ
 // source. The path is resolved lazily on first use (not at package init),
 // so `go test` (which changes cwd to the package dir) doesn't accidentally
@@ -172,7 +172,7 @@ func CompilePDF(source string) ([]byte, error) {
 // compileBoth runs the typst CLI twice on the same source — once for HTML
 // and once for PDF — and returns both. Both invocations run with
 // `cmd.Dir = workspaceDir` so relative imports in the source (e.g.
-// `#import "preview.typ"`) resolve from there. The input file and the two
+// `#import "template.typ"`) resolve from there. The input file and the two
 // output files use a per-invocation unique prefix (UnixNano + PID) so the
 // semaphore's maxConcurrent goroutines can run without trampling each
 // other.
@@ -363,7 +363,7 @@ func cleanupLeakedInputs(dir string) {
 
 // materializeAssets writes the embedded `assets/*.typ` files into the
 // workspace dir. Files that already exist are NOT overwritten (lets users
-// customize preview.typ and keep their edits across restarts). Best-effort:
+// customize template.typ and keep their edits across restarts). Best-effort:
 // any error is logged and the workspace is still used as-is.
 func materializeAssets(dir string) {
 	entries, err := embeddedTypstFS.ReadDir("assets")

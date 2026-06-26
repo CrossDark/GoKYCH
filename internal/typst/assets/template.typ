@@ -1,13 +1,19 @@
-// preview.typ — GoKYCH typst 文章默认样式模块
+// template.typ — GoKYCH typst 文章默认页面模板
 //
-// 用户在 typst 文章里 `#import "preview.typ": preview` 后,可以用
-// `#preview[ ...正文... ]` 把内容裹上页面布局和默认样式,也可以单独
-// `import` 模块里的辅助函数(标题、代码块、引用、高亮等)。
+// 命名说明:typst 里的 `preview` 是 `@preview/...` 命名空间(放 unstable 包
+// 的地方,例如 `@preview/tufted:0.1.1`),跟本文件无关。本文件是稳定的
+// 页面模板,所以取名 `template.typ`,里面提供 `template(content)` 入口。
+//
+// 用法(用户在 typst 文章顶部):
+//   #import "template.typ": template, hl, callout
+//   #template[ = 标题 正文 ... ]
+//
+// 也可以单独 import 辅助函数 `#hl[重点]` / `#callout(title: "提示")[...]`。
 //
 // 这个文件由 Go 后端在启动时从 `embed.FS` 物化到 workspace dir
-// (默认 `data/typst/`) ;首次启动会创建,之后用户可以修改本地的副本
+// (默认 `data/typst/`);首次启动会创建,之后用户可以修改本地的副本
 // 而不会被覆盖。物化逻辑只在目标文件不存在时写入,见
-// `internal/typst/typst.go` 的 `init()`。
+// `internal/typst/typst.go` 的 `SetWorkspaceDir` / `ensureWorkspace`。
 
 // ── 页面布局(只对 PDF 输出有效;HTML 忽略 page 设置) ──
 
@@ -105,10 +111,10 @@
 
 // ── 公开 API ──
 
-/// `preview(content)` — 把内容包上默认页面 + 样式。用户在文章顶部
-/// 写 `#import "preview.typ": preview` 然后 `#preview[= 标题 ...]`
+/// `template(content)` — 把内容包上默认页面 + 样式。用户在文章顶部
+/// 写 `#import "template.typ": template` 然后 `#template[= 标题 ...]`
 /// 就能得到完整排版好的 PDF / HTML。
-#let preview(content) = {
+#let template(content) = {
   page-setup(
     text-setup(
       heading-setup(

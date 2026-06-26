@@ -8,8 +8,8 @@ import (
 	"testing"
 )
 
-// TestMaterializeAssetsCopiesPreview verifies that init() (and the helper
-// it delegates to) actually materializes the embedded preview.typ to the
+// TestMaterializeAssetsCopiesTemplate verifies that init() (and the helper
+// it delegates to) actually materializes the embedded template.typ to the
 // workspace dir. We exercise the helper directly so the test doesn't
 // pollute the project workspace — a temp dir is used and the package-level
 // workspaceDir is temporarily swapped in via the env var before the
@@ -20,22 +20,22 @@ import (
 // public helper (not via the env-var — the env var only affects the
 // package-level workspaceDir at process start). So we re-implement the
 // bits of init() that we want to test: MkdirAll + materializeAssets.
-func TestMaterializeAssetsCopiesPreview(t *testing.T) {
+func TestMaterializeAssetsCopiesTemplate(t *testing.T) {
 	dir := t.TempDir()
 	materializeAssets(dir)
 
-	want := filepath.Join(dir, "preview.typ")
+	want := filepath.Join(dir, "template.typ")
 	data, err := os.ReadFile(want)
 	if err != nil {
-		t.Fatalf("preview.typ not materialized to %s: %v", want, err)
+		t.Fatalf("template.typ not materialized to %s: %v", want, err)
 	}
 	content := string(data)
-	if !strings.Contains(content, "preview") {
-		t.Errorf("preview.typ looks empty / wrong: first 100 bytes = %q", content[:min(100, len(content))])
+	if !strings.Contains(content, "template") {
+		t.Errorf("template.typ looks empty / wrong: first 100 bytes = %q", content[:min(100, len(content))])
 	}
-	// Sanity: it should define the public `preview` function that users import.
-	if !strings.Contains(content, "#let preview") {
-		t.Errorf("preview.typ missing '#let preview' definition")
+	// Sanity: it should define the public `template` function that users import.
+	if !strings.Contains(content, "#let template") {
+		t.Errorf("template.typ missing '#let template' definition")
 	}
 }
 
@@ -45,11 +45,11 @@ func TestMaterializeAssetsCopiesPreview(t *testing.T) {
 func TestMaterializeAssetsRespectsUserEdits(t *testing.T) {
 	dir := t.TempDir()
 	custom := "// user edit"
-	if err := os.WriteFile(filepath.Join(dir, "preview.typ"), []byte(custom), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "template.typ"), []byte(custom), 0644); err != nil {
 		t.Fatal(err)
 	}
 	materializeAssets(dir)
-	got, err := os.ReadFile(filepath.Join(dir, "preview.typ"))
+	got, err := os.ReadFile(filepath.Join(dir, "template.typ"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,12 +60,12 @@ func TestMaterializeAssetsRespectsUserEdits(t *testing.T) {
 
 // TestCleanupLeakedInputsRemovesTempFiles verifies that .input_*.typ /
 // .output_*.html / .output_*.pdf files left behind by a previous crash
-// are removed. Also verifies that real user files (preview.typ, foo.png)
+// are removed. Also verifies that real user files (template.typ, foo.png)
 // are not touched.
 func TestCleanupLeakedInputsRemovesTempFiles(t *testing.T) {
 	dir := t.TempDir()
 	files := map[string]string{
-		"preview.typ":          "// keep me",
+		"template.typ":         "// keep me",
 		"foo.png":              "fake-png",
 		".input_123.typ":       "leak",
 		".input_99999.typ":     "leak",
@@ -85,7 +85,7 @@ func TestCleanupLeakedInputsRemovesTempFiles(t *testing.T) {
 	for _, e := range entries {
 		got[e.Name()] = true
 	}
-	mustExist := []string{"preview.typ", "foo.png", "article-123.typ"}
+	mustExist := []string{"template.typ", "foo.png", "article-123.typ"}
 	for _, name := range mustExist {
 		if !got[name] {
 			t.Errorf("expected %q to survive cleanup, but it was removed", name)
@@ -106,26 +106,26 @@ func min(a, b int) int {
 	return b
 }
 
-// TestEndToEndImportPreview is a smoke test: it materializes the
+// TestEndToEndImportTemplate is a smoke test: it materializes the
 // workspace in a temp dir, then compiles typst source that actually
-// imports preview.typ. Verifies the workspace dir resolution + asset
+// imports template.typ. Verifies the workspace dir resolution + asset
 // materialization + import path all work together.
 //
 // Skipped if the typst CLI isn't on the host (CI without typst).
-func TestEndToEndImportPreview(t *testing.T) {
+func TestEndToEndImportTemplate(t *testing.T) {
 	if !Available() {
 		t.Skip("typst CLI not installed; skipping end-to-end test")
 	}
 	tmp := t.TempDir()
 	SetWorkspaceDir(tmp)
 
-	previewPath := filepath.Join(tmp, "preview.typ")
-	if _, err := os.Stat(previewPath); err != nil {
-		t.Fatalf("preview.typ not materialized to %s: %v", previewPath, err)
+	templatePath := filepath.Join(tmp, "template.typ")
+	if _, err := os.Stat(templatePath); err != nil {
+		t.Fatalf("template.typ not materialized to %s: %v", templatePath, err)
 	}
 
-	src := `#import "preview.typ": preview, hl
-#preview[
+	src := `#import "template.typ": template, hl
+#template[
 = Smoke Test
 This is body text with #hl[highlighted] word.
 ]`
