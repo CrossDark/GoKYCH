@@ -102,6 +102,35 @@ ls data/typst/template.typ      # 应该存在
 给可信文章内容)和 `RenderSafeMarkdown`(XSS-safe,给用户输入)。前者会执行
 raw HTML,后者直接剥掉。改 markdown 行为时确认走的是哪个。
 
+### 3.7 部署 VM 上没装 Go / 想省掉 go build 时间
+
+`deploy-backend.sh` 默认会本地 `go build`,VM 上得有 Go 工具链。VM 上
+已经用 `install-backend.sh` 装过 gokych 的话,加 `--use-installed`
+直接复用装好的二进制,VM 不需要 Go:
+
+```bash
+# 1. 一次性装二进制(以后更新二进制也用它)
+curl -fsSL https://raw.githubusercontent.com/CrossDark/GoKYCH/main/scripts/install-backend.sh | sudo bash
+
+# 2. 跑 deploy(本机模式,无 SSH,无 go build)
+sudo --use-installed bash scripts/deploy-backend.sh
+
+# 3. 后续只更新二进制 → install-backend.sh
+# 4. 后续只更新 systemd / nginx / certbot → --use-installed + --update
+sudo --use-installed bash scripts/deploy-backend.sh --update
+```
+
+不传 `--use-installed` 时脚本会探测 `command -v gokych`,如果找到
+就 warn 提示你"加 --use-installed 可省掉 go build"(行为不变,
+go build 仍跑)。
+
+适用场景:
+- 轻量 VM / 容器镜像不要 Go(省 ~300MB)
+- CI 流水线已经 prebuild 二进制,deploy 脚本只做 systemd / nginx
+- 频繁重 deploy 想省 30+ 秒的 go build
+
+详细的环境变量和触发条件见 `docs/deployment.md` §"跑在哪？"。
+
 ## 4. 兜底:全量重置
 
 数据库不动,只重置应用层状态:
