@@ -590,6 +590,19 @@ GOKYCH_HOST=gitcode curl ... | bash
 systemd / nginx / MySQL / TLS（首次部署 + `--update` 后续更新都支持）。
 **不负责前端** —— 前端走 EdgeOne Makers 自动构建，跟本脚本无关。
 
+> **跑在哪？** 这脚本跑在**操作机**（你写代码的 Mac/Linux），不是 VM。
+> 它本地 `go build` 出二进制，再用 `ssh`/`scp` 推到 `REMOTE_HOST`。
+> 跑在 VM 本身没意义（拿不到 Go 源码、ssh 自己也是绕一圈）。
+>
+> **不能用 `curl | bash` 一键跑。** 脚本第 125 行 `SCRIPT_DIR` 是
+> `$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)`，从 stdin 跑会得到
+> `/dev/stdin`，第 128 行的 `cd "$REPO_ROOT" && go build` 找不到源码
+> 直接挂。必须先 clone 仓库。
+>
+> 如果你只想要"在 VM 上装/更新二进制"，用 `install-backend.sh` —
+> 那个才是设计成一键 `curl ... | sudo bash` 的（拉 GitHub/GitCode
+> Release 的预编译产物 + 校验 sha256）。本节后面有它的用法。
+
 ```bash
 # 首次部署：自动建用户、装包、初始化 MySQL、写 systemd、写 nginx(HTTP-only)、
 #           certbot --nginx 签 TLS（2 个域名：api.kych.net / kych.net；
