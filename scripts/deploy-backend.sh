@@ -347,6 +347,7 @@ cat >/etc/nginx/sites-available/gokych <<'NGINX'
 # ─ ${API_DOMAIN} ─ 后端 API + 静态资源 ─
 server {
     listen 80;
+    listen [::]:80;
     server_name ${API_DOMAIN};
 
     client_max_body_size 50m;
@@ -377,6 +378,7 @@ server {
 # ─ ${MAIN_DOMAIN} ─ 主域名 301 跳转到 EdgeOne Makers 部署的前端 ─
 server {
     listen 80;
+    listen [::]:80;
     server_name ${MAIN_DOMAIN};
     return 301 https://${EO_DOMAIN}\$request_uri;
 }
@@ -402,6 +404,11 @@ set -euo pipefail
 certbot --nginx \
   -d ${API_DOMAIN} -d ${MAIN_DOMAIN} \
   --non-interactive --agree-tos -m ${EMAIL} --redirect
+# IPv6 listen 443 — certbot 只插 IPv4 listen 443 ssl;手动加 IPv6 配套,
+# 否则 IPv6 客户端拿到 Connection refused(端口没监听)
+sed -i 's/^    listen 443 ssl;$/&\n    listen [::]:443 ssl;/' /etc/nginx/sites-enabled/gokych
+nginx -t
+systemctl reload nginx
 REMOTE
   ok "TLS 证书已签发 + HTTPS 自动配置完成"
 
