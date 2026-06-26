@@ -572,18 +572,30 @@ VERSION=v0.1.0 ./scripts/build-release.sh --upload   # 自动创建 GitHub Relea
 从 GitHub / GitCode Release 拉对应平台的二进制，校验 hash，装到
 `/usr/local/bin/gokych`：
 
+> **必须从 GitHub raw 拉脚本。** `gitcode.com` 不暴露 raw HTTP 文件 URL
+> （任何 `/raw/...` 路径都返回 AtomGit 落地页 HTML），所以 `curl | bash`
+> 一键装这条路**只走 GitHub raw**。如果你在国内连 GitHub 慢，本地先
+> `git clone https://gitcode.com/CrossDark/GoKych.git` 再跑脚本，或者让
+> EdgeOne Makers 反代加速（不影响 `curl` 那行）。
+>
+> **`GOKYCH_HOST=gitcode` 只控制脚本内部拉二进制的源**（走 gitcode 的
+> release API），不影响 `curl` 那行的 URL。所以下面 4 个例子里，前 3 个
+> 走 GitHub raw 装脚本、二进制也跟着从 GitHub Release 拉；第 4 个是先
+> `git clone`（绕开 gitcode 没 raw 的问题），二进制切到 gitcode。
+
 ```bash
-# 目标 VM 上跑：装到 /usr/local/bin（要 sudo）
+# 目标 VM 上跑：装到 /usr/local/bin（要 sudo） — 脚本 + 二进制都走 GitHub
 curl -fsSL https://raw.githubusercontent.com/CrossDark/GoKYCH/main/scripts/install-backend.sh | sudo bash
 
 # 装到用户目录（不要 sudo）
-PREFIX=$HOME/.local curl ... | bash
+PREFIX=$HOME/.local curl -fsSL https://raw.githubusercontent.com/CrossDark/GoKYCH/main/scripts/install-backend.sh | bash
 
 # 装特定版本
-GOKYCH_VERSION=v0.1.0 curl ... | bash
+GOKYCH_VERSION=v0.1.0 curl -fsSL https://raw.githubusercontent.com/CrossDark/GoKYCH/main/scripts/install-backend.sh | bash
 
-# 强制走 GitCode（GitHub 在国内慢）
-GOKYCH_HOST=gitcode curl ... | bash
+# 想要二进制从 gitcode 拉：先 clone（绕开 gitcode 没 raw），再传 GOKYCH_HOST
+git clone https://gitcode.com/CrossDark/GoKych.git /tmp/gokych
+GOKYCH_HOST=gitcode sudo bash /tmp/gokych/scripts/install-backend.sh
 ```
 
 **`scripts/deploy-backend.sh`** — 跨平台编译后推到目标 VM，初始化
@@ -630,10 +642,12 @@ GOARCH=arm64 ./scripts/deploy-backend.sh
 
 | commit    | 主题                                                         |
 |-----------|--------------------------------------------------------------|
-| (pending) | chore: EdgeOne Makers 部署切线 — apiUrl() + standalone opt-in + docs 重写 |
-| (pending) | chore: delete scripts/deploy-frontend.sh — EdgeOne Makers 接管前端 |
-| (pending) | fix(test): TestBuildWebAuthnOrigins 期望顺序跟实现不一致，改用集合比较 |
-| (pending) | chore: api.ts split apiUrl helper — BASE 解析集中到一处 |
+| `0baf836` | docs(deploy): clarify deploy-backend.sh runs on operator machine, not on the VM |
+| `9441bee` | docs(deploy): rewrite deployment.md for EdgeOne Makers; tick done items in TODO |
+| `59cbe67` | chore(deploy): drop deploy-frontend.sh + trim backend deploy for EdgeOne Makers |
+| `89dfc61` | chore(deploy): next.config.ts — `output: standalone` is now STANDALONE=1 opt-in |
+| `e7d3bd5` | feat(deploy): split apiUrl() helper — every cross-origin fetch goes through it |
+| `b8c8387` | fix(test): TestBuildWebAuthnOrigins — dedupe + compare as set |
 | `dccaf65` | docs: web/lib/api.ts use NEXT_PUBLIC_API_BASE_URL (跨域前置) |
 | `61a5a73` | docs: first pass at EdgeOne Makers deployment plan |
 | `90498db` | feat(deploy): CORS middleware + absolute PUBLIC_URL          |
