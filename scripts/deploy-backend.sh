@@ -44,6 +44,9 @@
 # 更新二进制(保留 .env 密钥):
 #   ./scripts/deploy-backend.sh --update
 #
+# VM 上已有 install-backend.sh 装好的二进制,跳过 go build(VM 不需要 go):
+#   sudo --use-installed ./scripts/deploy-backend.sh
+#
 # ─── 可调 env var ────────────────────────────────────────────────────
 #   REMOTE_HOST    远端 VM 的 IP / 域名(本机模式留空或 127.0.0.1)
 #   REMOTE_USER    远端登录用户(默认 root,本机模式忽略)
@@ -56,6 +59,8 @@
 #   DB_PASSWORD    MySQL 密码(不传则生成随机 48 字符)
 #   SESSION_SECRET 会话密钥(不传则生成随机 48 字符)
 #   GOARCH         linux/amd64 或 linux/arm64(默认 amd64,本机模式通常无意义)
+#   USE_INSTALLED  1 = 跳过 go build,用 install-backend.sh 装好的二进制
+#                  (等价于 --use-installed;VM 上已经有 gokych 就用它)
 # ────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -67,10 +72,12 @@ die()  { printf "${RED}✗${NC} %s\n" "$*" >&2; exit 1; }
 
 # ── 解析参数 ──
 UPDATE_ONLY=0
+USE_INSTALLED="${USE_INSTALLED:-0}"  # 1 = 跳过 go build,直接用 install-backend.sh 装好的 gokych
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --update|-u) UPDATE_ONLY=1; shift ;;
-    --help|-h)   sed -n '2,30p' "$0"; exit 0 ;;
+    --update|-u)           UPDATE_ONLY=1; shift ;;
+    --use-installed)       USE_INSTALLED=1; shift ;;
+    --help|-h)             sed -n '2,30p' "$0"; exit 0 ;;
     *) die "unknown arg: $1 (try --help)" ;;
   esac
 done
@@ -188,14 +195,45 @@ else
   ok "SSH OK"
 fi
 
-# ── 3. 本地交叉编译 ──
-log "本地交叉编译 (linux/${GOARCH})…"
+# ── 3. 拿二进制:用已装的,或本地编译 ──
+#
+# 默认 go build(需要本机有 Go + 源码)。VM 上用 install-backend.sh 装好
+# 之后,可以 --use-installed 直接复用装好的 gokych,免去再装 Go / 再编译。
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-BIN_PATH="/tmp/gokych.linux.$GOARCH"
-(cd "$REPO_ROOT" && CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" \
-  go build -ldflags='-s -w' -trimpath -o "$BIN_PATH" ./cmd/gokych)
-ok "二进制: $BIN_PATH ($(du -h "$BIN_PATH" | cut -f1))"
+
+resolve_installed_gokych() {
+  # 1) PATH 里有 → 直接用
+  local via_path
+  via_path="$(command -v gokych 2>/dev/null || true)"
+  if [[ -n "$via_path" && -x "$via_path" ]]; then
+    echo "$via_path"; return 0
+  fi
+  # 2) install-backend.sh 默认装到 /usr/local/bin/gokych(PREFIX 可改)
+  for p in /usr/local/bin/gokych /usr/bin/gokych "$HOME/.local/bin/gokych"; do
+    if [[ -x "$p" ]]; then echo "$p"; return 0; fi
+  done
+  return 1
+}
+
+BIN_PATH=""
+if [[ "$USE_INSTALLED" -eq 1 ]]; then
+  log "使用已安装的 gokych(--use-installed,跳过 go build)…"
+  BIN_PATH="$(resolve_installed_gokych || true)"
+  [[ -n "$BIN_PATH" ]] || die "找不到 gokych 二进制 — install-backend.sh 装过吗? 'command -v gokych' 应该有结果"
+  ok "已安装的二进制: $BIN_PATH ($(du -h "$BIN_PATH" | cut -f1))"
+else
+  # 友好提示:如果 gokych 已经在 PATH 里,告诉用户可以省掉 go build
+  if via_path="$(resolve_installed_gokych || true)"; then
+    warn "检测到已装的 gokych: $via_path"
+    warn "  跳过 go build 用: --use-installed (或 USE_INSTALLED=1)"
+  fi
+  log "本地交叉编译 (linux/${GOARCH})…"
+  BIN_PATH="/tmp/gokych.linux.$GOARCH"
+  (cd "$REPO_ROOT" && CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" \
+    go build -ldflags='-s -w' -trimpath -o "$BIN_PATH" ./cmd/gokych)
+  ok "编译产出: $BIN_PATH ($(du -h "$BIN_PATH" | cut -f1))"
+fi
 
 # rsh / rscp:远端模式走 ssh/scp,本机模式直接本地执行。
 #

@@ -607,17 +607,19 @@ systemd / nginx / MySQL / TLS（首次部署 + `--update` 后续更新都支持�
 > 1. **远端模式(默认)** — 操作机(Mac/Linux)跑,`go build` 出二进制,
 >    `ssh`/`scp` 推到 VM。需要免密 SSH 到 `REMOTE_USER@REMOTE_HOST`。
 > 2. **本机模式** — 直接在 Ubuntu VM 上跑(`sudo bash`),不走 SSH。
->    需要本机能 clone 仓库、有 Go 编译器。
+>    默认需要 Go 编译器(脚本会 `go build`);如果 VM 上已经用
+>    `install-backend.sh` 装好了 `gokych`,加 `--use-installed` 直接复用,
+>    VM 不需要 Go(只要能 clone 仓库 + 跑 apt/systemctl 等)。
 >
 > 触发本机模式:`LOCAL_MODE=1` 环境变量 / `REMOTE_HOST` 留空 /
 > `REMOTE_HOST` 是 `localhost`/`127.0.0.1` / `REMOTE_HOST` 匹配本机
 > hostname / `REMOTE_HOST` 解析到 127.0.0.0/8。
 >
-> **不能用 `curl | bash` 一键跑。** 脚本需要 Go 源码 + Go 编译器
-> (本机模式也得在仓库根目录 clone 完再跑)。如果只想要"在 VM 上
-> 装/更新二进制",用 `install-backend.sh` — 那个才是设计成
-> `curl ... | sudo bash` 的(拉 GitHub/GitCode Release 预编译产物 +
-> 校验 sha256)。本节后面有它的用法。
+> **不能用 `curl | bash` 一键跑。** 默认行为需要 Go 源码(已装的话用
+> `--use-installed` 也行)。如果只想要"在 VM 上装/更新二进制",
+> 用 `install-backend.sh` — 那个才是设计成 `curl ... | sudo bash` 的
+> (拉 GitHub/GitCode Release 预编译产物 + 校验 sha256)。本节后面有
+> 它的用法。
 
 ```bash
 # 首次部署：自动建用户、装包、初始化 MySQL、写 systemd、写 nginx(HTTP-only)、
