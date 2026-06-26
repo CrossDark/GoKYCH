@@ -602,18 +602,22 @@ GOKYCH_HOST=gitcode sudo bash /tmp/gokych/scripts/install-backend.sh
 systemd / nginx / MySQL / TLS（首次部署 + `--update` 后续更新都支持）。
 **不负责前端** —— 前端走 EdgeOne Makers 自动构建，跟本脚本无关。
 
-> **跑在哪？** 这脚本跑在**操作机**（你写代码的 Mac/Linux），不是 VM。
-> 它本地 `go build` 出二进制，再用 `ssh`/`scp` 推到 `REMOTE_HOST`。
-> 跑在 VM 本身没意义（拿不到 Go 源码、ssh 自己也是绕一圈）。
+> **跑在哪？** 两种模式都支持,**自动检测**(也可用 `LOCAL_MODE=1` 强制):
 >
-> **不能用 `curl | bash` 一键跑。** 脚本第 125 行 `SCRIPT_DIR` 是
-> `$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)`，从 stdin 跑会得到
-> `/dev/stdin`，第 128 行的 `cd "$REPO_ROOT" && go build` 找不到源码
-> 直接挂。必须先 clone 仓库。
+> 1. **远端模式(默认)** — 操作机(Mac/Linux)跑,`go build` 出二进制,
+>    `ssh`/`scp` 推到 VM。需要免密 SSH 到 `REMOTE_USER@REMOTE_HOST`。
+> 2. **本机模式** — 直接在 Ubuntu VM 上跑(`sudo bash`),不走 SSH。
+>    需要本机能 clone 仓库、有 Go 编译器。
 >
-> 如果你只想要"在 VM 上装/更新二进制"，用 `install-backend.sh` —
-> 那个才是设计成一键 `curl ... | sudo bash` 的（拉 GitHub/GitCode
-> Release 的预编译产物 + 校验 sha256）。本节后面有它的用法。
+> 触发本机模式:`LOCAL_MODE=1` 环境变量 / `REMOTE_HOST` 留空 /
+> `REMOTE_HOST` 是 `localhost`/`127.0.0.1` / `REMOTE_HOST` 匹配本机
+> hostname / `REMOTE_HOST` 解析到 127.0.0.0/8。
+>
+> **不能用 `curl | bash` 一键跑。** 脚本需要 Go 源码 + Go 编译器
+> (本机模式也得在仓库根目录 clone 完再跑)。如果只想要"在 VM 上
+> 装/更新二进制",用 `install-backend.sh` — 那个才是设计成
+> `curl ... | sudo bash` 的(拉 GitHub/GitCode Release 预编译产物 +
+> 校验 sha256)。本节后面有它的用法。
 
 ```bash
 # 首次部署：自动建用户、装包、初始化 MySQL、写 systemd、写 nginx(HTTP-only)、

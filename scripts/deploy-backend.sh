@@ -19,23 +19,43 @@
 #   然后自动往 nginx 配置里插入 listen 443 ssl 块 + 80→443 跳转 →
 #   reload nginx。全程零停机、零手动编辑证书路径。
 #
-# 用法（首次部署）:
+# ─── 运行模式 ────────────────────────────────────────────────────────
+# 支持两种模式,自动选择:
+#
+# 1. **远端模式(默认)** — 从你写代码的 Mac/Linux 操作机跑,ssh 推到
+#    目标 VM。需要 SSH key 配置好(`ssh root@VM` 能免密登入)。
+#      ./scripts/deploy-backend.sh           # 交互式询问 REMOTE_HOST
+#      REMOTE_HOST=1.2.3.4 ./scripts/deploy-backend.sh
+#
+# 2. **本机模式** — 直接在 Ubuntu 服务器上跑(免 SSH,免开操作机)。
+#    服务器需要能 clone 仓库、有 go 编译器。
+#      sudo LOCAL_MODE=1 ./scripts/deploy-backend.sh
+#      sudo REMOTE_HOST=127.0.0.1 ./scripts/deploy-backend.sh
+#
+#    触发条件(任一):
+#      - LOCAL_MODE=1 环境变量
+#      - REMOTE_HOST 为空 / localhost / 127.0.0.1
+#      - REMOTE_HOST 匹配本机 hostname
+#
+# ─── 用法 ────────────────────────────────────────────────────────────
+# 首次部署:
 #   ./scripts/deploy-backend.sh
 #
-# 用法（更新二进制）:
+# 更新二进制(保留 .env 密钥):
 #   ./scripts/deploy-backend.sh --update
 #
-# 可调 env var（所有都有默认值，缺啥问啥）:
-#   REMOTE_HOST    远端 VM 的 IP / 域名（必填，交互式）
-#   REMOTE_USER    远端登录用户（默认 root）
-#   REMOTE_PORT    SSH 端口（默认 22）
-#   MAIN_DOMAIN    主域名（默认 kych.net）
-#   API_DOMAIN     API 域名（默认 api.kych.net）
-#   EO_DOMAIN      前端域名（默认 eo.kych.net）
-#   EMAIL          Let's Encrypt 注册邮箱（必填，交互式）
-#   DB_PASSWORD    MySQL 密码（不传则生成随机 48 字符）
-#   SESSION_SECRET 会话密钥（不传则生成随机 48 字符）
-#   GOARCH         linux/amd64 或 linux/arm64（默认 amd64）
+# ─── 可调 env var ────────────────────────────────────────────────────
+#   REMOTE_HOST    远端 VM 的 IP / 域名(本机模式留空或 127.0.0.1)
+#   REMOTE_USER    远端登录用户(默认 root,本机模式忽略)
+#   REMOTE_PORT    SSH 端口(默认 22,本机模式忽略)
+#   LOCAL_MODE     1 = 强制本机模式(默认自动检测)
+#   MAIN_DOMAIN    主域名(默认 kych.net)
+#   API_DOMAIN     API 域名(默认 api.kych.net)
+#   EO_DOMAIN      前端域名(默认 eo.kych.net)
+#   EMAIL          Let's Encrypt 注册邮箱(必填,交互式)
+#   DB_PASSWORD    MySQL 密码(不传则生成随机 48 字符)
+#   SESSION_SECRET 会话密钥(不传则生成随机 48 字符)
+#   GOARCH         linux/amd64 或 linux/arm64(默认 amd64,本机模式通常无意义)
 # ────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -57,9 +77,6 @@ done
 
 # ── 1. 收集配置 ──
 log "收集部署配置…"
-[[ -z "${REMOTE_HOST:-}" ]] && { read -rp "  远端 VM IP / 域名: " REMOTE_HOST; [[ -n "$REMOTE_HOST" ]] || die "REMOTE_HOST 必填"; }
-REMOTE_USER="${REMOTE_USER:-root}"
-REMOTE_PORT="${REMOTE_PORT:-22}"
 MAIN_DOMAIN="${MAIN_DOMAIN:-kych.net}"
 API_DOMAIN="${API_DOMAIN:-api.kych.net}"
 EO_DOMAIN="${EO_DOMAIN:-eo.kych.net}"
@@ -67,21 +84,65 @@ EO_DOMAIN="${EO_DOMAIN:-eo.kych.net}"
 GOARCH="${GOARCH:-amd64}"
 GOOS="${GOOS:-linux}"
 
+# ── 1a. 决定运行模式:本机 vs 远端 ──
+#
+# 触发本机模式(LOCAL_MODE=1)的条件:
+#   - LOCAL_MODE=1 环境变量(显式)
+#   - REMOTE_HOST 为空 / localhost / 127.0.0.1 / ::1
+#   - REMOTE_HOST 解析到本机 IP(127.0.0.0/8)
+#   - REMOTE_HOST 匹配本机 hostname(`hostname` / `hostname -f`)
+#
+# 其它情况走远端模式(原 ssh 流程不变)。
+LOCAL_MODE="${LOCAL_MODE:-0}"
+if [[ "$LOCAL_MODE" -ne 1 ]]; then
+  if [[ -z "${REMOTE_HOST:-}" ]]; then
+    read -rp "  远端 VM IP / 域名(留空 = 本机模式): " REMOTE_HOST
+  fi
+  case "$REMOTE_HOST" in
+    ""|localhost|127.0.0.1|::1) LOCAL_MODE=1 ;;
+    *)
+      local_ip_for() { getent hosts "$1" 2>/dev/null | awk '{print $1}' | head -1; }
+      my_hostname="$(hostname 2>/dev/null || true)"
+      my_fqdn="$(hostname -f 2>/dev/null || true)"
+      resolved="$(local_ip_for "$REMOTE_HOST")"
+      if [[ "$REMOTE_HOST" == "$my_hostname" || "$REMOTE_HOST" == "$my_fqdn" ]]; then
+        LOCAL_MODE=1
+      elif [[ "$resolved" == 127.* || "$resolved" == "::1" ]]; then
+        LOCAL_MODE=1
+      fi
+      ;;
+  esac
+fi
+REMOTE_USER="${REMOTE_USER:-root}"
+REMOTE_PORT="${REMOTE_PORT:-22}"
+if [[ "$LOCAL_MODE" -eq 1 ]]; then
+  REMOTE_HOST="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  [[ -z "$REMOTE_HOST" ]] && REMOTE_HOST="127.0.0.1"
+  warn "本机模式:在 $(hostname) 上直接跑,不走 ssh (REMOTE_HOST 用作 DNS 提示: $REMOTE_HOST)"
+else
+  [[ -z "$REMOTE_HOST" ]] && die "REMOTE_HOST 必填"
+  log "远端模式:ssh 到 ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_PORT}"
+fi
+
 gen_secret() { LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 48 || true; }
 [[ -z "${DB_PASSWORD:-}" ]]    && DB_PASSWORD="$(gen_secret)"
 [[ -z "${SESSION_SECRET:-}" ]] && SESSION_SECRET="$(gen_secret)"
 
-# 更新模式：从远端 .env 读回 DB_PASSWORD / SESSION_SECRET
+# 更新模式:从 .env 读回 DB_PASSWORD / SESSION_SECRET(本机模式直接 cat,远端模式 ssh cat)
 REMOTE_ENV=/opt/gokych/.env
 if [[ "$UPDATE_ONLY" -eq 1 ]]; then
-  EXISTING_ENV=$(ssh -p "$REMOTE_PORT" -o BatchMode=yes -o ConnectTimeout=5 \
-                 "${REMOTE_USER}@$REMOTE_HOST" "cat '$REMOTE_ENV' 2>/dev/null || true" 2>/dev/null || true)
+  if [[ "$LOCAL_MODE" -eq 1 ]]; then
+    EXISTING_ENV=$(cat "$REMOTE_ENV" 2>/dev/null || true)
+  else
+    EXISTING_ENV=$(ssh -p "$REMOTE_PORT" -o BatchMode=yes -o ConnectTimeout=5 \
+                   "${REMOTE_USER}@$REMOTE_HOST" "cat '$REMOTE_ENV' 2>/dev/null || true" 2>/dev/null || true)
+  fi
   if [[ -n "$EXISTING_ENV" ]]; then
     DB_PASSWORD=$(grep -E '^DB_PASSWORD=' <<<"$EXISTING_ENV" | head -1 | cut -d= -f2-)
     SESSION_SECRET=$(grep -E '^SESSION_SECRET=' <<<"$EXISTING_ENV" | head -1 | cut -d= -f2-)
     : "${DB_PASSWORD:=$(gen_secret)}"
     : "${SESSION_SECRET:=$(gen_secret)}"
-    warn "更新模式：从远端 .env 读回密钥"
+    warn "更新模式:从 .env 读回密钥"
   fi
 fi
 
@@ -92,6 +153,7 @@ CORS_ORIGIN="https://${EO_DOMAIN}"          # 浏览器跨域（EdgeOne 同源�
 
 cat <<EOF
   ─────────────────────────────────────────
+  MODE:            $([[ "$LOCAL_MODE" -eq 1 ]] && echo "本机 (LOCAL)" || echo "远端 (REMOTE)")
   REMOTE_HOST:     $REMOTE_HOST
   MAIN_DOMAIN:     $MAIN_DOMAIN  (→ 301 跳转到 $EO_DOMAIN)
   API_DOMAIN:      $API_DOMAIN   (→ VM :8000)
@@ -112,13 +174,19 @@ if [[ "$UPDATE_ONLY" -eq 0 ]]; then
 fi
 echo
 
-# ── 2. SSH 预检 ──
-log "检查 SSH 连通性…"
-ssh -p "$REMOTE_PORT" -o BatchMode=yes -o ConnectTimeout=5 \
-    -o StrictHostKeyChecking=accept-new \
-    "${REMOTE_USER}@$REMOTE_HOST" true 2>/dev/null || \
-  die "无法 ssh 到 ${REMOTE_USER}@$REMOTE_HOST:$REMOTE_PORT"
-ok "SSH OK"
+# ── 2. SSH 预检(本机模式跳过) ──
+if [[ "$LOCAL_MODE" -eq 1 ]]; then
+  ok "本机模式 — 跳过 SSH 预检"
+  # 兜底:必须能写 /opt/gokych /etc/nginx /etc/systemd(systemd unit)
+  [[ -w /opt ]] || die "/opt 不可写 — 用 sudo 跑"
+else
+  log "检查 SSH 连通性…"
+  ssh -p "$REMOTE_PORT" -o BatchMode=yes -o ConnectTimeout=5 \
+      -o StrictHostKeyChecking=accept-new \
+      "${REMOTE_USER}@$REMOTE_HOST" true 2>/dev/null || \
+    die "无法 ssh 到 ${REMOTE_USER}@$REMOTE_HOST:$REMOTE_PORT"
+  ok "SSH OK"
+fi
 
 # ── 3. 本地交叉编译 ──
 log "本地交叉编译 (linux/${GOARCH})…"
@@ -129,8 +197,32 @@ BIN_PATH="/tmp/gokych.linux.$GOARCH"
   go build -ldflags='-s -w' -trimpath -o "$BIN_PATH" ./cmd/gokych)
 ok "二进制: $BIN_PATH ($(du -h "$BIN_PATH" | cut -f1))"
 
-rsh()  { ssh -p "$REMOTE_PORT" "${REMOTE_USER}@$REMOTE_HOST" "$@"; }
-rscp() { scp -P "$REMOTE_PORT" "$1" "${REMOTE_USER}@$REMOTE_HOST:$2"; }
+# rsh / rscp:远端模式走 ssh/scp,本机模式直接本地执行。
+#
+# 调用模式:
+#   rsh "shell string"        ← 走 ssh 远端 shell / 本地 bash -c
+#   rsh bash -s <<'EOF'...EOF ← 远端时 ssh 透传 stdin,本地时 bash -s
+#   rscp local remote         ← 远端 scp / 本地 cp
+rsh() {
+  if [[ "$LOCAL_MODE" -eq 1 ]]; then
+    if [[ "$1" == "bash" ]]; then
+      shift
+      bash -s "$@"
+    else
+      # ssh 模式会把这个字符串交给远端 shell 解释;本地用 bash -c 复现
+      bash -c "$*"
+    fi
+  else
+    ssh -p "$REMOTE_PORT" "${REMOTE_USER}@$REMOTE_HOST" "$@"
+  fi
+}
+rscp() {
+  if [[ "$LOCAL_MODE" -eq 1 ]]; then
+    cp "$1" "$2"
+  else
+    scp -P "$REMOTE_PORT" "$1" "${REMOTE_USER}@$REMOTE_HOST:$2"
+  fi
+}
 
 # ═══════════════════════════════════════════════════════════════════════
 # 首次部署
@@ -380,18 +472,46 @@ echo
 
 ok "后端部署完成 🚀"
 echo
-cat <<NEXT
-下一步：
-  1. EdgeOne Makers 控制台连 GitHub 仓库 → 自动构建部署前端
-     环境变量（生产）：
+if [[ "$LOCAL_MODE" -eq 1 ]]; then
+  # 本机模式下 REMOTE_HOST 是从 hostname -I 拿的(可能是内网 IP),
+  # 让用户自己确认公网 IP 是啥
+  PUBLIC_IP_HINT="${REMOTE_HOST}"
+  if command -v curl >/dev/null 2>&1; then
+    detected_pub="$(curl -fsS --max-time 3 https://ifconfig.me 2>/dev/null || true)"
+    [[ -n "$detected_pub" ]] && PUBLIC_IP_HINT="${detected_pub} (检测到的公网 IP;也可能是 ${REMOTE_HOST} 内网 IP)"
+  fi
+  cat <<NEXT
+下一步(本机模式):
+  1. 确认这台服务器的公网 IP(可能不是 ${REMOTE_HOST}):
+       检测到: ${PUBLIC_IP_HINT}
+       如果不对,云控制台 / ip a / curl ifconfig.me 自己看
+  2. EdgeOne Makers 控制台连 GitHub 仓库 → 自动构建部署前端
+     环境变量(生产):
        NEXT_PUBLIC_API_BASE_URL=https://${API_DOMAIN}
-     自定义域名：${EO_DOMAIN}
-  2. DNS:
-       ${API_DOMAIN}    A → ${REMOTE_HOST}
-       ${MAIN_DOMAIN}   A → ${REMOTE_HOST}
+     自定义域名: ${EO_DOMAIN}
+  3. DNS:
+       ${API_DOMAIN}    A    → <公网 IP>
+       ${MAIN_DOMAIN}   A    → <公网 IP>
        ${EO_DOMAIN}     CNAME → EdgeOne Makers 域名
-  3. 浏览器打开 https://${EO_DOMAIN}/admin，用 admin / admin123 登录
-  4. 备份：crontab -e 加一行  30 3 * * * /opt/gokych/bin/backup.sh
-  5. 关键凭据在 /opt/gokych/.env (chmod 600):
-     SESSION_SECRET, DB_PASSWORD
+  4. 浏览器打开 https://${EO_DOMAIN}/admin,用 admin / admin123 登录
+  5. 备份: crontab -e 加一行  30 3 * * * /opt/gokych/bin/backup.sh
+  6. 关键凭据在 /opt/gokych/.env (chmod 600):
+       SESSION_SECRET, DB_PASSWORD
 NEXT
+else
+  cat <<NEXT
+下一步:
+  1. EdgeOne Makers 控制台连 GitHub 仓库 → 自动构建部署前端
+     环境变量(生产):
+       NEXT_PUBLIC_API_BASE_URL=https://${API_DOMAIN}
+     自定义域名: ${EO_DOMAIN}
+  2. DNS:
+       ${API_DOMAIN}    A    → ${REMOTE_HOST}
+       ${MAIN_DOMAIN}   A    → ${REMOTE_HOST}
+       ${EO_DOMAIN}     CNAME → EdgeOne Makers 域名
+  3. 浏览器打开 https://${EO_DOMAIN}/admin,用 admin / admin123 登录
+  4. 备份: crontab -e 加一行  30 3 * * * /opt/gokych/bin/backup.sh
+  5. 关键凭据在 /opt/gokych/.env (chmod 600):
+       SESSION_SECRET, DB_PASSWORD
+NEXT
+fi
