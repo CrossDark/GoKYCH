@@ -336,15 +336,12 @@ REMOTE
   log "远端：写 nginx 配置（HTTP-only）…"
   rsh bash -s <<REMOTE
 set -euo pipefail
-MAIN='${MAIN_DOMAIN}'
-API='${API_DOMAIN}'
-EO='${EO_DOMAIN}'
 
 cat >/etc/nginx/sites-available/gokych <<NGINX
-# ─ ${API} ─ 后端 API + 静态资源 ─
+# ─ ${API_DOMAIN} ─ 后端 API + 静态资源 ─
 server {
     listen 80;
-    server_name ${API};
+    server_name ${API_DOMAIN};
 
     client_max_body_size 50m;
 
@@ -371,11 +368,11 @@ server {
     location = /healthz { proxy_pass http://127.0.0.1:8000/api/health; access_log off; }
 }
 
-# ─ ${MAIN} ─ 主域名 301 跳转到 EdgeOne Makers 部署的前端 ─
+# ─ ${MAIN_DOMAIN} ─ 主域名 301 跳转到 EdgeOne Makers 部署的前端 ─
 server {
     listen 80;
-    server_name ${MAIN};
-    return 301 https://${EO}\$request_uri;
+    server_name ${MAIN_DOMAIN};
+    return 301 https://${EO_DOMAIN}\$request_uri;
 }
 NGINX
 
