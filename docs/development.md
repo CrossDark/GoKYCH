@@ -73,6 +73,27 @@ pkill -TERM gokych   # 或 pkill -f 'go run ./cmd/gokych'
 go run ./cmd/gokych &
 ```
 
+**部署到 VM 时,二进制要装到 systemd ExecStart 路径(不是 `which gokych` 那条)**:
+
+```bash
+# 部署脚本 / install-backend.sh 装到 /usr/local/bin/gokych(PATH 优先)
+# systemd gokych.service 的 ExecStart=/opt/gokych/bin/gokych
+# which gokych 找的是前者,systemd 跑的是后者 — **两个不同位置**
+
+# 重新 build + 替换:
+go build -o /tmp/gokych ./cmd/gokych          # 写哪都行,待会儿 install
+scp /tmp/gokych root@<VM>:/tmp/gokych-new
+ssh root@<VM>
+  install -m 755 /tmp/gokych-new /opt/gokych/bin/gokych   # ← ExecStart 那个
+  chown deploy:deploy /opt/gokych/bin/gokych
+  systemctl restart gokych
+  # 验证新 binary 真跑起来了
+  sha256sum /proc/$(systemctl show gokych -p MainPID --value)/exe
+  # 跟 host 上 shasum -a 256 /tmp/gokych 比,应该一致
+```
+
+**踩过的坑**:替换了 `which gokych` 那条(PATH 优先),systemd 还在跑旧的 — 看似重启了实际没换。**永远用 `sha256sum /proc/$PID/exe` 验证**。
+
 ### 3.4 typst 文章:显示"Typst 编译器未安装"
 
 `internal/typst/typst.go` 找不到 `typst` CLI。装一下:
@@ -130,6 +151,27 @@ go build 仍跑)。
 - 频繁重 deploy 想省 30+ 秒的 go build
 
 详细的环境变量和触发条件见 `docs/deployment.md` §"跑在哪？"。
+
+### 3.8 编译输出统一到 `dist/`
+
+所有 Go 编译产物都写到 `dist/`,**不要写到 `/tmp/` 或项目根**:
+
+```bash
+# 单平台(开发用)
+go build -o dist/gokych ./cmd/gokych
+
+# 跨平台(发布用)
+GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o dist/gokych-linux-amd64 ./cmd/gokych
+GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o dist/gokych-linux-arm64 ./cmd/gokych
+GOOS=darwin GOARCH=amd64 go build -ldflags="-s -w" -o dist/gokych-darwin-amd64 ./cmd/gokych
+GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -o dist/gokych-darwin-arm64 ./cmd/gokych
+
+# 推到 VM 部署(linux/amd64 走 ssh 过去)
+scp dist/gokych-linux-amd64 root@<VM>:/tmp/gokych-new
+```
+
+`dist/` 已约定包含 `SHA256SUMS` + 4 个平台 binary(给 GitHub Release 用),
+本地编译直接覆盖对应平台的 binary 即可,不要新建 `dist/v2/` / `dist/build/` 子目录。
 
 ## 4. 兜底:全量重置
 
