@@ -83,6 +83,11 @@ func main() {
 	m := metrics.New()
 	// typst.SetDB lets typst.CompileHTMLCached consult typst_cache.
 	typst.SetDB(db)
+	// typst.SetWorkspaceDir pins the typst project root to an absolute path
+	// under DataDir. Without this, typst would fall back to a cwd-relative
+	// "data/typst" which breaks when the binary isn't run from the project
+	// root (e.g. systemd, Docker, tests).
+	typst.SetWorkspaceDir(cfg.App.DataDir + "/typst")
 	srv := api.NewServer(db, sess, limiter, m, cfg.App.DataDir, cfg.App.TrustedProxies)
 	// PublicURL is the absolute base URL the backend is reachable at
 	// from the public internet — used to build absolute /uploads/*

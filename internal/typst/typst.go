@@ -3,6 +3,7 @@ package typst
 import (
 	"context"
 	"database/sql"
+	"embed"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -11,8 +12,12 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
+
+//go:embed assets/*.typ
+var embeddedTypstFS embed.FS
 
 const (
 	compileTimeout = 30 * time.Second
@@ -31,6 +36,73 @@ var db *sql.DB
 // SetDB wires a database connection for compile-result caching. Must be
 // called once at startup (after the pool is ready) for the cache to take effect.
 func SetDB(d *sql.DB) { db = d }
+
+// workspaceDir is the directory typst compiles in. Relative imports
+// (e.g. `#import "preview.typ"`) resolve from here, and any image / asset
+// references the user puts in the article can sit alongside the .typ
+// source. The path is resolved lazily on first use (not at package init),
+// so `go test` (which changes cwd to the package dir) doesn't accidentally
+// write to a polluted `./data/typst/` next to the test source.
+//
+// Set explicitly with SetWorkspaceDir at startup (production), or rely on
+// the env-var fallback (GOKYCH_TYPST_DIR) / relative default
+// ("data/typst", interpreted relative to the binary's cwd at first
+// compile). The lazy resolution means tests that don't call CompileHTML
+// (e.g. the materialize / cleanup unit tests) never trigger it.
+var (
+	workspaceDirOnce sync.Once
+	workspaceDir     string
+)
+
+// SetWorkspaceDir sets the absolute (or process-relative) path to the
+// typst workspace. Production binaries should call this once at startup
+// after config is loaded, passing an absolute path like
+// cfg.DataRoot() + "/typst". Calling it more than once is a no-op.
+func SetWorkspaceDir(path string) {
+	workspaceDirOnce.Do(func() {
+		workspaceDir = path
+		if err := os.MkdirAll(workspaceDir, 0755); err != nil {
+			slog.Error("typst: create workspace dir", "dir", workspaceDir, "err", err)
+			return
+		}
+		cleanupLeakedInputs(workspaceDir)
+		materializeAssets(workspaceDir)
+	})
+}
+
+// resolveWorkspaceDir picks the workspace dir based on env var or default.
+// Only called from ensureWorkspace if SetWorkspaceDir wasn't called first.
+func resolveWorkspaceDir() string {
+	if d := os.Getenv("GOKYCH_TYPST_DIR"); d != "" {
+		return d
+	}
+	return "data/typst"
+}
+
+// ensureWorkspace materializes the workspace once per process. Tests that
+// use the helpers directly (materializeAssets / cleanupLeakedInputs) never
+// hit this path; production binaries should call SetWorkspaceDir from
+// main, which also bypasses this fallback.
+func ensureWorkspace() {
+	workspaceDirOnce.Do(func() {
+		workspaceDir = resolveWorkspaceDir()
+		if err := os.MkdirAll(workspaceDir, 0755); err != nil {
+			slog.Error("typst: create workspace dir", "dir", workspaceDir, "err", err)
+			return
+		}
+		cleanupLeakedInputs(workspaceDir)
+		materializeAssets(workspaceDir)
+	})
+}
+
+// WorkspaceDir returns the path to the typst workspace dir. Triggers lazy
+// initialization on first call. Used by callers that need to surface the
+// path (admin UI, docs, error messages) without reimplementing the
+// env-var fallback.
+func WorkspaceDir() string {
+	ensureWorkspace()
+	return workspaceDir
+}
 
 // Path returns the full path to the typst CLI binary, or empty string.
 // Searches: TYPST_PATH env, then $PATH, then common locations.
@@ -98,15 +170,20 @@ func CompilePDF(source string) ([]byte, error) {
 }
 
 // compileBoth runs the typst CLI twice on the same source — once for HTML
-// and once for PDF — and returns both. The two compilations share the same
-// temp dir + semaphore slot + timeout, so the second invocation is much
-// cheaper than the first (typst is incremental, the source is already on
-// disk in the OS page cache).
+// and once for PDF — and returns both. Both invocations run with
+// `cmd.Dir = workspaceDir` so relative imports in the source (e.g.
+// `#import "preview.typ"`) resolve from there. The input file and the two
+// output files use a per-invocation unique prefix (UnixNano + PID) so the
+// semaphore's maxConcurrent goroutines can run without trampling each
+// other.
 func compileBoth(source string) (pdf []byte, html string, err error) {
 	bin := Path()
 	if bin == "" {
 		return nil, "", fmt.Errorf("typst: CLI not found")
 	}
+	// Trigger lazy workspace setup (mkdir + materialize + leak cleanup) on
+	// first compile. Tests that don't call CompileHTML never hit this path.
+	ensureWorkspace()
 
 	// Limit concurrent compilations. Both HTML and PDF invocations share
 	// one slot so a request for "give me both" doesn't bypass the cap.
@@ -117,27 +194,29 @@ func compileBoth(source string) (pdf []byte, html string, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), compileTimeout)
 	defer cancel()
 
-	// Write source to a temp .typ file.
-	dir, err := os.MkdirTemp("", "gokych-typst-")
-	if err != nil {
-		return nil, "", fmt.Errorf("typst: create temp dir: %w", err)
-	}
-	defer os.RemoveAll(dir)
+	// Per-invocation unique filename. PID disambiguates two compiles that
+	// happen in the same nanosecond across forked workers (not currently
+	// possible but cheap insurance).
+	suffix := fmt.Sprintf("%d_%d", time.Now().UnixNano(), os.Getpid())
+	inputPath := filepath.Join(workspaceDir, ".input_"+suffix+".typ")
+	htmlPath := filepath.Join(workspaceDir, ".output_"+suffix+".html")
+	pdfPath := filepath.Join(workspaceDir, ".output_"+suffix+".pdf")
+	defer os.Remove(inputPath)
+	defer os.Remove(htmlPath)
+	defer os.Remove(pdfPath)
 
-	inputPath := filepath.Join(dir, "input.typ")
 	if err := os.WriteFile(inputPath, []byte(source), 0600); err != nil {
 		return nil, "", fmt.Errorf("typst: write temp input: %w", err)
 	}
 
 	// Compile HTML.
-	htmlPath := filepath.Join(dir, "output.html")
 	cmd := exec.CommandContext(ctx, bin, "compile",
 		"--format", "html",
 		"--features", "html",
 		inputPath, htmlPath,
 	)
 	cmd.Env = envWhitelist()
-	cmd.Dir = dir
+	cmd.Dir = workspaceDir
 	if output, err := cmd.CombinedOutput(); err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return nil, "", fmt.Errorf("typst: compile timed out after %s", compileTimeout)
@@ -152,10 +231,9 @@ func compileBoth(source string) (pdf []byte, html string, err error) {
 
 	// Compile PDF. typst's default format IS pdf, so we just don't pass
 	// --format. The CLI will still pick up the timeout via ctx.
-	pdfPath := filepath.Join(dir, "output.pdf")
 	cmdPDF := exec.CommandContext(ctx, bin, "compile", inputPath, pdfPath)
 	cmdPDF.Env = envWhitelist()
-	cmdPDF.Dir = dir
+	cmdPDF.Dir = workspaceDir
 	if output, err := cmdPDF.CombinedOutput(); err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return nil, "", fmt.Errorf("typst: pdf compile timed out after %s", compileTimeout)
@@ -264,7 +342,61 @@ func extractBody(html string) string {
 	return strings.TrimSpace(m[1])
 }
 
+// cleanupLeakedInputs removes any `.input_*.typ` / `.output_*.html` /
+// `.output_*.pdf` files left over from a previous crash (process kill,
+// OOM, etc.). Best-effort — missing files are fine.
+func cleanupLeakedInputs(dir string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if strings.HasPrefix(name, ".input_") || strings.HasPrefix(name, ".output_") {
+			os.Remove(filepath.Join(dir, name))
+		}
+	}
+}
+
+// materializeAssets writes the embedded `assets/*.typ` files into the
+// workspace dir. Files that already exist are NOT overwritten (lets users
+// customize preview.typ and keep their edits across restarts). Best-effort:
+// any error is logged and the workspace is still used as-is.
+func materializeAssets(dir string) {
+	entries, err := embeddedTypstFS.ReadDir("assets")
+	if err != nil {
+		// No assets embedded — fine, just log and continue.
+		slog.Info("typst: no embedded assets to materialize", "err", err)
+		return
+	}
+	for _, e := range entries {
+		dst := filepath.Join(dir, e.Name())
+		if _, err := os.Stat(dst); err == nil {
+			continue // user has a local copy; respect it
+		}
+		data, err := embeddedTypstFS.ReadFile("assets/" + e.Name())
+		if err != nil {
+			slog.Error("typst: read embedded asset", "file", e.Name(), "err", err)
+			continue
+		}
+		if err := os.WriteFile(dst, data, 0644); err != nil {
+			slog.Error("typst: materialize asset", "file", e.Name(), "err", err)
+			continue
+		}
+		slog.Info("typst: materialized asset", "file", dst)
+	}
+}
+
 func init() {
+	// Note: workspace setup (mkdir / materialize / leak cleanup) is
+	// intentionally NOT done here. `go test` changes cwd to the package
+	// dir, so a `data/typst` default would pollute the project source
+	// tree. Instead, SetWorkspaceDir (called from main.go) or the lazy
+	// ensureWorkspace in compileBoth handles setup. The CLI path lookup
+	// is a fast read from $PATH and is safe to log here.
 	if p := Path(); p != "" {
 		slog.Info("typst CLI found", "path", p)
 	} else {
