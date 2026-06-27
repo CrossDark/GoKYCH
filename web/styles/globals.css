@@ -504,6 +504,21 @@ hr {
     margin-bottom: 0.5rem;
 }
 
+/* Author block on cards / article header. The avatar circle (inline-flex
+ * from .admin-user-avatar) plus the name sit on the same baseline as the
+ * date / tags that share .article-meta. A faint gap keeps the avatar from
+ * kissing the name on long usernames. */
+.article-author {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    color: var(--text);
+    font-weight: 500;
+}
+.article-author span:not(.admin-user-avatar) {
+    line-height: 1;
+}
+
 .updated-at {
     color: var(--text-muted);
 }

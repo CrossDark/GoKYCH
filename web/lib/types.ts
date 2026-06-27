@@ -29,6 +29,12 @@ export interface Article {
   title: string;
   content: string;
   author_id: number | null;
+  /** Username of the author (LEFT-JOINed from users; empty for anonymous /
+   *  deleted-author rows). Use this to decide whether to show the author
+   *  block at all. */
+  author_name?: string;
+  author_nickname?: string;
+  author_avatar?: string;
   tags: string[];
   created_at: string;
   updated_at: string;

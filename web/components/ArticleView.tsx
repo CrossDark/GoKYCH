@@ -7,6 +7,7 @@ import { RatingWidget } from "./RatingWidget";
 import { CommentSection } from "./CommentSection";
 import { SafeMarkdown } from "./SafeMarkdown";
 import { getMe, getCsrf, addLineComment, apiUrl } from "@/lib/api";
+import { UserAvatar } from "@/components/admin/UserAvatar";
 
 interface Props {
   data: ArticleDetail;
@@ -349,7 +350,21 @@ useEffect(() => {
         <div className="article-type-row"><span className="article-type-badge">{article.type}</span>
           <div className="article-tags">{articleTags.map((tag: string) => <Link key={tag} href={`/labels/${tag}`} className="tag-badge">{tag}</Link>)}</div></div>
         <h1 className="article-title">{article.title}</h1>
-        <div className="article-meta"><time>发布于 {new Date(article.created_at).toLocaleDateString("zh-CN")}</time>
+        <div className="article-meta">
+          {article.author_name && (
+            <span className="article-author">
+              <UserAvatar
+                user={{
+                  nickname: article.author_nickname || "",
+                  username: article.author_name || "",
+                  avatar: article.author_avatar || "",
+                }}
+                size={28}
+              />
+              <span>{article.author_nickname || article.author_name}</span>
+            </span>
+          )}
+          <time>发布于 {new Date(article.created_at).toLocaleDateString("zh-CN")}</time>
           {article.created_at !== article.updated_at && <time className="updated-at">· 更新于 {new Date(article.updated_at).toLocaleDateString("zh-CN")}</time>}
           {article.type === "typst" && (
             <a

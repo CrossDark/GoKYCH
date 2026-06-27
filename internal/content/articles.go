@@ -16,9 +16,16 @@ type Article struct {
 	Title     string    `json:"title"`
 	Content   string    `json:"content"`
 	AuthorID  *int      `json:"author_id"`
-	Tags      []string  `json:"tags,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	// Author* are LEFT-JOINed from users so articles with no author (or with
+	// an author whose user row was deleted) still serialise cleanly. All
+	// three use omitempty so the front-end can render the "no author"
+	// branch just by checking AuthorName === "".
+	AuthorName     string `json:"author_name,omitempty"`
+	AuthorNickname string `json:"author_nickname,omitempty"`
+	AuthorAvatar   string `json:"author_avatar,omitempty"`
+	Tags           []string `json:"tags,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 // ArticleListResult holds a paginated list of articles.
@@ -91,16 +98,21 @@ func ListArticles(db *sql.DB, atype string, authorID *int, page, perPage, before
 	// so the bind list has to grow with it — Go's database/sql rejects a
 	// mismatch between `?` count and arg count, so we always bind the limit
 	// but only bind the cursor when the keyset clause is present.
-	listSQL := `SELECT id, type, slug, title, LEFT(content, 200) AS content, author_id, created_at, updated_at
-		 FROM articles WHERE ` + whereSQL
+	// LEFT JOIN users so author_name/nickname/avatar come back in one query
+	// (avoids the N+1 trap of fetching every author separately for the
+	// homepage list). Anonymous / deleted-author rows surface with empty
+	// author_* — checked via omitempty on the front-end.
+	listSQL := `SELECT a.id, a.type, a.slug, a.title, LEFT(a.content, 200) AS content, a.author_id,
+		            u.username, u.nickname, u.avatar, a.created_at, a.updated_at
+		 FROM articles a LEFT JOIN users u ON u.id = a.author_id WHERE ` + whereSQL
 	listArgs := append(append([]any{}, args...), perPage)
 	if beforeID > 0 {
-		listSQL += " AND id < ?"
+		listSQL += " AND a.id < ?"
 		// Insert beforeID before the trailing limit, matching the new `?` we
 		// just appended to the SQL.
 		listArgs = append(listArgs[:len(listArgs)-1], beforeID, perPage)
 	}
-	listSQL += " ORDER BY id DESC LIMIT ?"
+	listSQL += " ORDER BY a.id DESC LIMIT ?"
 
 	rows, err := db.Query(listSQL, listArgs...)
 	if err != nil {
@@ -111,9 +123,14 @@ func ListArticles(db *sql.DB, atype string, authorID *int, page, perPage, before
 	articles := make([]Article, 0)
 	for rows.Next() {
 		var a Article
-		if err := rows.Scan(&a.ID, &a.Type, &a.Slug, &a.Title, &a.Content, &a.AuthorID, &a.CreatedAt, &a.UpdatedAt); err != nil {
+		var username, nickname, avatar sql.NullString
+		if err := rows.Scan(&a.ID, &a.Type, &a.Slug, &a.Title, &a.Content, &a.AuthorID,
+			&username, &nickname, &avatar, &a.CreatedAt, &a.UpdatedAt); err != nil {
 			return nil, err
 		}
+		a.AuthorName = username.String
+		a.AuthorNickname = nickname.String
+		a.AuthorAvatar = avatar.String
 		articles = append(articles, a)
 	}
 	if err := rows.Err(); err != nil {
@@ -154,13 +171,20 @@ func ListArticles(db *sql.DB, atype string, authorID *int, page, perPage, before
 // GetArticle loads a single article by type and slug.
 func GetArticle(db *sql.DB, atype, slug string) (*Article, error) {
 	a := &Article{}
+	var username, nickname, avatar sql.NullString
 	err := db.QueryRow(
-		`SELECT id, type, slug, title, content, author_id, created_at, updated_at
-		 FROM articles WHERE type = ? AND slug = ?`, atype, slug,
-	).Scan(&a.ID, &a.Type, &a.Slug, &a.Title, &a.Content, &a.AuthorID, &a.CreatedAt, &a.UpdatedAt)
+		`SELECT a.id, a.type, a.slug, a.title, a.content, a.author_id,
+		        u.username, u.nickname, u.avatar, a.created_at, a.updated_at
+		 FROM articles a LEFT JOIN users u ON u.id = a.author_id
+		 WHERE a.type = ? AND a.slug = ?`, atype, slug,
+	).Scan(&a.ID, &a.Type, &a.Slug, &a.Title, &a.Content, &a.AuthorID,
+		&username, &nickname, &avatar, &a.CreatedAt, &a.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
+	a.AuthorName = username.String
+	a.AuthorNickname = nickname.String
+	a.AuthorAvatar = avatar.String
 	tags, err := GetTagsForArticle(db, a.ID)
 	if err != nil {
 		return nil, err
@@ -217,8 +241,10 @@ func DeleteArticle(db *sql.DB, atype, slug string) (bool, error) {
 // ListRecentArticles returns the most recently updated articles across all types.
 func ListRecentArticles(db *sql.DB, limit int) ([]Article, error) {
 	rows, err := db.Query(
-		`SELECT id, type, slug, title, LEFT(content, 200) AS content, author_id, created_at, updated_at
-		 FROM articles ORDER BY updated_at DESC LIMIT ?`, limit)
+		`SELECT a.id, a.type, a.slug, a.title, LEFT(a.content, 200) AS content, a.author_id,
+		        u.username, u.nickname, u.avatar, a.created_at, a.updated_at
+		 FROM articles a LEFT JOIN users u ON u.id = a.author_id
+		 ORDER BY a.updated_at DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -226,9 +252,14 @@ func ListRecentArticles(db *sql.DB, limit int) ([]Article, error) {
 	var articles = make([]Article, 0)
 	for rows.Next() {
 		var a Article
-		if err := rows.Scan(&a.ID, &a.Type, &a.Slug, &a.Title, &a.Content, &a.AuthorID, &a.CreatedAt, &a.UpdatedAt); err != nil {
+		var username, nickname, avatar sql.NullString
+		if err := rows.Scan(&a.ID, &a.Type, &a.Slug, &a.Title, &a.Content, &a.AuthorID,
+			&username, &nickname, &avatar, &a.CreatedAt, &a.UpdatedAt); err != nil {
 			return nil, err
 		}
+		a.AuthorName = username.String
+		a.AuthorNickname = nickname.String
+		a.AuthorAvatar = avatar.String
 		articles = append(articles, a)
 	}
 	if err := rows.Err(); err != nil {
@@ -277,9 +308,11 @@ func SearchArticles(db *sql.DB, q string, page, perPage int) (*ArticleListResult
 	}
 
 	rows, err := db.Query(
-		`SELECT id, type, slug, title, LEFT(content, 200) AS content, author_id, created_at, updated_at
-		 FROM articles WHERE MATCH(title, content) AGAINST(?)
-		 ORDER BY MATCH(title, content) AGAINST(?) DESC, updated_at DESC LIMIT ? OFFSET ?`,
+		`SELECT a.id, a.type, a.slug, a.title, LEFT(a.content, 200) AS content, a.author_id,
+		        u.username, u.nickname, u.avatar, a.created_at, a.updated_at
+		 FROM articles a LEFT JOIN users u ON u.id = a.author_id
+		 WHERE MATCH(a.title, a.content) AGAINST(?)
+		 ORDER BY MATCH(a.title, a.content) AGAINST(?) DESC, a.updated_at DESC LIMIT ? OFFSET ?`,
 		keyword, keyword, perPage, offset,
 	)
 	if err != nil {
@@ -290,9 +323,14 @@ func SearchArticles(db *sql.DB, q string, page, perPage int) (*ArticleListResult
 	articles := make([]Article, 0)
 	for rows.Next() {
 		var a Article
-		if err := rows.Scan(&a.ID, &a.Type, &a.Slug, &a.Title, &a.Content, &a.AuthorID, &a.CreatedAt, &a.UpdatedAt); err != nil {
+		var username, nickname, avatar sql.NullString
+		if err := rows.Scan(&a.ID, &a.Type, &a.Slug, &a.Title, &a.Content, &a.AuthorID,
+			&username, &nickname, &avatar, &a.CreatedAt, &a.UpdatedAt); err != nil {
 			return nil, err
 		}
+		a.AuthorName = username.String
+		a.AuthorNickname = nickname.String
+		a.AuthorAvatar = avatar.String
 		articles = append(articles, a)
 	}
 	if err := rows.Err(); err != nil {
