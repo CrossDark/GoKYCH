@@ -35,6 +35,30 @@ export function apiUrl(path: string): string {
   return `${BASE}${path}`;
 }
 
+/**
+ * Cross-origin fetch wrapper for the admin SPA.
+ *
+ * Bare `fetch()` defaults to `credentials: "same-origin"`, which silently
+ * drops the api.kych.net session cookie when the SPA is hosted on a
+ * different origin (eo.kych.net). Every /api/* call from the browser
+ * MUST go through this so the cookie is attached — otherwise every
+ * owner-gated endpoint 401s with no obvious cause (the request leaves
+ * the browser without a Cookie header, the server sees no session, and
+ * `requireOwner` aborts with 401). See web/app/admin/passkeys/page.tsx
+ * for the canonical bug this guard exists to prevent.
+ *
+ * `request()` already uses this internally; page components should
+ * prefer `request()` (it parses JSON + throws ApiError), and reach for
+ * `apiFetch()` only when the response shape is unusual (e.g. webauthn
+ * flows where the JSON body is consumed inline rather than returned).
+ */
+export function apiFetch(input: string, init?: RequestInit): Promise<Response> {
+  return fetch(input, {
+    ...(typeof window !== "undefined" ? { credentials: "include" } : {}),
+    ...init,
+  });
+}
+
 async function getServerCookies(): Promise<string> {
   if (typeof window !== "undefined") return "";
   try {
@@ -61,8 +85,7 @@ async function request<T>(
     if (cookieStr) headers["Cookie"] = cookieStr;
   }
 
-  const res = await fetch(`${BASE}/api${path}`, {
-    ...(typeof window !== "undefined" ? { credentials: "include" } : {}),
+  const res = await apiFetch(`${BASE}/api${path}`, {
     ...options,
     headers,
   });
@@ -473,7 +496,7 @@ export function uploadFile(csrf: string, file: File) {
       const jar = await cookies();
       const cookieStr = jar.getAll().map((c) => `${c.name}=${c.value}`).join("; ");
       headers["Cookie"] = cookieStr;
-      const res = await fetch(apiUrl("/api/admin/files"), {
+      const res = await apiFetch(apiUrl("/api/admin/files"), {
         method: "POST",
         headers,
         body: fd,
@@ -485,11 +508,10 @@ export function uploadFile(csrf: string, file: File) {
       return res.json() as Promise<{ status: string; filename: string; url: string; deduped?: boolean }>;
     });
   }
-  return fetch(apiUrl("/api/admin/files"), {
+  return apiFetch(apiUrl("/api/admin/files"), {
     method: "POST",
     headers,
     body: fd,
-    credentials: "include",
   }).then(async (res) => {
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));

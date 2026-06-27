@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { getCsrf, getSettings, updateSettings, listThemes, apiUrl } from "@/lib/api";
+import { getCsrf, getSettings, updateSettings, listThemes, apiUrl, apiFetch } from "@/lib/api";
 import type { Theme } from "@/lib/types";
 import { useToast, useBeforeUnload } from "@/lib/admin-feedback";
 import { AdminModal } from "@/components/admin/AdminModal";
@@ -84,7 +84,7 @@ export default function AdminSettings() {
         setLoading(false);
       }).catch(() => setLoading(false));
       // Load uploaded files for file picker
-      fetch(apiUrl("/api/admin/files"), { headers: { "X-CSRF-Token": r.csrf_token } })
+      apiFetch(apiUrl("/api/admin/files"), { headers: { "X-CSRF-Token": r.csrf_token } })
         .then(res => res.json())
         .then(setUploadedFiles)
         .catch(() => {});
@@ -109,7 +109,7 @@ export default function AdminSettings() {
     setFilePickerOpen(true);
     // Refresh file list
     if (csrf) {
-      fetch(apiUrl("/api/admin/files"), { headers: { "X-CSRF-Token": csrf } })
+      apiFetch(apiUrl("/api/admin/files"), { headers: { "X-CSRF-Token": csrf } })
         .then(res => res.json())
         .then(setUploadedFiles)
         .catch(() => {});

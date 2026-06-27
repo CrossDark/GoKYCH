@@ -2,7 +2,7 @@
 
 import { useState, useEffect, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { getCsrf, login, apiUrl } from "@/lib/api";
+import { getCsrf, login, apiUrl, apiFetch } from "@/lib/api";
 
 // Returns true if the browser can run WebAuthn (Touch ID / Windows Hello
 // / Android biometrics / hardware key). On non-supporting browsers we
@@ -31,7 +31,7 @@ function base64UrlToArrayBuffer(s: string): ArrayBuffer {
 
 async function loginWithPasskey() {
   // 1. Get options from server.
-  const begin = await fetch(apiUrl("/api/auth/passkey/login/begin"), {
+  const begin = await apiFetch(apiUrl("/api/auth/passkey/login/begin"), {
     method: "POST",
     headers: { "X-CSRF-Token": getCsrfToken() },
   });
@@ -74,7 +74,7 @@ async function loginWithPasskey() {
         : null,
     },
   };
-  const finish = await fetch(apiUrl("/api/auth/passkey/login/finish"), {
+  const finish = await apiFetch(apiUrl("/api/auth/passkey/login/finish"), {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-CSRF-Token": getCsrfToken() },
     body: JSON.stringify({ credential: responsePayload }),

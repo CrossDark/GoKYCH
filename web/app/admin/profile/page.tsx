@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { getCsrf, getProfile, updateProfile, changeMyPassword, apiUrl } from "@/lib/api";
+import { getCsrf, getProfile, updateProfile, changeMyPassword, apiUrl, apiFetch } from "@/lib/api";
 import type { User } from "@/lib/types";
 import { useToast, useBeforeUnload } from "@/lib/admin-feedback";
 import { AdminModal } from "@/components/admin/AdminModal";
@@ -79,7 +79,7 @@ export default function AdminProfile() {
 
   const loadMyKeys = (token: string) => {
     setMyKeysLoading(true);
-    fetch(apiUrl("/api/auth/passkey"), { headers: { "X-CSRF-Token": token } })
+    apiFetch(apiUrl("/api/auth/passkey"), { headers: { "X-CSRF-Token": token } })
       .then((r) => r.json())
       .then((d: MyPasskey[]) => { setMyKeys(d || []); setMyKeysLoading(false); })
       .catch(() => setMyKeysLoading(false));
@@ -132,7 +132,7 @@ export default function AdminProfile() {
     if (!browserSupports) { toast.error("当前浏览器不支持 WebAuthn。"); return; }
     setRegistering(true);
     try {
-      const begin = await fetch(apiUrl("/api/auth/passkey/register/begin"), {
+      const begin = await apiFetch(apiUrl("/api/auth/passkey/register/begin"), {
         method: "POST", headers: { "X-CSRF-Token": csrf },
       });
       if (!begin.ok) { const e = await begin.json().catch(() => ({})); throw new Error(e.error || "无法开始注册。"); }
@@ -158,7 +158,7 @@ export default function AdminProfile() {
         },
         clientExtensionResults: cred.getClientExtensionResults?.() || {},
       };
-      const finish = await fetch(apiUrl("/api/auth/passkey/register/finish"), {
+      const finish = await apiFetch(apiUrl("/api/auth/passkey/register/finish"), {
         method: "POST", headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf },
         body: JSON.stringify({ name, credential: payload }),
       });
@@ -176,7 +176,7 @@ export default function AdminProfile() {
     if (!pendingDelete) return;
     setDeletingId(pendingDelete.id);
     try {
-      const res = await fetch(apiUrl(`/api/auth/passkey/${pendingDelete.id}`), { method: "DELETE", headers: { "X-CSRF-Token": csrf } });
+      const res = await apiFetch(apiUrl(`/api/auth/passkey/${pendingDelete.id}`), { method: "DELETE", headers: { "X-CSRF-Token": csrf } });
       if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error || "删除失败。"); }
       toast.success(`已撤销「${pendingDelete.name}」。`);
       loadMyKeys(csrf);
