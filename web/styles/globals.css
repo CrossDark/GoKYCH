@@ -103,6 +103,31 @@ header, .site-header {
     text-decoration: none;
 }
 
+/* Site logo image (admin uploads via 「站点信息 → Logo 路径」).
+ * Same look as the admin .admin-user-avatar circle so the brand feels
+ * consistent across the header and the admin shell. */
+.site-logo {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    object-fit: cover;
+    flex-shrink: 0;
+    display: block;
+    background: var(--surface-2);
+}
+.site-logo-fallback {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #2271b1, #72aee6);
+    color: #fff;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1rem;
+    flex-shrink: 0;
+}
+
 .logo-icon {
     width: 32px;
     height: 32px;
@@ -163,6 +188,22 @@ nav a:hover, .nav-link:hover {
     display: flex;
     align-items: center;
     gap: 0.75rem;
+}
+
+/* user-link in the header: avatar + nickname, laid out like a compact
+ * chip. Avatar circle is reused from the admin system (.admin-user-avatar)
+ * so the brand feels consistent. */
+.header-actions .user-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    padding: 0.15rem 0.55rem 0.15rem 0.15rem;
+    border-radius: 999px;
+    transition: background 0.15s ease;
+}
+.header-actions .user-link:hover {
+    background: var(--surface-2);
+    color: var(--accent);
 }
 
 /* Theme Toggle */

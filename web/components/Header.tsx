@@ -5,7 +5,8 @@ import Link from "next/link";
 import { useTheme } from "next-themes";
 import type { User, SubsiteLink } from "@/lib/types";
 import { getMe, listLabels, getSite } from "@/lib/api";
-import type { TagWithCount } from "@/lib/types";
+import type { TagWithCount, SiteConfig } from "@/lib/types";
+import { UserAvatar } from "@/components/admin/UserAvatar";
 
 export function Header() {
   const [user, setUser] = useState<User | null>(null);
@@ -19,6 +20,7 @@ export function Header() {
   // Subsite links (admin-editable nav links, served from /api/site so we
   // don't double-fetch with the homepage).
   const [subsiteLinks, setSubsiteLinks] = useState<SubsiteLink[]>([]);
+  const [site, setSite] = useState<SiteConfig["site"] | null>(null);
 
   useEffect(() => {
     setMounted(true);
@@ -30,10 +32,13 @@ export function Header() {
       .then(setTags)
       .catch(() => {});
     // Load subsite links (and other nav config) from /api/site — one
-    // round-trip covers title/theme/footer-ICP/subsite_links for the
+    // round-trip covers title/theme/footer-ICP/subsite_links/logo for the
     // whole header+layout.
     getSite()
-      .then((d) => setSubsiteLinks(d.subsite_links ?? []))
+      .then((d) => {
+        setSubsiteLinks(d.subsite_links ?? []);
+        setSite(d.site ?? null);
+      })
       .catch(() => {});
   }, []);
 
@@ -60,7 +65,18 @@ export function Header() {
       <header className="site-header">
         <div className="header-inner">
           <Link href="/" className="site-title">
-            跨越晨昏
+            {site?.logo_path ? (
+              // Admin can upload a custom logo under 「站点信息 → Logo 路径」;
+              // the field is /uploads/... or an absolute URL.
+              <img
+                src={site.logo_path}
+                alt={site.title || "site logo"}
+                className="site-logo"
+              />
+            ) : (
+              <span className="site-logo-fallback" aria-hidden="true">🌅</span>
+            )}
+            <span>{site?.title || "跨越晨昏"}</span>
           </Link>
           {/* Middle: admin-editable subsite links */}
           <nav className="header-subsites">
@@ -101,8 +117,9 @@ export function Header() {
               </button>
             )}
             {user ? (
-              <Link href="/admin" className="nav-link user-link">
-                {user.nickname || user.username}
+              <Link href="/admin" className="nav-link user-link" title={`${user.nickname || user.username} · 进入管理后台`}>
+                <UserAvatar user={user} size={28} />
+                <span>{user.nickname || user.username}</span>
               </Link>
             ) : (
               <Link href="/auth/login" className="nav-link">
