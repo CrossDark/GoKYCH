@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"net/http"
 	"regexp"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 
@@ -21,10 +22,13 @@ var safeFilenameRe = regexp.MustCompile(`[^a-zA-Z0-9._-]+`)
 // GET /api/articles/{type}/{slug}/pdf
 //
 // Typst-only: returns the compiled PDF for download. 404s cleanly for any
-// other article type or for typst articles that fail to compile (e.g.
-// typst CLI missing on the host, syntax error in source). The PDF is
-// cached in typst_cache.pdf_content on first request; subsequent
-// requests hit the cache and return instantly.
+// other article type. The PDF is produced at publish time (see
+// typst.CompileAndCache) and stored in typst_cache.pdf_content; this
+// endpoint is a pure read — it does NOT fork the typst CLI. A cache miss
+// (e.g. the article was created before the precompile pipeline shipped,
+// or the publish-time compile failed) returns 404 with a hint message
+// rather than silently re-compiling, because the read path is supposed
+// to be fast.
 func (s *Server) getArticlePDF(c *gin.Context) {
 	atype := c.Param("type")
 	slug := c.Param("slug")
@@ -49,8 +53,17 @@ func (s *Server) getArticlePDF(c *gin.Context) {
 	}
 	pdf, err := typst.CompilePDFCached(a.ID, a.Content)
 	if err != nil {
-		slog.Error("getArticlePDF: compile", "article_id", a.ID, "err", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "PDF 编译失败。"})
+		// Cache miss = no publish-time compile (yet). Don't 500 — the
+		// article exists, the cache just hasn't been seeded. 404 is
+		// honest; the operator can re-save the article to trigger
+		// precompile.
+		if strings.Contains(err.Error(), "no cached PDF") {
+			slog.Info("getArticlePDF: cache miss", "article_id", a.ID)
+			c.JSON(http.StatusNotFound, gin.H{"error": "PDF 尚未生成,请重新发布文章后再试。"})
+			return
+		}
+		slog.Error("getArticlePDF: cache lookup", "article_id", a.ID, "err", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "PDF 加载失败。"})
 		return
 	}
 	if len(pdf) == 0 {

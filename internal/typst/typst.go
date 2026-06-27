@@ -250,80 +250,104 @@ func compileBoth(source string) (pdf []byte, html string, err error) {
 	return pdf, html, nil
 }
 
-// CompileHTMLCached is CompileHTML wrapped with a DB-backed cache keyed on
-// articleID (the typst_cache table). On a cache miss it compiles and writes
-// the result back. With no DB configured (SetDB not called) it degrades to a
-// plain CompileHTML. Cache I/O errors are best-effort: lookups that fail fall
-// through to compilation, write failures only log.
+// CompileAndCache is the eager-precompile path used at article publish time:
+// it runs the typst CLI once to produce BOTH HTML and PDF, then persists
+// both into typst_cache. After publish, readers hit CompileHTMLCached /
+// CompilePDFCached (read-only SELECT) and never pay the compile cost.
+//
+// Fail-fast: a partial result (e.g. HTML ok but PDF empty) is treated as a
+// hard error — we never write a half-populated row, because a follow-up
+// read would see "HTML present, PDF missing" and the PDF endpoint would 404
+// for an article that exists. Returning an error lets the caller reject
+// the publish instead of leaking inconsistent state.
+//
+// Requires SetDB to have been called. If typst isn't installed the error
+// surfaces as a clear "CLI not found" message, which the admin handler
+// translates into a 400 with a hint.
+func CompileAndCache(articleID int, source string) error {
+	if db == nil {
+		return errors.New("typst: db not configured (SetDB not called)")
+	}
+	if articleID <= 0 {
+		return errors.New("typst: invalid article id")
+	}
+	pdf, html, err := compileBoth(source)
+	if err != nil {
+		return err
+	}
+	if html == "" {
+		return errors.New("typst: HTML compile produced empty output")
+	}
+	if len(pdf) == 0 {
+		return errors.New("typst: PDF compile produced empty output (typst CLI failed or syntax error)")
+	}
+	if _, err := db.Exec(
+		`INSERT INTO typst_cache (article_id, html_content, pdf_content)
+		 VALUES (?, ?, ?)
+		 ON DUPLICATE KEY UPDATE
+		   html_content = VALUES(html_content),
+		   pdf_content  = VALUES(pdf_content),
+		   compiled_at  = CURRENT_TIMESTAMP`,
+		articleID, html, pdf,
+	); err != nil {
+		return fmt.Errorf("typst: cache write failed: %w", err)
+	}
+	return nil
+}
+
+// CompileHTMLCached is the READ-ONLY cache lookup for articleID. It does
+// NOT fall back to CompileHTML — a missing row is a hard miss that the
+// renderer must surface as a "pending compile" placeholder, because the
+// compile happens at publish time (see CompileAndCache). If you need
+// unconditional compilation, call CompileHTML(source) directly.
+//
+// The db == nil branch is kept for tests / partial setups where the typst
+// package is used without a database — in that case the function still
+// returns a clear "no cache available" error rather than silently
+// recompiling (the previous behaviour masked the bug where a fresh DB
+// would re-fork typst on every request).
 func CompileHTMLCached(articleID int, source string) (string, error) {
 	if db == nil || articleID <= 0 {
-		return CompileHTML(source)
+		return "", fmt.Errorf("typst: cache unavailable (db=%v, articleID=%d)", db, articleID)
 	}
 	var html string
 	err := db.QueryRow(
 		`SELECT html_content FROM typst_cache WHERE article_id = ?`, articleID,
 	).Scan(&html)
-	if err == nil && html != "" {
-		return html, nil
-	}
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		slog.Error("typst cache lookup", "article_id", articleID, "err", err)
-	}
-	body, err := CompileHTML(source)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", fmt.Errorf("typst: no cached HTML for article %d (publish-time compile pending?)", articleID)
+		}
+		slog.Error("typst cache lookup", "article_id", articleID, "err", err)
 		return "", err
 	}
-	// pdf_content is NOT NULL in the schema; we only cache HTML here so store
-	// an empty blob. ON DUPLICATE KEY UPDATE refreshes html + compiled_at.
-	if _, werr := db.Exec(
-		`INSERT INTO typst_cache (article_id, html_content, pdf_content)
-		 VALUES (?, ?, ?)
-		 ON DUPLICATE KEY UPDATE html_content = VALUES(html_content), compiled_at = CURRENT_TIMESTAMP`,
-		articleID, body, []byte{},
-	); werr != nil {
-		slog.Error("typst cache write", "article_id", articleID, "err", werr)
+	if html == "" {
+		return "", fmt.Errorf("typst: empty HTML cache for article %d", articleID)
 	}
-	return body, nil
+	return html, nil
 }
 
-// CompilePDFCached returns the cached PDF for articleID, compiling + caching
-// on miss. Returns nil bytes (no error) if typst isn't installed or the
-// PDF compile failed — the caller should fall back to a 404 / "PDF
-// unavailable" message rather than 500'ing the page.
+// CompilePDFCached is the READ-ONLY cache lookup for articleID. Same
+// fail-fast contract as CompileHTMLCached: a miss is an error, not a
+// trigger for fresh compilation. The PDF endpoint translates this into a
+// 503/404 with a "PDF not yet generated" message.
 func CompilePDFCached(articleID int, source string) ([]byte, error) {
 	if db == nil || articleID <= 0 {
-		return CompilePDF(source)
+		return nil, fmt.Errorf("typst: cache unavailable (db=%v, articleID=%d)", db, articleID)
 	}
-	var cached []byte
+	var pdf []byte
 	err := db.QueryRow(
 		`SELECT pdf_content FROM typst_cache WHERE article_id = ?`, articleID,
-	).Scan(&cached)
-	if err == nil && len(cached) > 0 {
-		return cached, nil
-	}
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	).Scan(&pdf)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("typst: no cached PDF for article %d (publish-time compile pending?)", articleID)
+		}
 		slog.Error("typst pdf cache lookup", "article_id", articleID, "err", err)
+		return nil, err
 	}
-	pdf, err := CompilePDF(source)
-	if err != nil || len(pdf) == 0 {
-		return pdf, err
-	}
-	// Persist the PDF into typst_cache. We use INSERT ... ON DUPLICATE KEY
-	// UPDATE so a PDF-first visit (no prior HTML render → no cache row yet)
-	// caches just as well as the HTML-first path. The previous code did an
-	// UPDATE then a conditional INSERT, but db.Exec returns a nil error
-	// even when the UPDATE matched zero rows, so the INSERT fallback never
-	// ran and PDFs were recompiled on every request when no HTML view had
-	// seeded the row.
-	//
-	// We only touch pdf_content + compiled_at here so a cached HTML result
-	// is preserved when the article was already HTML-rendered.
-	if _, werr := db.Exec(
-		`INSERT INTO typst_cache (article_id, html_content, pdf_content)
-		 VALUES (?, ?, ?)
-		 ON DUPLICATE KEY UPDATE pdf_content = VALUES(pdf_content), compiled_at = CURRENT_TIMESTAMP`,
-		articleID, "", pdf); werr != nil {
-		slog.Error("typst pdf cache write", "article_id", articleID, "err", werr)
+	if len(pdf) == 0 {
+		return nil, fmt.Errorf("typst: empty PDF cache for article %d", articleID)
 	}
 	return pdf, nil
 }

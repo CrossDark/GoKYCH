@@ -14,6 +14,7 @@ import (
 	"gokych/internal/auth/user"
 	"gokych/internal/content"
 	"gokych/internal/content/parsers"
+	"gokych/internal/typst"
 )
 
 // slugRe defines the charset an article slug may use. We allow any Unicode
@@ -243,6 +244,28 @@ func (s *Server) createArticle(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "创建文章失败。"})
 		return
 	}
+	// Typst articles are precompiled at publish time: we fork the typst
+	// CLI here to produce both HTML and PDF and write them into
+	// typst_cache. Readers (the public article page, the PDF download
+	// endpoint) then hit the cache directly and never pay the compile
+	// cost. A compile failure here means the article won't be readable
+	// until the source is fixed — better to reject the publish than ship
+	// an article that renders as "pending compile" forever.
+	if atype == "typst" {
+		if cerr := typst.CompileAndCache(a.ID, in.Content); cerr != nil {
+			slog.Error("createArticle: typst precompile failed", "article_id", a.ID, "err", cerr)
+			// Roll back the article we just inserted so the slug is free
+			// for a corrected re-submit. Tag table is empty (we haven't
+			// attached tags yet) so no extra cleanup needed.
+			if _, derr := s.DB.Exec(`DELETE FROM articles WHERE id = ?`, a.ID); derr != nil {
+				slog.Error("createArticle: rollback after precompile failure", "article_id", a.ID, "err", derr)
+			}
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": "Typst 编译失败,文章未发布：" + cerr.Error() + "。请修正源文件后重新发布。",
+			})
+			return
+		}
+	}
 	if len(in.Tags) > 0 {
 		_ = content.SetArticleTags(s.DB, a.ID, in.Tags)
 	}
@@ -285,6 +308,33 @@ func (s *Server) updateArticle(c *gin.Context) {
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "更新文章失败。"})
 		return
+	}
+	// Typst articles: refresh the precompiled cache after a successful
+	// source update. On failure we restore the previous title/content so
+	// the editor shows the article in the state the user last saw
+	// success — better than silently leaving a "no cache" state that
+	// renders as a placeholder. content.UpdateArticle has already
+	// invalidated typst_cache by deleting the row, so a failed compile
+	// here leaves the article in a clean "no cache" state and the
+	// precompile restoration brings the source back to its prior version.
+	if atype == "typst" {
+		if cerr := typst.CompileAndCache(a.ID, in.Content); cerr != nil {
+			slog.Error("updateArticle: typst precompile failed, reverting", "article_id", a.ID, "err", cerr)
+			if _, rerr := s.DB.Exec(
+				`UPDATE articles SET title = ?, content = ? WHERE id = ?`,
+				a.Title, a.Content, a.ID,
+			); rerr != nil {
+				// If the restore itself failed, we're in a bad spot: the
+				// article has the new content but no cache. Log loudly so
+				// the operator knows the source-vs-cache state is split.
+				slog.Error("updateArticle: revert UPDATE failed; article left in inconsistent state",
+					"article_id", a.ID, "revert_err", rerr)
+			}
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": "Typst 编译失败,内容已恢复为上次保存的版本：" + cerr.Error() + "。请修正源文件后重新保存。",
+			})
+			return
+		}
 	}
 	if in.Tags != nil {
 		_ = content.SetArticleTags(s.DB, a.ID, in.Tags)

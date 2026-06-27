@@ -73,17 +73,28 @@ func IsValidType(t string) bool {
 // Currently a no-op because admin-authored HTML is trusted.
 func sanitizeHTML(s string) string { return s }
 
-// renderTypst compiles typst source to HTML via the typst CLI, consulting the
-// typst_cache table keyed on articleID. Falls back to a placeholder if
-// compilation fails or CLI is missing.
+// renderTypst reads the cached HTML for articleID from typst_cache. The
+// compile happens at publish time (see typst.CompileAndCache), so this
+// path is a pure SELECT — readers never fork the typst CLI. A cache miss
+// (e.g. an article created before the precompile pipeline was added) is
+// surfaced as a "pending compile" placeholder, NOT a fallback compile,
+// because doing the compile here would defeat the whole point of the
+// performance optimisation.
 func renderTypst(articleID int, source string) string {
 	if !typst.Available() {
-		return "<p><em>Typst 编译器未安装。</em></p>"
+		return `<p><em>Typst 编译器未安装,无法渲染本文。</em></p>`
 	}
 	body, err := typst.CompileHTMLCached(articleID, source)
 	if err != nil {
-		slog.Error("typst compile", "err", err)
-		return "<p><em>Typst 编译失败：" + err.Error() + "</em></p>"
+		// Cache miss is the expected "first view, no publish yet" state; log
+		// at Info, not Error, so the operator's log doesn't light up red
+		// for every legacy article that pre-dates precompile.
+		if strings.Contains(err.Error(), "no cached HTML") {
+			slog.Info("typst render: cache miss", "article_id", articleID)
+			return `<p><em>本文档尚未编译完成,请稍后再试,或联系管理员重新发布。</em></p>`
+		}
+		slog.Error("typst render", "article_id", articleID, "err", err)
+		return `<p><em>Typst 渲染失败:` + err.Error() + `</em></p>`
 	}
 	return body
 }
