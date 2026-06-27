@@ -105,6 +105,40 @@ brew install typst       # macOS
 
 `TYPST_PATH` 环境变量可指自定义路径,优先级高于 `$PATH`。
 
+### 3.4b typst 文章:HTML 中文正常,PDF 显示成方块 / 缺字
+
+HTML 路径走的是 typst → CSS,浏览器用系统字体 fallback,所以页面 OK。
+PDF 路径 typst 用本地字体,**没有 CJK 字体就 missing glyph**。
+
+模板 `internal/typst/assets/template.typ` 列了跨平台字体名(Noto Serif CJK
+SC / Songti SC / SimSun / PingFang SC / Sarasa Gothic SC / ...),但本机
+或 VM 没装就不会生效。本地编译前先确认 `fc-list :lang=zh` 至少有
+`Noto Serif CJK SC`(生产环境 deployment.md §2.1 已经加 `apt install
+fonts-noto-cjk fonts-wqy-microhei`)。
+
+```bash
+# Linux 装 CJK 字体
+sudo apt install fonts-noto-cjk fonts-wqy-microhei
+
+# macOS 自带 PingFang / Hiragino,无需操作;装 Sarasa Gothic SC 的话:
+# brew tap homebrew/cask-fonts && brew install --cask font-sarasa-gothic-sc
+```
+
+typst 0.10+ 的 `set text(font: (a, b, c))` 列表是 per-glyph fallback —
+对每个字符找第一个有该字形的字体。所以列表越长越鲁棒,多塞几个
+平台专属字体名不会"乱",反而是保护。
+
+快速验证:手动编译一个 typst 文章,看 PDF 里的 BaseFont:
+
+```bash
+typst compile /path/to/article.typ /tmp/out.pdf
+strings /tmp/out.pdf | grep -oE 'BaseFont/[^/]+/' | sort -u
+# 期望看到 NotoSerifCJKsc-* 或 PingFangSC-* 之类,而不是 LiberationSerif
+```
+
+如果 BaseFont 全是 Liberation Serif / Helvetica 之类 Latin 字体,说明
+CJK 字体没装上,得补。
+
 ### 3.5 typst 文章:`#import "template.typ"` 失败
 
 `template.typ` 由后端在 `SetWorkspaceDir` 时从 `embed.FS` 物化到

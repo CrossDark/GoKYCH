@@ -72,6 +72,13 @@ SSR 跨域 + `credentials: "include"` 时 Session cookie 由 Next.js
 sudo apt update && sudo apt -y upgrade
 sudo apt -y install mysql-server nginx certbot python3-certbot-nginx rsync
 
+# 中文字体 — typst 编译 PDF 时必须。如果不装,所有 typst 文章的
+# PDF 下载会显示成方块(HTML 路径不受影响,因为前端会用浏览器系统
+# 字体 fallback;PDF 路径 typst 必须用本地字体,本地没有就 missing glyph)。
+# `fonts-noto-cjk` 提供 Noto Serif/Sans CJK SC,覆盖正文和 heading;
+# `fonts-wqy-microhei` 是更轻量的兜底,文章注释里出现生僻字时备选。
+sudo apt -y install fonts-noto-cjk fonts-wqy-microhei
+
 # 防火墙：只开 22 + 80 + 443
 sudo ufw allow 22/tcp
 sudo ufw allow 80/tcp

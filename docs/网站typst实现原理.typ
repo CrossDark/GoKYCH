@@ -170,8 +170,21 @@ compileSem     = make(chan struct{}, maxConcurrent)
 
 - typst CLI 必须装(debian: `apt install typst`,macOS: `brew install typst`,
   prebuilt: GitHub releases)
-- 中文字体:`template.typ` 用 `Noto Serif CJK SC` 等,系统得装对应
-  font 包(debian: `fonts-noto-cjk`,macOS 自带)
+- *中文字体*:`template.typ` 顶部声明跨平台 fallback 链
+  (`cjk-serif` / `cjk-sans` / `mono`),覆盖 Noto Serif CJK SC /
+  Source Han Serif SC / Songti SC / STSong / SimSun / PingFang SC /
+  Hiragino Sans GB / Sarasa Gothic SC / WenQuanYi Zen Hei 等。
+  typst 0.10+ 的字体列表是 per-glyph fallback — 对每个字符在列表
+  里找第一个有该字形的字体,所以列表越全越鲁棒。生产 VM 必须装:
+  `apt install fonts-noto-cjk fonts-wqy-microhei`(详见
+  `docs/deployment.md` §2.1 和 `docs/development.md` §3.4b)。*不装
+  的话 PDF 路径会显示 missing glyph 方块*,HTML 路径不受影响
+  (浏览器有系统字体 fallback)
+- 代码块 CJK 兜底:`template.typ` 的 `mono` 字体链里特意把
+  `Sarasa Mono SC` 放在靠后位置 — typst 源码示例里经常出现
+  `中文注释 + ASCII 标记` 混排,纯 mono 字体(JetBrains Mono /
+  Fira Code)没有 CJK 字形,fallback 不到中文字体会方块。
+  Sarasa Mono 是 mono 字体的 CJK 完整变体,装了就兜住
 - workspace 目录磁盘空间:PDF 缓存随文章增长,长文单篇可能几 MB;
   100 篇 1MB 文章 ≈ 100MB typst_cache,定期 audit
 - 后端内存:LONGBLOB 直接存 `pdf_content`,MySQL buffer pool 会
