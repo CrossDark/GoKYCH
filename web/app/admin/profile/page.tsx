@@ -5,6 +5,7 @@ import { getCsrf, getProfile, updateProfile, changeMyPassword, apiUrl, apiFetch 
 import type { User } from "@/lib/types";
 import { useToast, useBeforeUnload } from "@/lib/admin-feedback";
 import { AdminModal } from "@/components/admin/AdminModal";
+import { UserAvatar } from "@/components/admin/UserAvatar";
 
 // ── WebAuthn helpers (duplicated from the login page; kept local so this
 //    page stays self-contained) ─────────────────────────────────────────
@@ -207,9 +208,7 @@ export default function AdminProfile() {
         <div className="admin-card-header"><h2>👤 账号信息</h2></div>
         <div className="admin-card-body">
           <div style={{ display: "flex", alignItems: "center", gap: "1rem", flexWrap: "wrap" }}>
-            <div className="admin-user-avatar" style={{ width: 56, height: 56, fontSize: "1.2rem" }}>
-              {(user.nickname?.[0] || user.username[0] || "?").toUpperCase()}
-            </div>
+            <UserAvatar user={user} size={56} />
             <div style={{ flex: 1, minWidth: 200 }}>
               <div style={{ fontWeight: 600, fontSize: "1rem" }}>{user.nickname || user.username}</div>
               <div style={{ color: "var(--text-muted)", fontSize: "0.85rem", marginTop: 2 }}>

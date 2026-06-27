@@ -6,6 +6,7 @@ import Link from "next/link";
 import { getMe, getCsrf, logout } from "@/lib/api";
 import type { User } from "@/lib/types";
 import { ToastProvider, useToast } from "@/lib/admin-feedback";
+import { UserAvatar } from "@/components/admin/UserAvatar";
 
 // Map pathname → breadcrumb label + optional parent. The "articles" entries
 // are looked up dynamically because their label flips between "文章管理"
@@ -187,7 +188,6 @@ function AdminLayoutInner({ children }: { children: React.ReactNode }) {
       ];
 
   const crumb = getBreadcrumb(pathname, user.role);
-  const avatarChar = user.nickname?.[0] || user.username[0] || "?";
 
   return (
     <div className="wp-admin-wrap">
@@ -239,7 +239,7 @@ function AdminLayoutInner({ children }: { children: React.ReactNode }) {
 
         <div className="wp-admin-sidebar-footer">
           <Link href="/admin/profile" className="wp-admin-user" onClick={() => setSidebarOpen(false)}>
-            <span className="wp-admin-user-avatar">{avatarChar}</span>
+            <UserAvatar user={user} size={28} />
             <div>
               <div className="wp-admin-user-name">{user.nickname || user.username}</div>
               <div className="wp-admin-user-role">{user.role}</div>
@@ -283,7 +283,7 @@ function AdminLayoutInner({ children }: { children: React.ReactNode }) {
                 aria-haspopup="menu"
                 aria-expanded={userMenuOpen}
               >
-                <span className="admin-user-avatar">{avatarChar}</span>
+                <UserAvatar user={user} size={28} />
                 <span>{user.nickname || user.username}</span>
                 <span className="admin-user-menu-arrow">▾</span>
               </button>

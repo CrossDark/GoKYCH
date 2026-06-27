@@ -5,6 +5,7 @@ import { getCsrf, listUsers, createUser, updateUserRole, deleteUser } from "@/li
 import type { User } from "@/lib/types";
 import { useToast, useBeforeUnload } from "@/lib/admin-feedback";
 import { AdminConfirm } from "@/components/admin/AdminConfirm";
+import { UserAvatar } from "@/components/admin/UserAvatar";
 
 const ROLE_BADGE: Record<string, string> = {
   owner: "danger",
@@ -232,9 +233,7 @@ export default function AdminUsers() {
                     <td className="col-id">{u.id}</td>
                     <td className="col-title">
                       <span style={{ display: "inline-flex", alignItems: "center", gap: "0.5rem" }}>
-                        <span className="admin-user-avatar" style={{ width: 24, height: 24, fontSize: "0.7rem" }}>
-                          {(u.nickname?.[0] || u.username[0] || "?").toUpperCase()}
-                        </span>
+                        <UserAvatar user={u} size={24} />
                         {u.username}
                       </span>
                     </td>
