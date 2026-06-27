@@ -3,8 +3,8 @@
 import { useState, useEffect, useRef } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import Link from "next/link";
-import { getMe, getCsrf, logout } from "@/lib/api";
-import type { User } from "@/lib/types";
+import { getMe, getCsrf, logout, getSite } from "@/lib/api";
+import type { User, SiteConfig } from "@/lib/types";
 import { ToastProvider, useToast } from "@/lib/admin-feedback";
 import { UserAvatar } from "@/components/admin/UserAvatar";
 
@@ -61,9 +61,16 @@ function AdminLayoutInner({ children }: { children: React.ReactNode }) {
   const [csrfToken, setCsrfToken] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const [site, setSite] = useState<SiteConfig["site"] | null>(null);
+  const [brandLogoFailed, setBrandLogoFailed] = useState(false);
   const userMenuRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
+    // Sidebar brand uses the same site logo as the public Header. Fetched
+    // here rather than in the public Header so the admin SPA doesn't need
+    // to share a context — both pages already pay for one /api/site each
+    // and the response is cached at the EdgeOne edge for everyone.
+    getSite().then((d) => setSite(d.site ?? null)).catch(() => {});
     getMe().then((r) => {
       if (!r.user) {
         router.push("/auth/login?next=" + encodeURIComponent(pathname));
@@ -94,6 +101,12 @@ function AdminLayoutInner({ children }: { children: React.ReactNode }) {
   }, []);
 
   // Close user menu on outside click
+  useEffect(() => {
+    // Reset brand-logo failure flag whenever the admin changes the
+    // configured logo URL — otherwise a transient 404 would stick.
+    setBrandLogoFailed(false);
+  }, [site?.logo_path]);
+
   useEffect(() => {
     if (!userMenuOpen) return;
     const handler = (e: MouseEvent) => {
@@ -208,9 +221,18 @@ function AdminLayoutInner({ children }: { children: React.ReactNode }) {
       {/* Sidebar */}
       <aside className={`wp-admin-sidebar ${sidebarOpen ? "open" : ""}`}>
         <Link href="/" className="wp-admin-brand">
-          <div className="wp-admin-brand-icon">KY</div>
+          {site?.logo_path && !brandLogoFailed ? (
+            <img
+              src={site.logo_path}
+              alt={site.title || "site logo"}
+              className="wp-admin-brand-icon"
+              onError={() => setBrandLogoFailed(true)}
+            />
+          ) : (
+            <div className="wp-admin-brand-icon wp-admin-brand-icon-fallback">KY</div>
+          )}
           <div>
-            <div className="wp-admin-brand-name">跨越晨昏</div>
+            <div className="wp-admin-brand-name">{site?.title || "跨越晨昏"}</div>
             <div className="wp-admin-brand-desc">管理后台</div>
           </div>
         </Link>

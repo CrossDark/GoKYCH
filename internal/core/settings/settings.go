@@ -18,8 +18,13 @@ func Default() map[string]interface{} {
 			"description":  "",
 			"language":     "zh-CN",
 			"timezone":     "Asia/Shanghai",
-			"logo_path":    "/static/img/logo.png",
-			"favicon_path": "/static/img/favicon.ico",
+			// Empty by default — older settings.yml shipped "/static/img/logo.png"
+			// which is a server-relative path that the EdgeOne-hosted SPA can't
+			// resolve (no /static rewrite on the frontend origin). Empty →
+			// the frontend renders the 🌅 fallback; admin uploads /uploads/xxx
+			// via the file picker to set a real one.
+			"logo_path":    "",
+			"favicon_path": "",
 			"icp_number":   "",
 		},
 		"appearance": map[string]interface{}{

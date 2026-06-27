@@ -21,6 +21,12 @@ export function Header() {
   // don't double-fetch with the homepage).
   const [subsiteLinks, setSubsiteLinks] = useState<SubsiteLink[]>([]);
   const [site, setSite] = useState<SiteConfig["site"] | null>(null);
+  // When site.logo_path points at a 404 (older settings still carry
+  // "/static/img/logo.png" which the SPA origin can't serve) we don't want
+  // a broken-image icon in the header — flip to the 🌅 fallback instead.
+  // Reset on URL change so editing the setting in /admin/settings kicks in.
+  const [logoFailed, setLogoFailed] = useState(false);
+  useEffect(() => { setLogoFailed(false); }, [site?.logo_path]);
 
   useEffect(() => {
     setMounted(true);
@@ -65,13 +71,15 @@ export function Header() {
       <header className="site-header">
         <div className="header-inner">
           <Link href="/" className="site-title">
-            {site?.logo_path ? (
+            {site?.logo_path && !logoFailed ? (
               // Admin can upload a custom logo under 「站点信息 → Logo 路径」;
-              // the field is /uploads/... or an absolute URL.
+              // the field is /uploads/... or an absolute URL. onError flips
+              // logoFailed → fallback 🌅 pill renders instead.
               <img
                 src={site.logo_path}
                 alt={site.title || "site logo"}
                 className="site-logo"
+                onError={() => setLogoFailed(true)}
               />
             ) : (
               <span className="site-logo-fallback" aria-hidden="true">🌅</span>

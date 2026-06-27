@@ -1,5 +1,6 @@
 "use client";
 
+import { useState, useEffect } from "react";
 import type { User } from "@/lib/types";
 
 interface UserAvatarProps {
@@ -26,6 +27,10 @@ interface UserAvatarProps {
  * 3rd-party CDN serving the avatar without ACAO is still shown — a
  * broken CORS response from <img> just fails the decode and we fall
  * back to the letter on next render.
+ *
+ * The img's onError flips a local flag back to the letter branch so a
+ * stale avatar URL (Gravatar returning 404, user deleted the file at
+ * /uploads/foo.png) doesn't leave a broken-image icon on screen.
  */
 export function UserAvatar({ user, size = 28, className = "", large = false }: UserAvatarProps) {
   const nickname = user?.nickname || "";
@@ -33,9 +38,15 @@ export function UserAvatar({ user, size = 28, className = "", large = false }: U
   const avatar = user?.avatar?.trim() || "";
   const char = (nickname[0] || username[0] || "?").toUpperCase();
   const fontSize = large ? size * 0.4 : Math.max(size * 0.42, 10);
-  // Outer wrapper keeps the gradient as the visible base if the <img>
-  // fails to load (network error, CORS, 404 on /uploads/...); the img
-  // sits on top and is fully circular via overflow:hidden.
+  // Once we've seen an <img> error for THIS avatar URL we won't try again
+  // for this render — re-keying the component (e.g. by changing user.id)
+  // resets the flag because the state lives on this instance.
+  const [imgFailed, setImgFailed] = useState(false);
+  // Reset on URL change so an admin who updates their avatar (e.g. setting
+  // a new URL in /admin/profile) sees the new image rather than a stale
+  // failure flag from a previous attempt.
+  useEffect(() => { setImgFailed(false); }, [avatar]);
+  const showImg = avatar && !imgFailed;
   return (
     <span
       className={`admin-user-avatar ${className}`}
@@ -52,15 +63,16 @@ export function UserAvatar({ user, size = 28, className = "", large = false }: U
         // state. When we render an <img> we want the gradient gone — a
         // user's avatar is often a transparent PNG and the blue circle
         // behind it shows through as an unintended backdrop.
-        ...(avatar ? { background: "transparent" } : {}),
+        ...(showImg ? { background: "transparent" } : {}),
       }}
-      aria-hidden={avatar ? true : undefined}
+      aria-hidden={showImg ? true : undefined}
     >
-      {avatar ? (
+      {showImg ? (
         <img
           src={avatar}
           alt=""
           referrerPolicy="no-referrer"
+          onError={() => setImgFailed(true)}
           style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
         />
       ) : (

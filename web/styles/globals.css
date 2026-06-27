@@ -1811,6 +1811,19 @@ hr {
     font-size: 0.72rem;
     flex-shrink: 0;
 }
+/* When site.logo_path is set, the <img> replaces the static "KY"
+ * block — keep the same 28×28 box but make the image circular and
+ * cover-fit so user-uploaded logos don't crop awkwardly. */
+.wp-admin-brand-icon[src] {
+    border-radius: 50%;
+    object-fit: cover;
+    background: transparent;
+}
+/* Fallback when the configured logo URL 404s: the same 28×28 box but
+ * in the brand colour, showing "KY" — same as the original. */
+.wp-admin-brand-icon.wp-admin-brand-icon-fallback {
+    border-radius: 0;
+}
 
 .wp-admin-brand-name {
     font-size: 0.8rem;
