@@ -18,13 +18,16 @@ var ValidRoles = []string{RoleUser, RoleAdmin, RoleOwner}
 
 // User represents a user record without the password hash.
 type User struct {
-	ID        int       `json:"id"`
-	Username  string    `json:"username"`
-	Nickname  string    `json:"nickname"`
-	Role      string    `json:"role"`
-	Avatar    string    `json:"avatar"`
-	Bio       string    `json:"bio"`
-	CreatedAt time.Time `json:"created_at"`
+	ID           int       `json:"id"`
+	Username     string    `json:"username"`
+	Nickname     string    `json:"nickname"`
+	Role         string    `json:"role"`
+	Avatar       string    `json:"avatar"`
+	Bio          string    `json:"bio"`
+	SocialEmail  string    `json:"social_email"`
+	SocialGithub string    `json:"social_github"`
+	SocialQQ     string    `json:"social_qq"`
+	CreatedAt    time.Time `json:"created_at"`
 }
 
 // Exists reports whether an error is sql.ErrNoRows (user not found).
@@ -49,32 +52,42 @@ func IsOwner(role string) bool { return role == RoleOwner }
 // GetByUsername loads a user (without password hash) by username.
 func GetByUsername(db *sql.DB, username string) (*User, error) {
 	u := &User{}
-	var avatar, bio sql.NullString
+	var avatar, bio, socialEmail, socialGithub, socialQQ sql.NullString
 	err := db.QueryRow(
-		`SELECT id, username, nickname, role, avatar, bio, created_at
+		`SELECT id, username, nickname, role, avatar, bio,
+		        social_email, social_github, social_qq, created_at
 		 FROM users WHERE username = ?`, username,
-	).Scan(&u.ID, &u.Username, &u.Nickname, &u.Role, &avatar, &bio, &u.CreatedAt)
+	).Scan(&u.ID, &u.Username, &u.Nickname, &u.Role, &avatar, &bio,
+		&socialEmail, &socialGithub, &socialQQ, &u.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
 	u.Avatar = avatar.String
 	u.Bio = bio.String
+	u.SocialEmail = socialEmail.String
+	u.SocialGithub = socialGithub.String
+	u.SocialQQ = socialQQ.String
 	return u, nil
 }
 
 // GetByID loads a user by id.
 func GetByID(db *sql.DB, id int) (*User, error) {
 	u := &User{}
-	var avatar, bio sql.NullString
+	var avatar, bio, socialEmail, socialGithub, socialQQ sql.NullString
 	err := db.QueryRow(
-		`SELECT id, username, nickname, role, avatar, bio, created_at
+		`SELECT id, username, nickname, role, avatar, bio,
+		        social_email, social_github, social_qq, created_at
 		 FROM users WHERE id = ?`, id,
-	).Scan(&u.ID, &u.Username, &u.Nickname, &u.Role, &avatar, &bio, &u.CreatedAt)
+	).Scan(&u.ID, &u.Username, &u.Nickname, &u.Role, &avatar, &bio,
+		&socialEmail, &socialGithub, &socialQQ, &u.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
 	u.Avatar = avatar.String
 	u.Bio = bio.String
+	u.SocialEmail = socialEmail.String
+	u.SocialGithub = socialGithub.String
+	u.SocialQQ = socialQQ.String
 	return u, nil
 }
 
@@ -86,16 +99,21 @@ type UserWithPassword struct {
 
 func GetWithPassword(db *sql.DB, username string) (*UserWithPassword, error) {
 	u := &UserWithPassword{}
-	var avatar, bio sql.NullString
+	var avatar, bio, socialEmail, socialGithub, socialQQ sql.NullString
 	err := db.QueryRow(
-		`SELECT id, username, nickname, role, avatar, bio, created_at, password_hash
+		`SELECT id, username, nickname, role, avatar, bio,
+		        social_email, social_github, social_qq, created_at, password_hash
 		 FROM users WHERE username = ?`, username,
-	).Scan(&u.ID, &u.Username, &u.Nickname, &u.Role, &avatar, &bio, &u.CreatedAt, &u.PasswordHash)
+	).Scan(&u.ID, &u.Username, &u.Nickname, &u.Role, &avatar, &bio,
+		&socialEmail, &socialGithub, &socialQQ, &u.CreatedAt, &u.PasswordHash)
 	if err != nil {
 		return nil, err
 	}
 	u.Avatar = avatar.String
 	u.Bio = bio.String
+	u.SocialEmail = socialEmail.String
+	u.SocialGithub = socialGithub.String
+	u.SocialQQ = socialQQ.String
 	return u, nil
 }
 
@@ -173,10 +191,19 @@ func UpdateInfo(db *sql.DB, username, nickname, role string) (bool, error) {
 	return n > 0, err
 }
 
-// UpdateProfile updates avatar and bio (self-service, no role change).
-func UpdateProfile(db *sql.DB, userID int, avatar, bio string) error {
-	_, err := db.Exec(`UPDATE users SET avatar = ?, bio = ? WHERE id = ?`,
-		avatar, bio, userID)
+// UpdateProfile updates avatar, bio, and per-user social links (self-service,
+// no role change). social fields are plain strings — an empty string clears
+// the value to NULL so the frontend can render an "unset" state.
+func UpdateProfile(db *sql.DB, userID int, avatar, bio, socialEmail, socialGithub, socialQQ string) error {
+	_, err := db.Exec(
+		`UPDATE users
+		 SET avatar = ?, bio = ?,
+		     social_email = NULLIF(?, ''),
+		     social_github = NULLIF(?, ''),
+		     social_qq = NULLIF(?, '')
+		 WHERE id = ?`,
+		avatar, bio, socialEmail, socialGithub, socialQQ, userID,
+	)
 	return err
 }
 

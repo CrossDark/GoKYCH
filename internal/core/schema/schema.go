@@ -47,6 +47,13 @@ func runMigrations(db *sql.DB) error {
 		{"ratings", "user_id", "ALTER TABLE ratings ADD COLUMN user_id INT DEFAULT NULL AFTER article_id"},
 		{"ratings", "voter_key", "ALTER TABLE ratings ADD COLUMN voter_key VARCHAR(141) NOT NULL DEFAULT 'n:匿名' AFTER author_name"},
 		{"webauthn_credentials", "name", "ALTER TABLE webauthn_credentials ADD COLUMN name VARCHAR(128) NOT NULL DEFAULT '未命名 Passkey' AFTER user_id"},
+		// Per-user social links (email / GitHub / QQ). Moved out of the global
+		// settings.yml `social` section so each user owns their own contact
+		// info. Each column is NULL-tolerant; an empty profile renders no
+		// social links at all.
+		{"users", "social_email",  "ALTER TABLE users ADD COLUMN social_email  VARCHAR(255) DEFAULT NULL AFTER bio"},
+		{"users", "social_github", "ALTER TABLE users ADD COLUMN social_github VARCHAR(255) DEFAULT NULL AFTER social_email"},
+		{"users", "social_qq",     "ALTER TABLE users ADD COLUMN social_qq     VARCHAR(255) DEFAULT NULL AFTER social_github"},
 		// backup_eligible: the go-webauthn lib compares the stored credential's
 		// Flags.BackupEligible against the assertion's authenticator-data flag
 		// on every login ("Backup Eligible flag inconsistency detected during

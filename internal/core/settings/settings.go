@@ -40,11 +40,11 @@ func Default() map[string]interface{} {
 			"enable_tags_sidebar": true,
 			"posts_per_page":      10,
 		},
-		"social": map[string]interface{}{
-			"email":   "",
-			"github":  "",
-			"twitter": "",
-		},
+		// NOTE: there used to be a top-level "social" section here
+		// (email/github/twitter). It was moved to per-user fields on the
+		// users table (social_email / social_github / social_qq) so each
+		// account can have its own links. Legacy settings.yml files may
+		// still contain a `social:` block — Load() drops it.
 	}
 }
 
@@ -70,6 +70,15 @@ func Load(dataDir string) (map[string]interface{}, error) {
 		return nil, err
 	}
 	for section, vals := range fromYAML {
+		// Drop legacy sections that have been moved elsewhere. The
+		// top-level `social` block lived in settings.yml before social
+		// links were relocated to per-user fields; carrying it forward
+		// would either leak stale data through /api/site or — once an
+		// admin re-saves settings — overwrite a settings.yml that's no
+		// longer supposed to contain it. Quietly drop it.
+		if section == "social" {
+			continue
+		}
 		m, ok := vals.(map[string]interface{})
 		if !ok {
 			continue

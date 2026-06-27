@@ -16,11 +16,13 @@ import (
 
 // GET /api/site
 //
-// Returns the public-facing site config (site + appearance + features +
-// social sections from settings.yml) plus subsite_links so the Header can
-// render nav and footer ICP without a second round-trip. Settings read
-// failures degrade gracefully to defaults — a broken YAML shouldn't 500
-// the home page.
+// Returns the public-facing site config (site + appearance + features from
+// settings.yml) plus subsite_links so the Header can render nav and footer
+// ICP without a second round-trip. Per-user social links used to live in a
+// `social` section here; they've been moved to per-user fields (see
+// user.User) and are now exposed through /api/admin/profile and any future
+// author-card endpoint. Settings read failures degrade gracefully to
+// defaults — a broken YAML shouldn't 500 the home page.
 func (s *Server) getSite(c *gin.Context) {
 	cfg, err := settings.Load(s.DataDir)
 	if err != nil {
@@ -51,7 +53,6 @@ func (s *Server) getSite(c *gin.Context) {
 		"site":          cfg["site"],
 		"appearance":    cfg["appearance"],
 		"features":      cfg["features"],
-		"social":        cfg["social"],
 		"subsite_links": subLinks,
 	})
 }

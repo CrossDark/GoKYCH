@@ -723,9 +723,12 @@ func (s *Server) getProfile(c *gin.Context) {
 }
 
 type profileInput struct {
-	Nickname string `json:"nickname"`
-	Bio      string `json:"bio"`
-	Avatar   string `json:"avatar"`
+	Nickname     string `json:"nickname"`
+	Bio          string `json:"bio"`
+	Avatar       string `json:"avatar"`
+	SocialEmail  string `json:"social_email"`
+	SocialGithub string `json:"social_github"`
+	SocialQQ     string `json:"social_qq"`
 }
 
 // PUT /api/admin/profile
@@ -740,7 +743,8 @@ func (s *Server) updateProfile(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "请求格式错误。"})
 		return
 	}
-	if err := user.UpdateProfile(s.DB, u.ID, in.Avatar, in.Bio); err != nil {
+	if err := user.UpdateProfile(s.DB, u.ID, in.Avatar, in.Bio,
+		in.SocialEmail, in.SocialGithub, in.SocialQQ); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "更新资料失败。"})
 		return
 	}

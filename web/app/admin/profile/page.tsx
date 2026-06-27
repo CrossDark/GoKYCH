@@ -40,12 +40,29 @@ export default function AdminProfile() {
   const [csrf, setCsrf] = useState("");
   const [user, setUser] = useState<User | null>(null);
   const toast = useToast();
-  const [form, setForm] = useState({ nickname: "", bio: "", avatar: "" });
-  const [initial, setInitial] = useState({ nickname: "", bio: "", avatar: "" });
+  const [form, setForm] = useState({
+    nickname: "",
+    bio: "",
+    avatar: "",
+    social_email: "",
+    social_github: "",
+    social_qq: "",
+  });
+  const [initial, setInitial] = useState({
+    nickname: "",
+    bio: "",
+    avatar: "",
+    social_email: "",
+    social_github: "",
+    social_qq: "",
+  });
   const [submitting, setSubmitting] = useState(false);
   const isProfileDirty = form.nickname !== initial.nickname
     || form.bio !== initial.bio
-    || form.avatar !== initial.avatar;
+    || form.avatar !== initial.avatar
+    || form.social_email !== initial.social_email
+    || form.social_github !== initial.social_github
+    || form.social_qq !== initial.social_qq;
 
   // ── Password change ──
   const [pw, setPw] = useState({ old: "", next: "", confirm: "" });
@@ -65,7 +82,14 @@ export default function AdminProfile() {
       setCsrf(r.csrf_token);
       getProfile(r.csrf_token).then((u) => {
         setUser(u);
-        const init = { nickname: u.nickname || "", bio: u.bio || "", avatar: u.avatar || "" };
+        const init = {
+          nickname: u.nickname || "",
+          bio: u.bio || "",
+          avatar: u.avatar || "",
+          social_email: u.social_email || "",
+          social_github: u.social_github || "",
+          social_qq: u.social_qq || "",
+        };
         setForm(init);
         setInitial(init);
       }).catch(() => {});
@@ -95,9 +119,19 @@ export default function AdminProfile() {
         nickname: form.nickname || undefined,
         bio: form.bio || undefined,
         avatar: form.avatar || undefined,
+        social_email: form.social_email || undefined,
+        social_github: form.social_github || undefined,
+        social_qq: form.social_qq || undefined,
       });
       setUser(updated);
-      const init = { nickname: updated.nickname || "", bio: updated.bio || "", avatar: updated.avatar || "" };
+      const init = {
+        nickname: updated.nickname || "",
+        bio: updated.bio || "",
+        avatar: updated.avatar || "",
+        social_email: updated.social_email || "",
+        social_github: updated.social_github || "",
+        social_qq: updated.social_qq || "",
+      };
       setInitial(init);
       setForm(init);
       toast.success("资料已更新。");
@@ -239,6 +273,41 @@ export default function AdminProfile() {
               <label htmlFor="profile-avatar">头像 URL</label>
               <input id="profile-avatar" value={form.avatar} onChange={(e) => setForm({ ...form, avatar: e.target.value })} placeholder="https://... 或 /uploads/xxx" aria-describedby="profile-avatar-hint" />
               <div id="profile-avatar-hint" className="admin-form-hint">支持外链或站内上传文件</div>
+            </div>
+
+            {/* Per-user social links. Moved out of the global settings so each
+                user owns their own contact info. Twitter was swapped for QQ
+                since X is mostly unreachable from CN. Empty values are
+                silently dropped server-side (NULLIF('', '')). */}
+            <div className="admin-form-group" style={{ marginTop: 8 }}>
+              <label style={{ marginBottom: 6 }}>🌐 社交媒体</label>
+              <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: "8px 12px", alignItems: "center" }}>
+                <label htmlFor="profile-social-email" style={{ margin: 0 }}>邮箱</label>
+                <input
+                  id="profile-social-email"
+                  type="email"
+                  value={form.social_email}
+                  onChange={(e) => setForm({ ...form, social_email: e.target.value })}
+                  placeholder="you@example.com"
+                />
+                <label htmlFor="profile-social-github" style={{ margin: 0 }}>GitHub</label>
+                <input
+                  id="profile-social-github"
+                  value={form.social_github}
+                  onChange={(e) => setForm({ ...form, social_github: e.target.value })}
+                  placeholder="https://github.com/yourname"
+                />
+                <label htmlFor="profile-social-qq" style={{ margin: 0 }}>QQ</label>
+                <input
+                  id="profile-social-qq"
+                  value={form.social_qq}
+                  onChange={(e) => setForm({ ...form, social_qq: e.target.value.replace(/\D/g, "") })}
+                  placeholder="QQ 号（纯数字）"
+                  inputMode="numeric"
+                  maxLength={20}
+                />
+              </div>
+              <div className="admin-form-hint">每个用户的社交链接独立保存；留空表示不公开。</div>
             </div>
             <div className="admin-form-actions">
               <button type="submit" className={`admin-btn admin-btn-primary ${submitting ? "admin-btn-loading" : ""}`} disabled={submitting || !isProfileDirty}>保存修改</button>

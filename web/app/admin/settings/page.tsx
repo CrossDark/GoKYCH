@@ -11,7 +11,6 @@ const SECTION_LABELS: Record<string, string> = {
   site: "站点信息",
   appearance: "外观设置",
   features: "功能开关",
-  social: "社交媒体",
 };
 
 const FIELD_LABELS: Record<string, string> = {
@@ -32,12 +31,9 @@ const FIELD_LABELS: Record<string, string> = {
   enable_search: "启用搜索",
   enable_tags_sidebar: "启用标签侧栏",
   posts_per_page: "每页文章数",
-  email: "邮箱",
-  github: "GitHub",
-  twitter: "Twitter",
 };
 
-const SECTION_ORDER = ["site", "appearance", "features", "social"];
+const SECTION_ORDER = ["site", "appearance", "features"];
 
 // Fields that should use special input types
 const COLOR_FIELDS = ["primary_color"];
@@ -292,7 +288,7 @@ export default function AdminSettings() {
       <div className="admin-page-header">
         <div>
           <h1>站点设置</h1>
-          <div className="admin-page-subtitle">站点信息、外观、功能开关、社交媒体</div>
+          <div className="admin-page-subtitle">站点信息、外观、功能开关</div>
         </div>
       </div>
 

@@ -428,7 +428,14 @@ export function getProfile(csrf: string) {
   });
 }
 
-export function updateProfile(csrf: string, body: { nickname?: string; bio?: string; avatar?: string }) {
+export function updateProfile(csrf: string, body: {
+  nickname?: string;
+  bio?: string;
+  avatar?: string;
+  social_email?: string;
+  social_github?: string;
+  social_qq?: string;
+}) {
   return request<import("./types").User>("/admin/profile", {
     method: "PUT",
     headers: { "X-CSRF-Token": csrf },

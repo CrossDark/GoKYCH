@@ -6,6 +6,13 @@ export interface User {
   role: "user" | "admin" | "owner";
   avatar: string;
   bio: string;
+  /** Owner's contact email. Empty string when not set (server stores NULL
+   *  as "" after JSON marshal — `NULLIF('', '')` in the backend). */
+  social_email: string;
+  /** Owner's GitHub handle or profile URL. */
+  social_github: string;
+  /** Owner's QQ number (digits, no UI rendering — just the value). */
+  social_qq: string;
   created_at: string;
 }
 
@@ -168,11 +175,9 @@ export interface SiteConfig {
     enable_tags_sidebar: boolean;
     posts_per_page: number;
   };
-  social: {
-    email: string;
-    github: string;
-    twitter: string;
-  };
+  // NOTE: site-level `social` was removed — per-user social links now
+  // live on `User.social_email / social_github / social_qq` and are
+  // exposed via /api/admin/profile.
   subsite_links: SubsiteLink[];
 }
 
