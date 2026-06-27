@@ -39,7 +39,21 @@ export function UserAvatar({ user, size = 28, className = "", large = false }: U
   return (
     <span
       className={`admin-user-avatar ${className}`}
-      style={{ width: size, height: size, fontSize, position: "relative", overflow: "hidden", display: "inline-flex", alignItems: "center", justifyContent: "center" }}
+      style={{
+        width: size,
+        height: size,
+        fontSize,
+        position: "relative",
+        overflow: "hidden",
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        // The base .admin-user-avatar gradient is a fallback for the letter
+        // state. When we render an <img> we want the gradient gone — a
+        // user's avatar is often a transparent PNG and the blue circle
+        // behind it shows through as an unintended backdrop.
+        ...(avatar ? { background: "transparent" } : {}),
+      }}
       aria-hidden={avatar ? true : undefined}
     >
       {avatar ? (
