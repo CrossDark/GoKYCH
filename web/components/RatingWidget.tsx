@@ -50,6 +50,41 @@ export function RatingWidget({
     }).catch(() => {});
   }, []);
 
+  // Client-side fallback for user_score. The article detail endpoint returns
+  // user_score from the server-side session context (CurrentUserFromContext),
+  // which depends on the SSR fetch successfully forwarding cookies. In the
+  // cross-origin production layout (eo.kych.net SSR → api.kych.net), the
+  // session cookie is bound to api.kych.net — eo.kych.net's `cookies()` sees
+  // nothing, the forwarded Cookie header is empty, and the backend returns
+  // user_score=null even when the logged-in user has voted. The browser-side
+  // fetch goes direct with credentials:include so it sees the cookie.
+  //
+  // Once getMe() proves we're logged in, refetch the rating summary from the
+  // client and patch in the real user_score. Skip when SSR already populated
+  // it (no-op), or while a rating submit is in flight (avoid clobbering the
+  // server-confirmed score).
+  useEffect(() => {
+    if (!isLoggedIn) return;
+    if (userScore != null) return;
+    if (submitting) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const rs = await getRating(articleType, articleSlug);
+        if (cancelled) return;
+        if (rs.user_score != null) {
+          setUserScore(rs.user_score);
+          setSliderVal(rs.user_score);
+        }
+      } catch {
+        // network blip — leave SSR value (null → 0) in place; user can retry
+        // by reloading.
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isLoggedIn, articleType, articleSlug, userScore, submitting]);
+
   // Sync props changes
   useEffect(() => {
     setAvg(initialAvg);
