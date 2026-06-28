@@ -81,6 +81,10 @@ func TestSanitizeCSSAllowsSafeValues(t *testing.T) {
 		"Inter, sans-serif",
 		"100%",
 		"12pt",
+		// Full CSS declarations with the trailing `;` that any copy-pasted
+		// example ships with — `;` is just a separator, not dangerous.
+		"background: yellow;",
+		"color: #3b82f6; font-size: 14px;",
 	}
 	for _, v := range allowed {
 		if got := sanitizeCSSValue(v); got == "" {

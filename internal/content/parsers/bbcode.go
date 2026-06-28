@@ -57,29 +57,41 @@ func sanitizeURLForAttr(raw string) string {
 }
 
 // sanitizeCSSValue guards inline style values for BBCode [size]/[color]/
-// [font]/[bg]. Rejects anything that:
-//   - contains CSS metacharacters that allow attribute or rule breaks
-//     ( ; { } ( ) ),
+// [font]/[bg] and Wikidot [[span style=…]]/[[div style=…]]. Rejects
+// anything that:
+//   - contains CSS metacharacters that allow rule breaks or function
+//     calls ( { } ( ) ),
 //   - contains "expression" or "javascript:" / "url(" which enable IE-style
 //     or modern CSS-injection attacks,
-//   - or contains characters outside [A-Za-z0-9_#.,%/\- ] (e.g. quotes that
-//     would let an attacker escape the style attribute).
+//   - or contains characters outside [A-Za-z0-9_#.,%/\- : ] (e.g. quotes
+//     that would let an attacker escape the style attribute).
+//
+// Semicolons ( ; ) are stripped before the blocklist check: they're not
+// dangerous on their own (just declaration separators), and rejecting
+// them outright forced users to write `background: yellow` without the
+// trailing `;` that any CSS reference or copy-pasted example includes.
+// A payload like `color:red; background:url(javascript:alert(1))` still
+// trips the url() blocklist after the `;` collapses to a space — see
+// sanitize_test.go's rejection cases for the full coverage.
 func sanitizeCSSValue(raw string) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return ""
 	}
-	lower := strings.ToLower(raw)
-	for _, bad := range []string{";", "{", "}", "(", ")", "expression", "javascript:", "url(", "@import"} {
+	// Strip declaration separators before the content checks. The output
+	// keeps the original `;` (we only normalise for validation).
+	sanitised := strings.ReplaceAll(raw, ";", " ")
+	lower := strings.ToLower(sanitised)
+	for _, bad := range []string{"{", "}", "(", ")", "expression", "javascript:", "url(", "@import"} {
 		if strings.Contains(lower, bad) {
 			return ""
 		}
 	}
-	for _, r := range raw {
+	for _, r := range sanitised {
 		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
 			(r >= '0' && r <= '9') ||
 			r == '_' || r == '#' || r == '.' || r == ',' ||
-			r == '%' || r == '/' || r == '-' || r == ' ') {
+			r == '%' || r == '/' || r == '-' || r == ' ' || r == ':') {
 			return ""
 		}
 	}
