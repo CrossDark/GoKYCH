@@ -78,7 +78,12 @@ func main() {
 
 	// 6. Set up session manager + rate limiter + metrics.
 	secure := cfg.App.GinMode == "release"
-	sess := session.New(db, cfg.App.SessionSecret, secure)
+	// SessionCookieDomain scopes the session cookie to a parent domain
+	// (e.g. ".kych.net") so the SSR frontend on a sibling subdomain can
+	// forward it to the backend; without it, cross-origin SSR sees an
+	// anonymous backend response (rating.user_score=null, "登录" shown).
+	// Empty in dev / single-host setups.
+	sess := session.New(db, cfg.App.SessionSecret, secure, cfg.App.SessionCookieDomain)
 	limiter := ratelimit.New()
 	m := metrics.New()
 	// typst.SetDB lets typst.CompileHTMLCached consult typst_cache.

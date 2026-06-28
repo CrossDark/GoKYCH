@@ -22,14 +22,20 @@ type Manager struct {
 }
 
 // New creates a Manager. secret is the session signing key; secure controls
-// the cookie Secure flag (set true for HTTPS production).
-func New(db *sql.DB, secret string, secure bool) *Manager {
+// the cookie Secure flag (set true for HTTPS production). domain is the
+// cookie Domain attribute (e.g. ".example.com" to share the session across
+// all subdomains of the deployment). Empty = bind cookie to the origin
+// that set it (api host only); the SSR frontend on a sibling subdomain
+// then can't see it and backend-side CurrentUser returns nil for those
+// requests.
+func New(db *sql.DB, secret string, secure bool, domain string) *Manager {
 	s := sessions.NewCookieStore([]byte(secret))
 	s.Options = &sessions.Options{
 		Path:     "/",
 		MaxAge:   sessionMaxAge,
 		HttpOnly: true,
 		Secure:   secure,
+		Domain:   domain,
 		// SameSite=None: 前端 (eo.kych.net) → 后端 (api.kych.net) 是
 		// 跨域 fetch,Chrome 80+ 默认拒绝 Lax 跨域 cookie,导致 session
 		// 不带过去 → 401。None + Secure=true 允许跨域带 cookie。

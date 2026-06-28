@@ -169,6 +169,14 @@ APP_DOMAIN=https://eo.kych.net
 PUBLIC_URL=https://api.kych.net
 CORS_ALLOWED_ORIGINS=https://eo.kych.net
 
+# SESSION_COOKIE_DOMAIN：把 session cookie 绑到父域（必须带前导点 . ），
+# 让前端 (eo.kych.net) 和后端 (api.kych.net) 都能看到。前端 SSR 的
+# cookies() 才能拿到 session 转发给后端，后端 CurrentUser 才不会把
+# 登录用户当成匿名 —— 否则已评分的文章滑块会停在 0.0 ("你的评分 --")，
+# 平均分和详细评分正常。GIN_MODE=release 时 Secure 自动 = true，
+# 配合 Domain=.kych.net + SameSite=None 跨域带 cookie 才合规。
+SESSION_COOKIE_DOMAIN=.kych.net
+
 # ── 反向代理信任 ──
 # nginx 在 127.0.0.1，所以信它（c.ClientIP() 才不会被打到 client 的
 # 真实 IP 上，从而绕开 rate-limit / IP 检查）

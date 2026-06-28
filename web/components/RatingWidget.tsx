@@ -54,15 +54,15 @@ export function RatingWidget({
   // user_score from the server-side session context (CurrentUserFromContext),
   // which depends on the SSR fetch successfully forwarding cookies. In the
   // cross-origin production layout (eo.kych.net SSR → api.kych.net), the
-  // session cookie is bound to api.kych.net — eo.kych.net's `cookies()` sees
-  // nothing, the forwarded Cookie header is empty, and the backend returns
-  // user_score=null even when the logged-in user has voted. The browser-side
-  // fetch goes direct with credentials:include so it sees the cookie.
-  //
-  // Once getMe() proves we're logged in, refetch the rating summary from the
-  // client and patch in the real user_score. Skip when SSR already populated
-  // it (no-op), or while a rating submit is in flight (avoid clobbering the
-  // server-confirmed score).
+  // session cookie must be scoped to a parent Domain (e.g. ".kych.net",
+  // via SESSION_COOKIE_DOMAIN) for eo.kych.net's `cookies()` to see it.
+  // Without that, the forwarded Cookie header is empty and the backend
+  // returns user_score=null even for logged-in voters. The browser-side
+  // fetch goes direct with credentials:include so it always sees the
+  // cookie — use that here to patch in the real user_score after the
+  // client proves we're logged in via getMe(). Skip when SSR already
+  // populated it (no-op), or while a rating submit is in flight (avoid
+  // clobbering the server-confirmed score).
   useEffect(() => {
     if (!isLoggedIn) return;
     if (userScore != null) return;

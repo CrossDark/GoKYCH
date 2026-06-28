@@ -58,6 +58,22 @@ type AppConfig struct {
 	// scheme (e.g. "https://gokych.example.com") — credentials can't be
 	// sent with a wildcard origin, so the env is the source of truth.
 	CORSAllowedOrigins []string
+	// SessionCookieDomain scopes the session cookie to a parent domain
+	// (e.g. ".kych.net") so both the API origin (api.kych.net) and the
+	// frontend origin (eo.kych.net) can see it. This lets the SSR
+	// fetch on the frontend forward the cookie to the backend; without
+	// it, the cookie is bound to the API origin only and SSR's
+	// cookies() returns nothing — CurrentUser looks anonymous to the
+	// backend, even for logged-in visitors.
+	//
+	// Empty (default) = bind to the origin that set the cookie
+	// (single-origin dev / single-host deployments only).
+	//
+	// Required in cross-origin production: leading dot so the cookie
+	// matches all subdomains of the parent. SameSite=None + Secure=true
+	// (set automatically when GIN_MODE=release) are needed to ship
+	// the cookie on cross-origin requests.
+	SessionCookieDomain string
 }
 
 // mysqlYAML is the YAML file structure (top-level key "mysql").
@@ -193,6 +209,7 @@ func (c *Config) applyEnvOverrides() {
 	c.App.WebAuthnDomain = envOr("APP_DOMAIN", c.App.WebAuthnDomain)
 	c.App.PublicURL = envOr("PUBLIC_URL", c.App.PublicURL)
 	c.App.CORSAllowedOrigins = envListOr("CORS_ALLOWED_ORIGINS", c.App.CORSAllowedOrigins)
+	c.App.SessionCookieDomain = envOr("SESSION_COOKIE_DOMAIN", c.App.SessionCookieDomain)
 }
 
 // DataRoot returns the absolute path to the data directory.
