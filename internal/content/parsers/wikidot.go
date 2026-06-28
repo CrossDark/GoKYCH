@@ -291,12 +291,18 @@ func (p *wikidotParser) convert(source string) string {
 	out = reWDRight.ReplaceAllString(out, `<div style="text-align:right">$1</div>`)
 	out = reWDJustify.ReplaceAllString(out, `<div style="text-align:justify">$1</div>`)
 
-	// 1l. [[youtube ID]] — embed iframe, validate ID length before
-	// emitting (otherwise `[[youtube ]]` or `[[youtube …/alert(1)…]]`
-	// could produce a malformed iframe src).
+	// 1l. [[youtube ID]] — emit a placeholder div carrying the ID as
+	// a data attribute. The iframe itself is NOT emitted here because
+	// the ArticleView client passes rendered HTML through DOMPurify,
+	// which forbids <iframe> outright to keep untrusted author markup
+	// from pulling in arbitrary third-party pages. ArticleView has a
+	// small post-DOMPurify pass that swaps these placeholders for the
+	// real <iframe>, with the ID already sanitised by the regex
+	// above (`[A-Za-z0-9_-]{6,20}`) so the constructed src is
+	// guaranteed to be https://www.youtube.com/embed/<id>.
 	out = reWDYoutube.ReplaceAllStringFunc(out, func(s string) string {
 		m := reWDYoutube.FindStringSubmatch(s)
-		return p.storeBlock(fmt.Sprintf(`<div class="wikidot-youtube"><iframe src="https://www.youtube.com/embed/%s" loading="lazy" allowfullscreen frameborder="0" referrerpolicy="strict-origin-when-cross-origin"></iframe></div>`, html.EscapeString(m[1])))
+		return p.storeBlock(fmt.Sprintf(`<div class="wikidot-youtube" data-youtube-id="%s"></div>`, html.EscapeString(m[1])))
 	})
 
 	// 1m. Paired anchor block `[[a name="x"]]content[[/a]]` runs

@@ -231,6 +231,24 @@ useEffect(() => {
     });
     container.innerHTML = safe;
 
+    // Wikidot `[[youtube ID]]` emits a placeholder div (see
+    // RenderWikidot); DOMPurify strips <iframe> outright, so we swap
+    // the placeholder for a real iframe here, after sanitisation. The
+    // ID was regex-bounded to [A-Za-z0-9_-]{6,20} by the parser, so
+    // constructing the embed URL can't escape youtube.com.
+    container.querySelectorAll<HTMLElement>(".wikidot-youtube[data-youtube-id]").forEach((el) => {
+      const id = el.dataset.youtubeId;
+      if (!id) return;
+      const iframe = document.createElement("iframe");
+      iframe.src = `https://www.youtube.com/embed/${id}`;
+      iframe.loading = "lazy";
+      iframe.allowFullscreen = true;
+      iframe.setAttribute("frameborder", "0");
+      iframe.setAttribute("referrerpolicy", "strict-origin-when-cross-origin");
+      iframe.setAttribute("title", "YouTube video");
+      el.replaceChildren(iframe);
+    });
+
     // Assign line numbers to block elements
     const blocks = container.querySelectorAll("p, h1, h2, h3, h4, h5, h6, li, pre, blockquote, div, table");
     let ln = 0;
