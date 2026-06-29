@@ -18,6 +18,7 @@ import (
 // sanitizeURLForAttr is used for every href / src / cite value. It drops
 // anything that isn't:
 //   - a same-site path (must start with "/", but not "//" or "/\"), OR
+//   - a fragment-only anchor ("#…") used for in-page jump buttons, OR
 //   - a URL whose scheme is in the allowlist (http / https / mailto).
 //
 // Returns "" on rejection so callers can omit the attribute entirely.
@@ -36,6 +37,17 @@ func sanitizeURLForAttr(raw string) string {
 		if r == '"' || r == '\'' || r == '<' || r == '>' || r == '`' || r < 0x20 || r == 0x7f {
 			return ""
 		}
+	}
+	// Fragment-only anchor (`#section-id` or bare `#`) — used by
+	// `[[button Label]]` placeholder buttons. Reject anything
+	// that LOOKS like a scheme (e.g. `#javascript:`) by parsing
+	// it; a bare fragment has no scheme so the parse returns
+	// Scheme == "". Allow only when no scheme is present.
+	if raw[0] == '#' {
+		if u, err := url.Parse(raw); err == nil && u.Scheme == "" {
+			return raw
+		}
+		return ""
 	}
 	// Same-site path. Reject protocol-relative ("//evil.com") and backslash
 	// tricks ("/\evil.com") that some browsers normalise into a host change.

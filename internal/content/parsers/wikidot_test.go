@@ -1247,3 +1247,256 @@ func TestWikidotUserMentionNoName(t *testing.T) {
 		t.Errorf("expected NO mention markup for empty name, got %q", out)
 	}
 }
+
+// ── Stage 3 (P1) — Wikidot common blocks ───────────────────────
+
+// TestWikidotDivider verifies the `[[divider]]` tag
+// renders as a themed `<hr>` (with `wikidot-divider`
+// class so the front-end can style it differently
+// from the plain `----` line form which has no class).
+func TestWikidotDivider(t *testing.T) {
+	out := RenderWikidot("上\n[[divider]]\n下")
+	if !strings.Contains(out, `<hr class="wikidot-divider">`) {
+		t.Errorf("expected themed hr, got %q", out)
+	}
+	// No stray plain <hr> without the class should
+	// appear from this input (we only used the
+	// `[[divider]]` form).
+	if strings.Contains(out, "<hr>\n") || strings.Contains(out, "<hr> ") {
+		t.Errorf("expected no plain <hr>, got %q", out)
+	}
+}
+
+// TestWikidotNoteInline verifies `[[note]]…[[/note]]`
+// wraps the body in an `<aside class="wikidot-note">`
+// container. The surrounding paragraph is NOT
+// wrapped in `<p>` because `<aside>` is a block
+// element — wrapping text that contains a block
+// element in `<p>` produces invalid HTML (the
+// browser auto-closes the `<p>` at the `<aside>`,
+// leaving the trailing text outside any wrapper).
+func TestWikidotNoteInline(t *testing.T) {
+	out := RenderWikidot(`一段话 [[note]]注意一下[[/note]] 续接`)
+	if !strings.Contains(out, `<aside class="wikidot-note">注意一下</aside>`) {
+		t.Errorf("expected note container, got %q", out)
+	}
+}
+
+// TestWikidotNoteBlock verifies a multi-line note
+// (body across multiple newlines) renders the
+// newlines as `<br />` inside the `<aside>`, not
+// as a stray `<p>` wrapper. Without the
+// newline-to-`<br />` rewrite the paragraph-wrap
+// phase would emit `<aside>...<p>跨多行</p></aside>`
+// which is technically allowed by the HTML parser
+// (browsers auto-close the `<p>` at `<aside>`) but
+// looks wrong in dev-tools and confuses readers.
+func TestWikidotNoteBlock(t *testing.T) {
+	out := RenderWikidot(`[[note]]
+第一行
+第二行
+第三行
+[[/note]]`)
+	if !strings.Contains(out, `<aside class="wikidot-note">`) {
+		t.Errorf("expected note container, got %q", out)
+	}
+	if strings.Contains(out, `<aside class="wikidot-note"><p>`) {
+		t.Errorf("expected no <p> inside <aside>, got %q", out)
+	}
+	if !strings.Contains(out, "第一行<br />") {
+		t.Errorf("expected <br /> between lines, got %q", out)
+	}
+	if !strings.Contains(out, "第二行<br />") {
+		t.Errorf("expected <br /> between second and third lines, got %q", out)
+	}
+}
+
+// TestWikidotNoteInlineFormatting verifies inline
+// markup (`**bold**`, `//italic//`, `[link]`)
+// inside a note body still renders. The body
+// processor routes through `inlineOnly` rather
+// than the full `convert()` pipeline so block-
+// level rewrapping doesn't kick in, but inline
+// formatting is still applied.
+func TestWikidotNoteInlineFormatting(t *testing.T) {
+	out := RenderWikidot(`[[note]]**粗体** 和 //斜体// 以及 [https://example.com 链接][[/note]]`)
+	if !strings.Contains(out, `<strong>粗体</strong>`) {
+		t.Errorf("expected bold inside note, got %q", out)
+	}
+	if !strings.Contains(out, `<em>斜体</em>`) {
+		t.Errorf("expected italic inside note, got %q", out)
+	}
+	if !strings.Contains(out, `href="https://example.com"`) {
+		t.Errorf("expected link inside note, got %q", out)
+	}
+}
+
+// TestWikidotButtonExternal verifies `[[button Label|URL]]`
+// with an external https target renders to
+// `<a class="wikidot-button" rel="nofollow noopener"
+// target="_blank">`. The pipe separator is the
+// unambiguous form (so the label can contain
+// spaces without confusing the parser).
+func TestWikidotButtonExternal(t *testing.T) {
+	out := RenderWikidot(`[[button 访问 GitHub|https://github.com]]`)
+	if !strings.Contains(out, `class="wikidot-button"`) {
+		t.Errorf("expected wikidot-button class, got %q", out)
+	}
+	if !strings.Contains(out, `href="https://github.com"`) {
+		t.Errorf("expected https target, got %q", out)
+	}
+	if !strings.Contains(out, `rel="nofollow noopener"`) {
+		t.Errorf("expected nofollow noopener, got %q", out)
+	}
+	if !strings.Contains(out, `target="_blank"`) {
+		t.Errorf("expected _blank target, got %q", out)
+	}
+	if !strings.Contains(out, `访问 GitHub`) {
+		t.Errorf("expected label as link text, got %q", out)
+	}
+}
+
+// TestWikidotButtonInternal verifies a button
+// pointing at an internal path (`/foo`). Internal
+// targets get NO `rel` / `target` attributes —
+// same-origin navigation should stay in the same
+// tab and shouldn't pretend to be a third-party
+// link.
+func TestWikidotButtonInternal(t *testing.T) {
+	out := RenderWikidot(`[[button 回首页|/]]`)
+	if !strings.Contains(out, `class="wikidot-button"`) {
+		t.Errorf("expected wikidot-button class, got %q", out)
+	}
+	if !strings.Contains(out, `href="/"`) {
+		t.Errorf("expected / target, got %q", out)
+	}
+	if strings.Contains(out, `rel="nofollow`) {
+		t.Errorf("internal button should NOT have rel=nofollow, got %q", out)
+	}
+	if strings.Contains(out, `target="_blank"`) {
+		t.Errorf("internal button should NOT open in new tab, got %q", out)
+	}
+}
+
+// TestWikidotButtonNoTarget verifies `[[button Label]]`
+// without a target renders as a placeholder button
+// pointing at `#` (fragment-only anchor). Without
+// the `[[#`-anchor special case in `sanitizeURLForAttr`
+// the `#` would be rejected and the marker would
+// drop, leaving the label as plain text.
+func TestWikidotButtonNoTarget(t *testing.T) {
+	out := RenderWikidot(`[[button 占位按钮]]`)
+	if !strings.Contains(out, `class="wikidot-button"`) {
+		t.Errorf("expected wikidot-button class, got %q", out)
+	}
+	if !strings.Contains(out, `href="#"`) {
+		t.Errorf("expected # placeholder target, got %q", out)
+	}
+}
+
+// TestWikidotButtonDangerousTarget verifies that a
+// target with a disallowed scheme (e.g. `javascript:`)
+// is rejected by `sanitizeURLForAttr` and the
+// marker falls back to plain text. This is a
+// regression guard against an obvious injection
+// vector if someone bypasses the schema check.
+func TestWikidotButtonDangerousTarget(t *testing.T) {
+	out := RenderWikidot(`[[button 钓鱼|javascript:alert(1)]]`)
+	if strings.Contains(out, `wikidot-button`) {
+		t.Errorf("expected javascript: scheme to be rejected, got %q", out)
+	}
+	if strings.Contains(out, `<a `) {
+		t.Errorf("expected no <a> from dangerous scheme, got %q", out)
+	}
+}
+
+// TestWikidotEmailBlock verifies `[[email]]addr[[/email]]`
+// (block form) renders as an obfuscated
+// `<a class="wikidot-email">` with the address split
+// across `data-user` / `data-domain` attributes. The
+// visible link text is the assembled address so the
+// human reader sees a normal mailto link, but a
+// naive HTML scraper looking for `@` only finds it
+// in the rendered text (low-grade obfuscation; not
+// serious anti-harvest).
+func TestWikidotEmailBlock(t *testing.T) {
+	out := RenderWikidot(`联系 [[email]]foo@example.com[[/email]] 收`)
+	if !strings.Contains(out, `class="wikidot-email"`) {
+		t.Errorf("expected wikidot-email class, got %q", out)
+	}
+	if !strings.Contains(out, `href="mailto:foo@example.com"`) {
+		t.Errorf("expected mailto link, got %q", out)
+	}
+	if !strings.Contains(out, `data-user="foo"`) {
+		t.Errorf("expected data-user split, got %q", out)
+	}
+	if !strings.Contains(out, `data-domain="example.com"`) {
+		t.Errorf("expected data-domain split, got %q", out)
+	}
+	// The visible link text is the full address.
+	if !strings.Contains(out, `>foo@example.com</a>`) {
+		t.Errorf("expected full address as link text, got %q", out)
+	}
+}
+
+// TestWikidotEmailTag verifies the single-tag form
+// `[[email addr]]` (no body) renders the same way
+// as the block form. The two forms are aliases so
+// authors can pick whichever reads better in context.
+func TestWikidotEmailTag(t *testing.T) {
+	out := RenderWikidot(`[[email bar@example.org]]`)
+	if !strings.Contains(out, `class="wikidot-email"`) {
+		t.Errorf("expected wikidot-email class, got %q", out)
+	}
+	if !strings.Contains(out, `href="mailto:bar@example.org"`) {
+		t.Errorf("expected mailto link, got %q", out)
+	}
+}
+
+// TestWikidotEmailMalformed verifies an email
+// without `@` is left as plain text rather than
+// rendering an empty mailto link. The renderer
+// should fail open (visible text) rather than
+// fail closed (drop the marker entirely), so the
+// author sees what they wrote and can fix the
+// typo.
+func TestWikidotEmailMalformed(t *testing.T) {
+	out := RenderWikidot(`[[email not-an-email]]`)
+	if strings.Contains(out, `<a `) {
+		t.Errorf("expected no <a> for malformed email, got %q", out)
+	}
+	if !strings.Contains(out, "not-an-email") {
+		t.Errorf("expected raw text preserved, got %q", out)
+	}
+}
+
+// TestWikidotCodeBlockNoParagraphWrap verifies the
+// long-standing bug where `[[code]]…[[/code]]`
+// body got wrapped in `<p>` and split by `<br />`
+// — Phase 10 (restore stored blocks) was running
+// BEFORE Phase 11 (paragraph wrap), so by the
+// time wrapWikidotParagraphs saw the source, the
+// `<pre><code>…</code></pre>` was already inlined
+// and the inner lines got paragraph-wrapped. The
+// fix treats `<pre>…</pre>` as an opaque block in
+// the wrap phase. This regression guard makes
+// sure the fix stays in place.
+func TestWikidotCodeBlockNoParagraphWrap(t *testing.T) {
+	in := `前面
+[[code]]
+function helloWorld() {
+    console.log("Hello, Wikidot!");
+}
+[[/code]]
+后面`
+	out := RenderWikidot(in)
+	if strings.Contains(out, `<pre><code><p>`) {
+		t.Errorf("expected NO <p> inside <pre><code>, got %q", out)
+	}
+	if strings.Contains(out, `<code>`) && strings.Contains(out, `<br />`) {
+		t.Errorf("expected NO <br /> inside <code>, got %q", out)
+	}
+	if !strings.Contains(out, `function helloWorld() {`) {
+		t.Errorf("expected code body verbatim, got %q", out)
+	}
+}

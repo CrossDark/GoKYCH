@@ -814,6 +814,97 @@ hr {
  * the class on the outer wrapper is honoured (no reset that would
  * strip it). */
 
+/* `[[divider]]` — themed horizontal rule. The plain `<hr>` from
+ * `----` has no class so we can give it a different look (a
+ * gradient line plus a small accent dot) without affecting the
+ * regular hr. */
+.content-body hr.wikidot-divider {
+    border: none;
+    height: 1px;
+    background: linear-gradient(
+        to right,
+        transparent,
+        var(--accent) 30%,
+        var(--accent) 70%,
+        transparent
+    );
+    margin: 2rem 0;
+    position: relative;
+}
+.content-body hr.wikidot-divider::after {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+    transform: translate(-50%, -50%);
+}
+
+/* `[[note]]…[[/note]]` — Wikidot note box. Soft yellow tint
+ * matching Wikidot's own theme; sits inline or as a block
+ * depending on how the author wraps it. Inline formatting
+ * (bold, italic, links) inside the note is preserved via the
+ * `inlineOnly` render path. */
+.content-body aside.wikidot-note {
+    display: block;
+    margin: 1rem 0;
+    padding: 0.6rem 0.9rem;
+    background: rgba(241, 196, 15, 0.12);
+    border-left: 3px solid #f1c40f;
+    border-radius: 4px;
+    color: var(--text);
+    font-size: 0.95rem;
+}
+[data-theme="dark"] .content-body aside.wikidot-note {
+    background: rgba(241, 196, 15, 0.08);
+    color: var(--text);
+}
+
+/* `[[button Label|target]]` — Wikidot-style button link.
+ * Styled as a pill button that goes inline (so the author
+ * can drop it into a sentence) but breaks to its own line
+ * if the surrounding paragraph wraps awkwardly. */
+.content-body a.wikidot-button {
+    display: inline-block;
+    padding: 0.4rem 1rem;
+    background: var(--accent);
+    color: white;
+    text-decoration: none;
+    border-radius: 4px;
+    font-size: 0.95rem;
+    font-weight: 500;
+    line-height: 1.4;
+    margin: 0.2rem 0.3rem;
+    transition: background 0.15s, transform 0.1s;
+    border: none;
+}
+.content-body a.wikidot-button:hover {
+    background: var(--accent-hover, var(--accent));
+    transform: translateY(-1px);
+    text-decoration: none;
+}
+.content-body a.wikidot-button:active {
+    transform: translateY(0);
+}
+
+/* `[[email]]addr[[/email]]` / `[[email addr]]` — obfuscated
+ * mailto link. Visually identical to a regular `<a>` so the
+ * reader sees a normal email link, but the address is split
+ * into `data-user` / `data-domain` attributes in the HTML
+ * source so a naive scraper doesn't harvest it. */
+.content-body a.wikidot-email {
+    color: var(--accent);
+    text-decoration: none;
+    border-bottom: 1px dotted var(--accent);
+}
+.content-body a.wikidot-email:hover {
+    text-decoration: none;
+    border-bottom-style: solid;
+}
+
 /* ── 行号（中屏及以上在文章左侧显示） ── */
 @media (min-width: 768px) {
     .content-body {

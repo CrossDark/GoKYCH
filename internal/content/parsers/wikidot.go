@@ -260,6 +260,51 @@ var (
 	reWDOLClose    = regexp.MustCompile(`(?is)\[\[/ol\]\]`)
 	reWDHR         = regexp.MustCompile(`(?m)^-{3,}$`)
 	reWDAdmonition = regexp.MustCompile(`(?sm)^!!!\s+(note|warning|danger|info|tip)\s*\n(.*?)(\n!!!|\n\[\[|\z)`)
+	// [[divider]] — Wikidot's themed horizontal rule.
+	// `[[divider]]` renders to the same `<hr>` as the
+	// `----` line form but with a CSS class so the
+	// front-end can give it a different look (a faint
+	// double rule, a coloured band, etc.) without
+	// touching the plain `<hr>` used elsewhere.
+	reWDDivider = regexp.MustCompile(`(?i)\[\[divider\]\]`)
+	// [[note]]…[[/note]] — inline note box. The
+	// difference vs the `!!! note` admonition is
+	// scope: `[[note]]` is a single-paragraph callout
+	// that can sit mid-paragraph, while the
+	// admonition is a multi-line block. We render
+	// both to the same DOM shape (`.wikidot-note`)
+	// and let CSS decide if they're visually
+	// different. Body is converted recursively so
+	// inline formatting (`**bold**`, `//italic//`,
+	// links) survives.
+	reWDNote = regexp.MustCompile(`(?is)\[\[note\]\](.*?)\[\[/note\]\]`)
+	// [[button label]] / [[button label|target]] —
+	// render a Wikidot-style button link. The label
+	// is mandatory; the target defaults to "#" when
+	// omitted. Pipe form (`label|target`) is supported
+	// so authors can put spaces in the label without
+	// ambiguity; the bare form (`label`) is the
+	// short-hand for a placeholder button. When the
+	// target looks external (http(s)://) the renderer
+	// adds `rel="nofollow noopener" target="_blank"`
+	// — same posture as the `[url text]` external
+	// link. Internal targets (paths starting with `/`
+	// or wiki-page names) render as plain anchor
+	// links.
+	reWDButton = regexp.MustCompile(`(?i)\[\[button\s+([^\]\n|]+)(?:\|([^\]\n]+))?\]\]`)
+	// [[email]]address[[/email]] or
+	// [[email address]] — Wikidot renders emails as
+	// obfuscated `<a>` tags (the address is
+	// broken into character spans or split on `@` so
+	// naive scrapers can't harvest it). For our
+	// purposes the simplest form is good enough:
+	// emit an `<a class="wikidot-email">` with a
+	// `data-user` + `data-domain` split so a small
+	// client-side script (or just CSS hover) can
+	// reassemble the address without it appearing
+	// verbatim in the HTML source.
+	reWDEmailBlock = regexp.MustCompile(`(?is)\[\[email\]\](.*?)\[\[/email\]\]`)
+	reWDEmailTag   = regexp.MustCompile(`(?i)\[\[email\s+([^\s\]]+@[^\s\]]+)\]\]`)
 	reWDHTMLBlock  = regexp.MustCompile(`(?s)(<(?:pre|table|ul|ol|blockquote|div|details|summary)\b.*?</(?:pre|table|ul|ol|blockquote|div|details|summary)>)`)
 
 	// reWDLineContinuation matches `X _\nY` and captures `X` —
@@ -978,6 +1023,43 @@ func (p *wikidotParser) convertInternal(source string, appendFootnotes bool) str
 	// `---` both denote a thematic break, so we accept 3+ here.
 	out = reWDHR.ReplaceAllString(out, `<hr>`)
 
+	// `[[divider]]` — themed HR equivalent to `----` but
+	// emitted with a `wikidot-divider` class so the
+	// front-end can style it without touching the plain
+	// `<hr>` used by the line form.
+	out = reWDDivider.ReplaceAllString(out, `<hr class="wikidot-divider">`)
+
+	// `[[note]]…[[/note]]` — inline note box. Run
+	// before Phase 2 (inline formatting) so the
+	// paragraph-wrapper sees a clean block boundary
+	// on each side. The body goes through
+	// `inlineOnly` (NOT `convertNoFootnote`) so any
+	// `**bold**` / `//italic//` / `[link]` markup
+	// inside the note still renders, but no `<p>`
+	// wrapper or `<br />` line-breaks get added —
+	// the `<aside>` itself is a block container, so
+	// wrapping its body would produce invalid
+	// `<aside><p>...</p></aside>` HTML with the
+	// `<p>` immediately inside `<aside>` (which the
+	// browser would auto-close anyway, leaving the
+	// rest of the note outside any wrapper).
+	out = reWDNote.ReplaceAllStringFunc(out, func(s string) string {
+		m := reWDNote.FindStringSubmatch(s)
+		// Convert the body to inline HTML and then
+		// collapse hard newlines into `<br />` so the
+		// paragraph-wrapper downstream doesn't see
+		// lines inside the `<aside>` and produce a
+		// stray `<p>...</p>` inside the block. The
+		// `<aside>` is itself a block container, so
+		// wrapping its body in `<p>` would be
+		// invalid HTML (browsers auto-close `<p>`
+		// when they see a block inside, which leaves
+		// the rest of the note unwrapped).
+		body := strings.TrimSpace(inlineOnly(m[1]))
+		body = strings.ReplaceAll(body, "\n", "<br />")
+		return fmt.Sprintf(`<aside class="wikidot-note">%s</aside>`, body)
+	})
+
 	// ── Phase 2: inline formatting ─────────────────────────────────
 	// Pre-process: replace backslash-escaped slashes with a sentinel
 	// so `//` isn't confused with italic markers.
@@ -1122,6 +1204,50 @@ func (p *wikidotParser) convertInternal(source string, appendFootnotes bool) str
 			return img
 		}
 		return ""
+	})
+
+	// 3e. `[[button label target]]` — Wikidot-style
+	// button link. The label is shown as the button
+	// text; the target is the URL the button opens.
+	// When the target looks external (http(s)://) we
+	// add `rel="nofollow noopener" target="_blank"`
+	// — same posture as the `[url text]` external
+	// link above. When the target is omitted we
+	// default to `#` (Wikidot's spec for a
+	// placeholder button).
+	out = reWDButton.ReplaceAllStringFunc(out, func(s string) string {
+		m := reWDButton.FindStringSubmatch(s)
+		label := strings.TrimSpace(m[1])
+		target := strings.TrimSpace(m[2])
+		if target == "" {
+			target = "#"
+		}
+		safe := sanitizeURLForAttr(target)
+		if safe == "" {
+			return html.EscapeString(label)
+		}
+		attrs := ""
+		if strings.HasPrefix(safe, "http://") || strings.HasPrefix(safe, "https://") {
+			attrs = ` rel="nofollow noopener" target="_blank"`
+		}
+		return fmt.Sprintf(`<a class="wikidot-button" href="%s"%s>%s</a>`, safe, attrs, html.EscapeString(label))
+	})
+
+	// 3f. `[[email]]address[[/email]]` (block form)
+	// and `[[email address]]` (single-tag form).
+	// Both render to the same `<a class="wikidot-email">`
+	// with the address split across `data-user` /
+	// `data-domain` so a naive scraper sees no
+	// readable email in the HTML source. The
+	// on-page link text is the assembled address;
+	// browsers show it normally, scrapers don't.
+	out = reWDEmailBlock.ReplaceAllStringFunc(out, func(s string) string {
+		m := reWDEmailBlock.FindStringSubmatch(s)
+		return renderEmailLink(strings.TrimSpace(m[1]))
+	})
+	out = reWDEmailTag.ReplaceAllStringFunc(out, func(s string) string {
+		m := reWDEmailTag.FindStringSubmatch(s)
+		return renderEmailLink(strings.TrimSpace(m[1]))
 	})
 
 	// ── Phase 4: headings ────────────────────────────────────────────
@@ -1300,6 +1426,33 @@ func renderCodeBlock(code, lang string) string {
 		cls = fmt.Sprintf(` class="language-%s"`, lang)
 	}
 	return fmt.Sprintf(`<pre><code%s>%s</code></pre>`, cls, c)
+}
+
+// renderEmailLink turns a single address (no brackets, no
+// surrounding markup) into the obfuscated `<a class="wikidot-email">`
+// markup. The address is split at the LAST `@` into `user` /
+// `domain` halves and stored in `data-` attributes; the visible
+// link text is the assembled address so the user sees a normal
+// mailto link, but a naive HTML scraper looking for the `@` will
+// only find it in the rendered text (and modern scrapers already
+// extract from there — this is a low-grade obfuscation, not a
+// serious anti-harvest measure). When the address is malformed
+// (no `@`) we fall back to plain text.
+func renderEmailLink(addr string) string {
+	at := strings.LastIndex(addr, "@")
+	if at <= 0 || at >= len(addr)-1 {
+		return html.EscapeString(addr)
+	}
+	user := addr[:at]
+	domain := addr[at+1:]
+	display := user + "@" + domain
+	return fmt.Sprintf(
+		`<a class="wikidot-email" href="mailto:%s" data-user="%s" data-domain="%s">%s</a>`,
+		html.EscapeString(display),
+		html.EscapeString(user),
+		html.EscapeString(domain),
+		html.EscapeString(display),
+	)
 }
 
 // emitHeading converts a heading regex match into the corresponding
@@ -3134,7 +3287,7 @@ func wrapWikidotParagraphs(text string) string {
 	// here so the renderWikidotDefList output (a contiguous
 	// `<dl>…</dl>` block) doesn't end up with a stray
 	// `<p><dl>…</dl></p>` wrap.
-	blockInBuf := regexp.MustCompile(`<(?:div|table|pre|ul|ol|dl|h[1-6]|hr|blockquote|details|summary|section)\b`)
+	blockInBuf := regexp.MustCompile(`<(?:div|table|pre|ul|ol|dl|h[1-6]|hr|blockquote|details|summary|section|aside)\b`)
 	flush := func() {
 		if len(buf) > 0 {
 			joined := strings.Join(buf, "<br />\n")
@@ -3158,10 +3311,50 @@ func wrapWikidotParagraphs(text string) string {
 	// the whole match silently failed. Splitting the open
 	// and close forms fixes the false-negative on `<div …>`
 	// and `<pre …>` lines.
-	blockOpenStart := regexp.MustCompile(`^<(h[1-6]|hr|li|p|img|blockquote|ul|ol|pre|table|div|details|summary|section)\b`)
-	blockCloseStart := regexp.MustCompile(`^</(h[1-6]|hr|li|p|img|blockquote|ul|ol|dl|pre|table|div|details|summary|section)>`)
-	for _, line := range lines {
+	blockOpenStart := regexp.MustCompile(`^<(h[1-6]|hr|li|p|img|blockquote|ul|ol|pre|table|div|details|summary|section|aside)\b`)
+	blockCloseStart := regexp.MustCompile(`^</(h[1-6]|hr|li|p|img|blockquote|ul|ol|dl|pre|table|div|details|summary|section|aside)>`)
+	// preOpen / preClose pair: when the wrap sees a `<pre>...</pre>`
+	// block, it consumes every line from the opener through the
+	// closer as a single opaque unit. The lines between are emitted
+	// verbatim (no <br /> insertion, no <p> wrapping) so the
+	// <pre>'d content keeps its original spacing. Without this
+	// special-case, every newline inside `<pre><code>` ends up as
+	// `<br />` and the whole body gets wrapped in `<p>`, producing
+	// invalid `<p><pre><code>...<br /></code></pre></p>` HTML.
+	preOpen := regexp.MustCompile(`(?i)^<pre\b`)
+	preClose := regexp.MustCompile(`(?i)^</pre>`)
+	for i := 0; i < len(lines); i++ {
+		line := lines[i]
 		trimmed := strings.TrimSpace(line)
+		// If a `<pre>` line starts a block, accumulate
+		// everything up to and including the matching
+		// `</pre>` and emit it as a single chunk.
+		// Subsequent lines (even ones that match
+		// blockOpenStart themselves) get appended to
+		// this chunk instead of being processed
+		// individually.
+		if preOpen.MatchString(trimmed) {
+			flush()
+			var preBlock []string
+			preBlock = append(preBlock, line)
+			// Single-line `<pre>…</pre>` case (rare but
+			// possible if some upstream pass collapsed the
+			// source): emit just that one line.
+			if preClose.MatchString(trimmed) {
+				result = append(result, preBlock...)
+				continue
+			}
+			i++
+			for i < len(lines) {
+				preBlock = append(preBlock, lines[i])
+				if preClose.MatchString(strings.TrimSpace(lines[i])) {
+					break
+				}
+				i++
+			}
+			result = append(result, preBlock...)
+			continue
+		}
 		// If a placeholder marker is buried in the middle of a
 		// line (e.g. `inline prefix %%BLOCK_5%% inline suffix`),
 		// split the line around it: the prefix joins the
