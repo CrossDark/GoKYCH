@@ -7,6 +7,7 @@ import { getCsrf, getMe, getArticle, updateArticle, deleteArticle } from "@/lib/
 import type { Article, User } from "@/lib/types";
 import { useToast, useBeforeUnload } from "@/lib/admin-feedback";
 import { AdminConfirm } from "@/components/admin/AdminConfirm";
+import { MarkdownEditor } from "@/components/admin/MarkdownEditor";
 
 const TYPE_LABELS: Record<string, string> = {
   md: "Markdown",
@@ -282,10 +283,11 @@ export default function AdminArticleDetail({ params }: PageProps) {
                 内容
                 <span style={{ color: "var(--admin-danger)", marginLeft: 4 }} aria-hidden="true">*</span>
               </label>
-              <textarea
+              <MarkdownEditor
                 id="detail-content"
                 value={form.content}
-                onChange={(e) => setForm({ ...form, content: e.target.value })}
+                onChange={(next) => setForm({ ...form, content: next })}
+                type={type}
                 rows={20}
                 required
                 placeholder="支持 Markdown / Wikidot / HTML / BBCode / Typst（取决于类型）"

@@ -7,6 +7,7 @@ import { getCsrf, getMe, listArticles, getArticle, createArticle, updateArticle,
 import type { Article, ArticleListResult, User } from "@/lib/types";
 import { useToast, useBeforeUnload } from "@/lib/admin-feedback";
 import { AdminConfirm } from "@/components/admin/AdminConfirm";
+import { MarkdownEditor } from "@/components/admin/MarkdownEditor";
 
 const TYPES = [
   { key: "md", label: "Markdown" },
@@ -236,10 +237,11 @@ function AdminArticlesInner() {
                 内容
                 <span style={{ color: "var(--admin-danger)", marginLeft: 4 }} aria-hidden="true">*</span>
               </label>
-              <textarea
+              <MarkdownEditor
                 id="article-content"
                 value={form.content}
-                onChange={(e) => setForm({ ...form, content: e.target.value })}
+                onChange={(next) => setForm({ ...form, content: next })}
+                type={form.type}
                 rows={12}
                 required
                 placeholder="支持 Markdown / Wikidot / HTML / BBCode / Typst（取决于类型）"

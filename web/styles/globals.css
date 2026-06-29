@@ -4918,3 +4918,122 @@ body.admin-modal-open { overflow: hidden; }
     to   { opacity: 1; transform: translateX(0); }
 }
 
+/* ── MarkdownEditor (admin 文章编辑器) ── */
+/* 编辑器三态: 编辑 / 预览 / 分屏
+ * 编辑 + 预览 两个面板,分屏态下左右并排,
+ * 窄屏自动堆叠。
+ *
+ * 预览面板复用 .content-body 的样式(跟文章详情页一致),
+ * 这样作者看到的预览就是读者会看到的样式,所见即所得。 */
+.markdown-editor {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    width: 100%;
+}
+.markdown-editor-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.4rem;
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    flex-wrap: wrap;
+}
+.markdown-editor-tab {
+    padding: 0.4rem 0.85rem;
+    font-size: 0.88rem;
+    color: var(--text-secondary);
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background 0.12s, color 0.12s;
+    font-family: inherit;
+}
+.markdown-editor-tab:hover:not(:disabled) {
+    background: var(--bg-card);
+    color: var(--text);
+}
+.markdown-editor-tab.active {
+    background: var(--bg-card);
+    color: var(--accent);
+    border-color: var(--border);
+    font-weight: 500;
+}
+.markdown-editor-tab:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+.markdown-editor-toolbar-hint {
+    margin-left: auto;
+    padding: 0 0.5rem;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    font-style: italic;
+}
+
+/* 分屏: 编辑 / 预览 各占一半,中间细缝隔开 */
+.markdown-editor[data-mode="split"] {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.5rem;
+    align-items: stretch;
+}
+.markdown-editor[data-mode="split"] .markdown-editor-toolbar {
+    grid-column: 1 / -1;
+}
+/* 窄屏(< 900px): 分屏退化成单列堆叠 */
+@media (max-width: 900px) {
+    .markdown-editor[data-mode="split"] {
+        grid-template-columns: 1fr;
+    }
+}
+
+.markdown-editor-edit-pane textarea {
+    width: 100%;
+    min-height: 320px;
+    resize: vertical;
+    font-family: ui-monospace, "SF Mono", "Cascadia Code", "Fira Code", Consolas, monospace;
+    font-size: 0.92rem;
+    line-height: 1.55;
+    padding: 0.75rem;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text);
+}
+.markdown-editor-edit-pane textarea:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(var(--accent-rgb, 100, 100, 200), 0.12);
+}
+
+.markdown-editor-preview-pane {
+    min-height: 320px;
+    max-height: 70vh;
+    overflow: auto;
+    padding: 0.75rem 1rem;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+}
+/* 分屏态下,预览面板不重复 padding(已经在容器上) */
+.markdown-editor[data-mode="split"] .markdown-editor-preview-pane {
+    margin: 0;
+}
+.markdown-editor-preview-empty {
+    color: var(--text-muted);
+    text-align: center;
+    padding: 2rem 1rem;
+    font-size: 0.92rem;
+}
+.markdown-editor-preview-empty p {
+    margin: 0.3rem 0;
+}
+.markdown-editor-preview-content {
+    /* .content-body 已经定义了文章样式,这里只做边距收紧 */
+    padding: 0;
+}
+

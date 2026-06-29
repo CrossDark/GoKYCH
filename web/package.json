@@ -11,6 +11,7 @@
   "dependencies": {
     "@types/dompurify": "^3.0.5",
     "dompurify": "^3.4.11",
+    "marked": "^18.0.5",
     "next": "^15.1.0",
     "next-themes": "^0.4.4",
     "react": "^19.0.0",
