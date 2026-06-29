@@ -655,6 +655,165 @@ hr {
     margin: 1.5rem 0;
 }
 
+/* ── Wikidot-syntax content blocks ── */
+
+/* Definition list (`: term : def` rendered to `<dl><dt><dd>`). The
+ * default browser styling lays dt / dd on the same line with a
+ * small indent; we tighten the gap and align terms visually. */
+.content-body dl {
+    margin: 1rem 0;
+    padding: 0.5rem 0.75rem;
+    background: var(--code-bg);
+    border-radius: var(--radius);
+}
+.content-body dt {
+    font-weight: 600;
+    color: var(--accent);
+    margin-top: 0.5rem;
+}
+.content-body dt:first-child {
+    margin-top: 0;
+}
+.content-body dd {
+    margin-left: 1.5rem;
+    margin-bottom: 0.25rem;
+    color: var(--text-secondary);
+}
+
+/* `[[collapsible]]…[[/collapsible]]` → <details class="wiki-collapsible">.
+ * The default `details` marker is overridden with the summary text the
+ * parser emits (`+ show block` / `- hide block`); authors can replace
+ * via `show="…"` / `hide="…"` attributes. */
+.content-body details.wiki-collapsible {
+    margin: 1rem 0;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--code-bg);
+}
+.content-body details.wiki-collapsible > summary {
+    cursor: pointer;
+    padding: 0.6rem 1rem;
+    font-weight: 500;
+    user-select: none;
+    list-style: none;
+}
+.content-body details.wiki-collapsible > summary::-webkit-details-marker {
+    display: none;
+}
+.content-body details.wiki-collapsible > summary:hover {
+    background: rgba(128, 128, 128, 0.06);
+}
+.content-body .collapsible-content {
+    padding: 0 1rem 0.75rem;
+}
+
+/* Float-TOC divs from `[[f<toc]]` / `[[f>toc]]`. The TOC body is the
+ * same nested `<ul>` the regular `[[toc]]` produces; the float
+ * positioning is opt-in per author. */
+.content-body .wikidot-toc {
+    margin: 0.75rem 1.5rem;
+    padding: 0.5rem 0.75rem;
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    max-width: 16rem;
+}
+.content-body .wikidot-toc-float-left {
+    float: left;
+    clear: left;
+}
+.content-body .wikidot-toc-float-right {
+    float: right;
+    clear: right;
+}
+.content-body .wikidot-toc ul {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+.content-body .wikidot-toc li {
+    padding: 0.15rem 0;
+}
+.content-body .wikidot-toc a {
+    color: var(--accent);
+    text-decoration: none;
+}
+.content-body .wikidot-toc a:hover {
+    text-decoration: underline;
+}
+
+/* Footnotes (`[N]` / `[[footnote]]…[[/footnote]]` /
+ * `[[footnoteblock]]`). The in-place `<sup>` ref links to the
+ * bottom-of-section list; the section is rendered at the
+ * `[[footnoteblock]]` marker (or auto-appended at end of article). */
+.content-body .footnote-ref {
+    font-size: 0.75em;
+    line-height: 0;
+    vertical-align: super;
+}
+.content-body .footnote-ref a {
+    color: var(--accent);
+    text-decoration: none;
+}
+.content-body .footnote-ref a:hover {
+    text-decoration: underline;
+}
+.content-body section.footnotes {
+    margin-top: 2rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--border);
+    font-size: 0.92rem;
+}
+.content-body .footnotes-title {
+    font-size: 1rem;
+    font-weight: 600;
+    margin-bottom: 0.5rem;
+    color: var(--text-secondary);
+}
+.content-body section.footnotes ol {
+    padding-left: 1.5rem;
+}
+.content-body section.footnotes li {
+    margin-bottom: 0.3rem;
+    color: var(--text-secondary);
+}
+.content-body .footnote-backref {
+    color: var(--text-muted);
+    text-decoration: none;
+    margin-left: 0.3rem;
+}
+.content-body .footnote-backref:hover {
+    color: var(--accent);
+}
+
+/* User mentions (`[[user X]]` / `[[*user X]]`). Plain link styled as
+ * a tag chip; the `staff` variant adds a faint accent border. The
+ * href points at `/user/<slug>` which 404s today until UserLookup
+ * is wired in (next round); the parser still emits the link so
+ * downstream consumers can already index it. */
+.content-body .user-mention {
+    display: inline-block;
+    padding: 0.05rem 0.4rem;
+    border-radius: 4px;
+    background: var(--code-bg);
+    color: var(--accent);
+    text-decoration: none;
+    font-size: 0.95em;
+}
+.content-body .user-mention:hover {
+    background: rgba(128, 128, 128, 0.12);
+    text-decoration: none;
+}
+.content-body .user-mention-staff {
+    border: 1px solid var(--accent);
+    font-weight: 500;
+}
+
+/* Advanced list attrs ([[ul class="..."]] / [[li class="..."]]).
+ * Browser-default `<ul>` / `<ol>` styling is fine; just make sure
+ * the class on the outer wrapper is honoured (no reset that would
+ * strip it). */
+
 /* ── 行号（中屏及以上在文章左侧显示） ── */
 @media (min-width: 768px) {
     .content-body {
