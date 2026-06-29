@@ -8,6 +8,7 @@ import { CommentSection } from "./CommentSection";
 import { SafeMarkdown } from "./SafeMarkdown";
 import { getMe, getCsrf, addLineComment, apiUrl } from "@/lib/api";
 import { UserAvatar } from "@/components/admin/UserAvatar";
+import { hydrateMarkdown } from "@/lib/markdown-hydrate";
 
 interface Props {
   data: ArticleDetail;
@@ -295,6 +296,13 @@ useEffect(() => {
       const count = counts[n] || 0;
       block.classList.toggle("has-line-comments", count > 0);
     });
+
+    // Hydrate KaTeX math + mermaid diagrams. Server-side Goldmark
+    // doesn't parse $…$ / $$…$$ / ```mermaid ```, so the HTML
+    // contains the raw patterns; this pass swaps them for rendered
+    // output. Must run after DOMPurify (above) — KaTeX HTML uses
+    // tags/classes that DOMPurify would strip.
+    await hydrateMarkdown(container);
 
     // Measure bubble positions inline: we are guaranteed lines exist at this point.
     // The async import has resolved, innerHTML is set, and data-line attributes are applied.

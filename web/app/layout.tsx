@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { ThemeProvider } from "@/components/ThemeProvider";
 import { ThemeStylesheet } from "@/components/ThemeStylesheet";
 import { LayoutWrapper } from "./LayoutWrapper";
+import "katex/dist/katex.min.css";
 import "@/styles/globals.css";
 
 export const metadata: Metadata = {

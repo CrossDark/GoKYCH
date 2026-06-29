@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { hydrateMarkdown } from "@/lib/markdown-hydrate";
 
 interface Props {
   /** Server-rendered HTML (from the backend's safe goldmark pass). */
@@ -32,6 +33,11 @@ interface Props {
  *     and (b) the safer alternative (isomorphic-dompurify + jsdom) adds
  *     ~500KB of server bundle. Revisit if we ever expose user input that
  *     bypasses the server renderer.
+ *
+ * Math + Mermaid: comments / notifications occasionally include math
+ * (e.g. someone pasting from a Stack-Overflow-style forum). After the
+ * DOMPurify pass, run hydrateMarkdown() so `$x^2$` becomes KaTeX output.
+ * It's a no-op if there's no math/mermaid in the source.
  */
 export function SafeMarkdown({ html, text, className }: Props) {
   const ref = useRef<HTMLDivElement>(null);
@@ -63,6 +69,21 @@ export function SafeMarkdown({ html, text, className }: Props) {
       cancelled = true;
     };
   }, [html]);
+
+  // Hydrate math + mermaid once the sanitised HTML has been committed
+  // to the DOM. Runs after React paints so users see plain text first,
+  // then the rendered formulas swap in. Idempotent — safe to re-run.
+  useEffect(() => {
+    if (!ref.current || sanitised === "") return;
+    let cancelled = false;
+    (async () => {
+      await hydrateMarkdown(ref.current!);
+      if (cancelled) return;
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [sanitised]);
 
   if (!html && text) {
     return <div className={className}>{text}</div>;

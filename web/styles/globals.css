@@ -5037,3 +5037,97 @@ body.admin-modal-open { overflow: hidden; }
     padding: 0;
 }
 
+/* ── KaTeX math + Mermaid diagrams (markdown hydration) ── */
+/* Both are injected client-side by lib/markdown-hydrate.ts
+ * after the marked/Goldmark pass + DOMPurify. They apply
+ * equally to:
+ *   - admin editor preview (.markdown-editor-preview-content)
+ *   - public article view (.content-body)
+ *   - comment / notification SafeMarkdown wrappers
+ *
+ * Dark mode: KaTeX's CSS uses hardcoded colors (mostly black).
+ * We override only what's necessary so formulas remain legible
+ * against the dark background. */
+.content-body .katex,
+.markdown-editor-preview-content .katex {
+    color: var(--text);
+    font-size: 1.05em;
+}
+[data-theme="dark"] .content-body .katex,
+[data-theme="dark"] .markdown-editor-preview-content .katex {
+    color: #e6e6e6;
+}
+/* KaTeX inline math: tighten spacing around the formula so it
+ * sits naturally inside running text. */
+.content-body .katex-inline,
+.markdown-editor-preview-content .katex-inline {
+    display: inline-block;
+    vertical-align: middle;
+    margin: 0 0.1em;
+}
+/* Display math from $$...$$ / \[...\] / ```math blocks: a hair
+ * more breathing room and centered. */
+.content-body .katex-display,
+.markdown-editor-preview-content .katex-display,
+.content-body .math-block,
+.markdown-editor-preview-content .math-block {
+    margin: 1.1rem auto;
+    padding: 0.4rem 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+}
+/* Math hydration error fallback (extremely rare — only when
+ * KaTeX throws despite throwOnError:false). */
+.content-body [data-math-error],
+.markdown-editor-preview-content [data-math-error] {
+    color: var(--text-muted);
+    font-style: italic;
+    background: rgba(220, 38, 38, 0.08);
+    padding: 0 0.25em;
+    border-radius: 3px;
+}
+
+/* Mermaid SVG container. Centre it, give it some breathing room,
+ * and let the diagram shrink on narrow viewports (the SVG itself
+ * carries its own viewBox so width:100% scales cleanly). */
+.content-body .mermaid-diagram,
+.markdown-editor-preview-content .mermaid-diagram {
+    display: flex;
+    justify-content: center;
+    margin: 1.2rem 0;
+    padding: 0.6rem 0.4rem;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow-x: auto;
+}
+.content-body .mermaid-diagram svg,
+.markdown-editor-preview-content .mermaid-diagram svg {
+    max-width: 100%;
+    height: auto;
+}
+/* Mermaid in dark mode needs the diagram itself to switch themes.
+ * We re-render in dark by toggling `data-theme` on the wrapper;
+ * for now, leave the default theme (light) — most diagrams use
+ * neutral colours that read fine on dark backgrounds, and the
+ * alternative would mean re-rendering all diagrams on theme change
+ * which is a heavier change. Revisit if it bothers people. */
+[data-theme="dark"] .content-body .mermaid-diagram,
+[data-theme="dark"] .markdown-editor-preview-content .mermaid-diagram {
+    background: #1a1a1a;
+    border-color: #2a2a2a;
+}
+/* Mermaid parse error — show the source + a clear message. */
+.content-body .mermaid-error,
+.markdown-editor-preview-content .mermaid-error {
+    margin: 1rem 0;
+    padding: 0.6rem 0.8rem;
+    border: 1px dashed #dc2626;
+    border-radius: var(--radius);
+    background: rgba(220, 38, 38, 0.06);
+    color: #dc2626;
+    font-family: ui-monospace, "SF Mono", Consolas, monospace;
+    font-size: 0.88rem;
+    white-space: pre-wrap;
+}
+
