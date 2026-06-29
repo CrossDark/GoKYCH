@@ -1703,3 +1703,209 @@ func TestUserMentionLookupEmptyNickname(t *testing.T) {
 		t.Errorf("expected data-user-id even without nickname, got %q", out)
 	}
 }
+
+// ── Stage 4 (P2) — bgcolor / font / indent / iframe / video / audio / date ──
+
+// TestWikidotBgcolor verifies the `[[bgcolor name]]…[[/bgcolor]]`
+// block-form background colour. Like `[[color]]`, named
+// colours from the lookup table resolve to hex; raw CSS
+// passes through the CSS sanitiser (so `[[bgcolor #f0f0f0]]`
+// works, but `[[bgcolor red;expression(...)]]` drops the
+// CSS and falls back to the raw body text).
+func TestWikidotBgcolor(t *testing.T) {
+	// Named colour
+	out := RenderWikidot(`[[bgcolor yellow]]高亮文字[[/bgcolor]]`)
+	if !strings.Contains(out, `<span style="background:#f1c40f">高亮文字</span>`) {
+		t.Errorf("expected named bgcolor hex, got %q", out)
+	}
+	// Hex value passes through sanitiser
+	out = RenderWikidot(`[[bgcolor #ffeebb]]hex[[/bgcolor]]`)
+	if !strings.Contains(out, `style="background:#ffeebb"`) {
+		t.Errorf("expected hex bgcolor, got %q", out)
+	}
+	// Dangerous CSS (parens, semicolons) gets rejected —
+	// the marker falls back to plain text.
+	out = RenderWikidot(`[[bgcolor red;expression(alert(1))]]bad[[/bgcolor]]`)
+	if strings.Contains(out, `expression`) {
+		t.Errorf("expected expression() rejected, got %q", out)
+	}
+	if !strings.Contains(out, "bad") {
+		t.Errorf("expected body text preserved on rejection, got %q", out)
+	}
+}
+
+// TestWikidotFont verifies `[[font F]]…[[/font]]`
+// changes the font-family of the wrapped text. The
+// font value is sanitised through the same CSS path
+// as bgcolor (so a `font-family: expression(...)`
+// payload gets dropped). Multi-word font names like
+// "Times New Roman" work because the CSS sanitiser
+// allows spaces.
+func TestWikidotFont(t *testing.T) {
+	out := RenderWikidot(`[[font Courier]]mono[[/font]]`)
+	if !strings.Contains(out, `<span style="font-family:Courier">mono</span>`) {
+		t.Errorf("expected font span, got %q", out)
+	}
+	// Dangerous CSS rejected
+	out = RenderWikidot(`[[font x; url(javascript:alert(1))]]bad[[/font]]`)
+	if strings.Contains(out, `url(`) {
+		t.Errorf("expected url() rejected, got %q", out)
+	}
+}
+
+// TestWikidotIndent verifies the `[[indent]]…[[/indent]]`
+// block renders as `<div class="wikidot-indent">`. Body
+// is processed via `inlineOnly` (not the full convert
+// pipeline) so no `<p>` wrapper gets dropped inside the
+// div — that's the same fix we applied to `[[note]]`
+// to avoid invalid `<p><div>…</div></p>` HTML.
+func TestWikidotIndent(t *testing.T) {
+	out := RenderWikidot(`[[indent]]
+整段缩进
+跨多行
+[[/indent]]`)
+	if !strings.Contains(out, `<div class="wikidot-indent">`) {
+		t.Errorf("expected wikidot-indent div, got %q", out)
+	}
+	if strings.Contains(out, `<div class="wikidot-indent"><p>`) {
+		t.Errorf("expected NO <p> inside indent div, got %q", out)
+	}
+	if !strings.Contains(out, `整段缩进<br />`) {
+		t.Errorf("expected <br /> between body lines, got %q", out)
+	}
+}
+
+// TestWikidotIndentNested verifies nested
+// `[[indent]]…[[indent]]…[[/indent]]…[[/indent]]`
+// produces two stacked `<div class="wikidot-indent">`
+// divs. A naive non-greedy regex matcher would
+// consume the inner `[[/indent]]` first, breaking
+// the outer close; the renderer uses a depth-
+// counting matcher instead.
+func TestWikidotIndentNested(t *testing.T) {
+	out := RenderWikidot(`[[indent]]外
+[[indent]]内[[/indent]]
+[[/indent]]`)
+	// Two wikidot-indent divs
+	if strings.Count(out, `<div class="wikidot-indent">`) != 2 {
+		t.Errorf("expected two nested indent divs, got %q", out)
+	}
+	// No stray `[[/indent]]` literal text
+	if strings.Contains(out, `[[/indent]]`) {
+		t.Errorf("expected no raw [[/indent]] in output, got %q", out)
+	}
+	// Both inner and outer content present
+	if !strings.Contains(out, `>外`) {
+		t.Errorf("expected outer content, got %q", out)
+	}
+	if !strings.Contains(out, `>内`) {
+		t.Errorf("expected inner content, got %q", out)
+	}
+}
+
+// TestWikidotIframe verifies `[[iframe URL w h]]`
+// renders an `<iframe>` with the URL sanitised
+// through `sanitizeURLForAttr` (so `javascript:`
+// and `data:` URLs are rejected). Width and height
+// are optional — default is `100%` × `400`.
+func TestWikidotIframe(t *testing.T) {
+	// Sized iframe
+	out := RenderWikidot(`[[iframe https://example.com/embed 560 315]]`)
+	if !strings.Contains(out, `<iframe src="https://example.com/embed"`) {
+		t.Errorf("expected iframe src, got %q", out)
+	}
+	if !strings.Contains(out, `width="560"`) || !strings.Contains(out, `height="315"`) {
+		t.Errorf("expected width/height, got %q", out)
+	}
+	if !strings.Contains(out, `loading="lazy"`) {
+		t.Errorf("expected lazy loading, got %q", out)
+	}
+	// Default size
+	out = RenderWikidot(`[[iframe https://example.com/embed]]`)
+	if !strings.Contains(out, `width="100%"`) || !strings.Contains(out, `height="400"`) {
+		t.Errorf("expected defaults, got %q", out)
+	}
+	// Dangerous scheme rejected
+	out = RenderWikidot(`[[iframe javascript:alert(1)]]`)
+	if strings.Contains(out, `<iframe`) {
+		t.Errorf("expected dangerous scheme rejected, got %q", out)
+	}
+}
+
+// TestWikidotVideo verifies `[[video URL w h]]`
+// renders an HTML5 `<video>` with controls. Same
+// sanitisation posture as iframe.
+func TestWikidotVideo(t *testing.T) {
+	out := RenderWikidot(`[[video https://example.com/clip.mp4 640 360]]`)
+	if !strings.Contains(out, `<video src="https://example.com/clip.mp4"`) {
+		t.Errorf("expected video src, got %q", out)
+	}
+	if !strings.Contains(out, `width="640"`) || !strings.Contains(out, `height="360"`) {
+		t.Errorf("expected width/height, got %q", out)
+	}
+	if !strings.Contains(out, `controls`) {
+		t.Errorf("expected controls attribute, got %q", out)
+	}
+	// Default size when omitted (height="auto")
+	out = RenderWikidot(`[[video https://example.com/clip.mp4]]`)
+	if !strings.Contains(out, `height="auto"`) {
+		t.Errorf("expected height=auto default, got %q", out)
+	}
+	// data: URL rejected
+	out = RenderWikidot(`[[video data:text/html,foo]]`)
+	if strings.Contains(out, `<video`) {
+		t.Errorf("expected data: URL rejected, got %q", out)
+	}
+}
+
+// TestWikidotAudio verifies `[[audio URL]]` renders
+// an HTML5 `<audio>` with controls. The control chrome
+// is browser-native so we don't set width/height.
+func TestWikidotAudio(t *testing.T) {
+	out := RenderWikidot(`[[audio https://example.com/song.mp3]]`)
+	if !strings.Contains(out, `<audio src="https://example.com/song.mp3"`) {
+		t.Errorf("expected audio src, got %q", out)
+	}
+	if !strings.Contains(out, `controls`) {
+		t.Errorf("expected controls, got %q", out)
+	}
+	// Dangerous scheme
+	out = RenderWikidot(`[[audio javascript:alert(1)]]`)
+	if strings.Contains(out, `<audio`) {
+		t.Errorf("expected dangerous scheme rejected, got %q", out)
+	}
+}
+
+// TestWikidotDateDefault verifies `[[date]]` (no
+// format) renders the current server date in
+// `2006-01-02` form.
+func TestWikidotDateDefault(t *testing.T) {
+	out := RenderWikidot(`今天 [[date]]`)
+	// Match a YYYY-MM-DD pattern
+	if !regexp.MustCompile(`\d{4}-\d{2}-\d{2}`).MatchString(out) {
+		t.Errorf("expected YYYY-MM-DD date, got %q", out)
+	}
+}
+
+// TestWikidotDateCustomFormat verifies `[[date FMT]]`
+// uses the supplied Go time-format string. We use
+// `15:04:05` here so the test is robust against
+// timezone / daylight-savings jitter (matches just
+// the `HH:MM:SS` shape).
+func TestWikidotDateCustomFormat(t *testing.T) {
+	out := RenderWikidot(`[[date 15:04:05]]`)
+	if !regexp.MustCompile(`\d{2}:\d{2}:\d{2}`).MatchString(out) {
+		t.Errorf("expected HH:MM:SS, got %q", out)
+	}
+}
+
+// TestWikidotDateWikidotFormat verifies that the
+// Wikidot `$YYYY-$MM-$DD` style format works
+// (translated to Go's `2006-01-02` internally).
+// This is the format style migrated articles use.
+func TestWikidotDateWikidotFormat(t *testing.T) {
+	out := RenderWikidot(`[[date $YYYY-$MM-$DD]]`)
+	if !regexp.MustCompile(`\d{4}-\d{2}-\d{2}`).MatchString(out) {
+		t.Errorf("expected $YYYY-$MM-$DD to render as YYYY-MM-DD, got %q", out)
+	}
+}

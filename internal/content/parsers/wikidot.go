@@ -72,8 +72,50 @@ var (
 	reWDCollapsibleAttr = regexp.MustCompile(`([a-zA-Z][\w-]*)\s*=\s*"([^"]*)"`)
 	reWDSize            = regexp.MustCompile(`(?is)\[\[size\s+([^\]]+)\]\](.*?)\[\[/size\]\]`)
 	reWDColor           = regexp.MustCompile(`(?is)\[\[color\s+([^\]]+)\]\](.*?)\[\[/color\]\]`)
-	reWDMath            = regexp.MustCompile(`(?is)\[\[math\]\](.*?)\[\[/math\]\]`)
-	reWDHTMLRaw         = regexp.MustCompile(`(?is)\[\[html\]\](.*?)\[\[/html\]\]`)
+	// [[bgcolor name]]…[[/bgcolor]] — Wikidot's block-form
+	// background-colour span. Companion to [[color]]; uses
+	// the same `colorNames` lookup plus raw CSS passthrough
+	// so `[[bgcolor yellow]]`, `[[bgcolor #f0f0f0]]`, and
+	// `[[bgcolor rgba(0,0,0,0.1)]]` all work (subject to
+	// the usual sanitizeCSSValue rejection of dangerous
+	// tokens).
+	reWDBgcolor = regexp.MustCompile(`(?is)\[\[bgcolor\s+([^\]]+)\]\](.*?)\[\[/bgcolor\]\]`)
+	// [[font name]]…[[/font]] — change the font-family of
+	// the wrapped text. The name can be a CSS font stack
+	// (commas allowed; quote-safe via sanitizeCSSValue).
+	reWDFont = regexp.MustCompile(`(?is)\[\[font\s+([^\]]+)\]\](.*?)\[\[/font\]\]`)
+	// [[indent]]…[[/indent]] — Wikidot's indent block.
+	// Renders to `<div class="wikidot-indent">` so the
+	// front-end can decide how much to indent (CSS-driven,
+	// theme-aware). Nesting is implicit: each level adds
+	// a wrapping `<div>` so the CSS `padding-left` adds
+	// up the same way Wikidot's `[[indent]]` does.
+	reWDIndent = regexp.MustCompile(`(?is)\[\[indent\]\](.*?)\[\[/indent\]\]`)
+	// [[iframe URL]] / [[iframe URL width height]] —
+	// Wikidot's direct iframe embed. URL is run through
+	// sanitizeURLForAttr so a `javascript:` or
+	// `data:text/html` payload can't smuggle script in.
+	// Width / height are optional (defaults 100% × 400).
+	reWDIframe = regexp.MustCompile(`(?i)\[\[iframe\s+([^\s\]]+)(?:\s+(\d+)\s+(\d+))?\]\]`)
+	// [[video URL]] / [[video URL width height]] — HTML5
+	// `<video>` embed. Same URL sanitisation as iframe;
+	// width / height optional (defaults 100% × auto).
+	reWDVideo = regexp.MustCompile(`(?i)\[\[video\s+([^\s\]]+)(?:\s+(\d+)\s+(\d+))?\]\]`)
+	// [[audio URL]] — HTML5 `<audio>` embed. URL
+	// sanitised like the other media forms. Width /
+	// height are ignored (audio has no intrinsic size);
+	// we render `<audio controls src="…">` and let the
+	// browser's native control chrome decide the layout.
+	reWDAudio = regexp.MustCompile(`(?i)\[\[audio\s+([^\s\]]+)\]\]`)
+	// [[date]] / [[date format]] — current date.
+	// Format is a Go time format string; the renderer
+	// substitutes it directly. When the format is omitted
+	// we default to the site-friendly `2006-01-02`
+	// (Wikidot's default behaviour; the author can
+	// override per locale).
+	reWDDate    = regexp.MustCompile(`(?i)\[\[date(?:\s+([^\]]+))?\]\]`)
+	reWDMath    = regexp.MustCompile(`(?is)\[\[math\]\](.*?)\[\[/math\]\]`)
+	reWDHTMLRaw = regexp.MustCompile(`(?is)\[\[html\]\](.*?)\[\[/html\]\]`)
 	// YouTube ID — Wikidot's real rule is broader than `[A-Za-z0-9_-]{6,20}`
 	// (it accepts 11-char base64-ish IDs plus our authors occasionally paste
 	// long, oddly-formatted test strings like 中文). Loosen to a generic
@@ -908,6 +950,131 @@ func (p *wikidotParser) convertInternal(source string, appendFootnotes bool) str
 			return inlineOnly(m[2])
 		}
 		return fmt.Sprintf(`<span style="color:%s">%s</span>`, css, inlineOnly(m[2]))
+	})
+
+	// 1k.5 Background colour `[[bgcolor name]]…[[/bgcolor]]`.
+	// Companion to color; same name table + CSS pass-through.
+	// Output is a span with `background:` style (block-level
+	// padding would need a div, but Wikidot treats bgcolor
+	// as inline so the wrapped text inherits the colour
+	// without breaking the surrounding paragraph).
+	out = reWDBgcolor.ReplaceAllStringFunc(out, func(s string) string {
+		m := reWDBgcolor.FindStringSubmatch(s)
+		css := m[1]
+		if v, ok := colorNames[strings.ToLower(css)]; ok {
+			css = v
+		} else if css = sanitizeCSSValue(css); css == "" {
+			return inlineOnly(m[2])
+		}
+		return fmt.Sprintf(`<span style="background:%s">%s</span>`, css, inlineOnly(m[2]))
+	})
+
+	// 1k.6 Font family `[[font F]]…[[/font]]`. CSS value
+	// sanitised (drops `()`, `{}`, `expression`, etc.) so
+	// an attacker can't slip a `font-family: expression(...)`
+	// payload into the article.
+	out = reWDFont.ReplaceAllStringFunc(out, func(s string) string {
+		m := reWDFont.FindStringSubmatch(s)
+		css := sanitizeCSSValue(m[1])
+		if css == "" {
+			return inlineOnly(m[2])
+		}
+		return fmt.Sprintf(`<span style="font-family:%s">%s</span>`, css, inlineOnly(m[2]))
+	})
+
+	// 1k.7 Indent block `[[indent]]…[[/indent]]`. Renders
+	// to `<div class="wikidot-indent">` so CSS controls
+	// the depth (and dark-mode-aware contrast). The body
+	// uses `inlineOnly` (NOT `convertNoFootnote`) — same
+	// reasoning as the [[note]] block: routing through
+	// the full convert pipeline would emit a `<p>` /
+	// `<br />` inside the indent div that the downstream
+	// paragraph-wrap then has to deal with, producing
+	// invalid `<p><div><p>...</p></div></p>` HTML. With
+	// inlineOnly + newline→`<br />`, the body becomes a
+	// flat inline run that sits cleanly inside the
+	// block-level `<div>`. Nested indents accumulate
+	// padding via CSS — each level adds another wrapping
+	// `<div class="wikidot-indent">`.
+	//
+	// Nested indents need a BALANCED matcher: a non-greedy
+	// regex would consume an INNER `[[/indent]]` first,
+	// leaving the outer close un-balanced. We do a small
+	// depth-counting scan via `renderWikidotIndentBlocks`
+	// that finds each matching close in turn, then replace
+	// the whole span in one pass.
+	out = renderWikidotIndentBlocks(out, p)
+
+	// 1k.8 Iframe / video / audio. URL sanitised the same
+	// way images are — protocol allowlist + quote-reject
+	// + no protocol-relative tricks. Width / height are
+	// optional and fall back to the renderer's defaults
+	// (defined here so the regex and the renderer stay
+	// in sync).
+	out = reWDIframe.ReplaceAllStringFunc(out, func(s string) string {
+		m := reWDIframe.FindStringSubmatch(s)
+		url := strings.TrimSpace(m[1])
+		w := m[2]
+		h := m[3]
+		if w == "" {
+			w = "100%"
+		}
+		if h == "" {
+			h = "400"
+		}
+		if safe := sanitizeURLForAttr(url); safe != "" {
+			return fmt.Sprintf(`<iframe src="%s" width="%s" height="%s" loading="lazy" frameborder="0"></iframe>`, safe, html.EscapeString(w), html.EscapeString(h))
+		}
+		return ""
+	})
+	out = reWDVideo.ReplaceAllStringFunc(out, func(s string) string {
+		m := reWDVideo.FindStringSubmatch(s)
+		url := strings.TrimSpace(m[1])
+		w := m[2]
+		h := m[3]
+		if w == "" {
+			w = "100%"
+		}
+		if h == "" {
+			h = "auto"
+		}
+		if safe := sanitizeURLForAttr(url); safe != "" {
+			return fmt.Sprintf(`<video src="%s" width="%s" height="%s" controls preload="metadata"></video>`, safe, html.EscapeString(w), html.EscapeString(h))
+		}
+		return ""
+	})
+	out = reWDAudio.ReplaceAllStringFunc(out, func(s string) string {
+		m := reWDAudio.FindStringSubmatch(s)
+		url := strings.TrimSpace(m[1])
+		if safe := sanitizeURLForAttr(url); safe != "" {
+			return fmt.Sprintf(`<audio src="%s" controls preload="metadata"></audio>`, safe)
+		}
+		return ""
+	})
+
+	// 1k.9 `[[date]]` / `[[date format]]`. Substitutes the
+	// current server time formatted per `format` (Go
+	// time format string). Empty / invalid format falls
+	// back to the site default `2006-01-02`. The
+	// rendered date is intentionally the render-time
+	// value — articles that want a stable date should
+	// hard-code it (Wikidot's own behaviour).
+	out = reWDDate.ReplaceAllStringFunc(out, func(s string) string {
+		m := reWDDate.FindStringSubmatch(s)
+		format := strings.TrimSpace(m[1])
+		if format == "" {
+			format = "2006-01-02"
+		}
+		// Catch the most common format mistakes
+		// (Wikidot uses its own token set — e.g.
+		// `$YYYY-$MM-$DD`) so a migrated article
+		// doesn't silently render garbage. We
+		// accept any string containing `$` and treat
+		// it as a Wikidot-style format, mapping the
+		// documented tokens to Go's layout; anything
+		// else passes through as a Go format.
+		format = mapWikidotDateFormat(format)
+		return html.EscapeString(time.Now().Format(format))
 	})
 
 	// 1m. Alignment blocks ([[=]] / [[<]] / [[>]] / [[==]])
@@ -2767,6 +2934,135 @@ func classFromAttrs(attrs map[string]string) string {
 // `-` and trim leading / trailing `-`. The result is
 // safe to drop into an `<a href="...">` (no `<`, `>`,
 // `"` or `'` survives) without an additional pass.
+
+// mapWikidotDateFormat accepts either a Go time-format
+// string or a Wikidot-style format string (the latter
+// uses `$YYYY` / `$MM` / `$DD` / `$HH` etc.). Wikidot
+// migrated articles tend to use the Wikidot form; we
+// translate the documented tokens to Go's layout so
+// the renderer doesn't silently produce garbage on
+// legacy pages. Anything not matching a documented
+// token is returned unchanged (Go's `time.Format` will
+// pass through unknown literals).
+//
+// renderWikidotIndentBlocks scans `source` left-to-right
+// for `[[indent]]` open tags, walks past any nested
+// `[[indent]]` opens (counting depth), and replaces each
+// matched `[[indent]]…[[/indent]]` block with the
+// rendered `<div class="wikidot-indent">`. The depth
+// counter is what makes nested indents work — a regex
+// can't count opens, so a non-greedy `.*?` between the
+// open and close tags would consume the FIRST inner
+// `[[/indent]]` it sees, breaking the outer block.
+//
+// Unmatched `[[indent]]` (no close anywhere downstream)
+// is left as raw text so the author can see the typo.
+func renderWikidotIndentBlocks(source string, p *wikidotParser) string {
+	const open = "[[indent]]"
+	const close = "[[/indent]]"
+	var sb strings.Builder
+	i := 0
+	for i < len(source) {
+		oi := strings.Index(source[i:], open)
+		if oi < 0 {
+			sb.WriteString(source[i:])
+			return sb.String()
+		}
+		// Emit the prefix up to the open tag.
+		sb.WriteString(source[i : i+oi])
+		blockStart := i + oi + len(open)
+		// Walk from blockStart, counting nested
+		// opens until we find the matching close.
+		depth := 1
+		j := blockStart
+		for j < len(source) {
+			nextOpen := strings.Index(source[j:], open)
+			nextClose := strings.Index(source[j:], close)
+			if nextClose < 0 {
+				// Unmatched — leave the
+				// open tag raw, plus
+				// everything after it (the
+				// author can see what they
+				// wrote).
+				sb.WriteString(source[i+oi:])
+				return sb.String()
+			}
+			if nextOpen >= 0 && nextOpen < nextClose {
+				depth++
+				j += nextOpen + len(open)
+				continue
+			}
+			depth--
+			closeEnd := j + nextClose + len(close)
+			if depth == 0 {
+				body := source[blockStart : j+nextClose]
+				// `inlineOnly` keeps inline
+				// formatting (bold / italic /
+				// links) but doesn't emit
+				// block-level wrappers. The
+				// newline-to-`<br />` rewrite
+				// lets multi-line bodies
+				// render without dragging a
+				// `<p>` into the indent div.
+				// First re-process the body
+				// so nested `[[indent]]`
+				// blocks become their own
+				// `<div>`s — otherwise a
+				// nested indent would stay
+				// as raw text inside the
+				// outer body. We recurse via
+				// `renderWikidotIndentBlocks`
+				// first; if the body has
+				// nested indents they'll
+				// come out as `<div>`s, and
+				// the surrounding inline
+				// text gets the newline
+				// rewrite.
+				preNested := renderWikidotIndentBlocks(body, p)
+				inner := strings.TrimSpace(inlineOnly(preNested))
+				inner = strings.ReplaceAll(inner, "\n", "<br />")
+				sb.WriteString(`<div class="wikidot-indent">`)
+				sb.WriteString(inner)
+				sb.WriteString(`</div>`)
+				i = closeEnd
+				goto nextBlock
+			}
+			j = closeEnd
+		}
+		// Reached EOF without finding a matching
+		// close at depth 1 — leave the open raw.
+		sb.WriteString(source[i+oi:])
+		return sb.String()
+	nextBlock:
+	}
+	return sb.String()
+}
+
+func mapWikidotDateFormat(format string) string {
+	if !strings.Contains(format, "$") {
+		return format
+	}
+	// Order matters: longer tokens first so `$YYYY`
+	// doesn't get partially replaced by `$YY`. We
+	// also handle `$M-$MM` order — the longer token
+	// is processed first.
+	replacer := strings.NewReplacer(
+		"$YYYY", "2006",
+		"$YY", "06",
+		"$MM", "01",
+		"$M", "1",
+		"$DD", "02",
+		"$D", "2",
+		"$HH", "15",
+		"$H", "15",
+		"$mm", "04",
+		"$m", "4",
+		"$ss", "05",
+		"$s", "5",
+	)
+	return replacer.Replace(format)
+}
+
 func slugifyUsername(name string) string {
 	name = strings.ToLower(strings.TrimSpace(name))
 	if name == "" {

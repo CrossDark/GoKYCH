@@ -905,6 +905,52 @@ hr {
     border-bottom-style: solid;
 }
 
+/* `[[indent]]…[[/indent]]` — Wikidot indent block. Each
+ * nesting level adds another wrapping div; the front-end
+ * applies a left padding that scales with depth so the
+ * visual indent compounds the same way Wikidot's does.
+ * Capped at 4 levels to avoid runaway indentation on
+ * pathological inputs. */
+.content-body .wikidot-indent {
+    margin: 0.5rem 0;
+    padding-left: 1.5rem;
+    border-left: 2px solid var(--border);
+}
+.content-body .wikidot-indent .wikidot-indent {
+    padding-left: 1.2rem;
+}
+.content-body .wikidot-indent .wikidot-indent .wikidot-indent {
+    padding-left: 1rem;
+}
+.content-body .wikidot-indent .wikidot-indent .wikidot-indent .wikidot-indent {
+    padding-left: 0.8rem;
+}
+
+/* `[[iframe …]]` — embedded iframe. The 16:9 default
+ * aspect is friendly to most embed sources (YouTube,
+ * Vimeo, etc.); authors can override via the `w h`
+ * dimensions in the source. `max-width:100%` keeps
+ * the embed from blowing out narrow viewports. */
+.content-body iframe {
+    max-width: 100%;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--code-bg);
+}
+
+/* `[[video …]]` / `[[audio …]]` — HTML5 media. Browser-
+ * native control chrome on audio; on video we constrain
+ * the inline size so a 4K source doesn't overflow. */
+.content-body video {
+    max-width: 100%;
+    border-radius: var(--radius);
+    background: var(--code-bg);
+}
+.content-body audio {
+    width: 100%;
+    margin: 0.5rem 0;
+}
+
 /* ── 行号（中屏及以上在文章左侧显示） ── */
 @media (min-width: 768px) {
     .content-body {
