@@ -83,9 +83,36 @@ var (
 	reWDModuleOpen  = regexp.MustCompile(`(?is)\[\[module\s+([A-Za-z]+)((?:\s+[^\]]*?)?)\]\]`)
 	reWDModuleClose = regexp.MustCompile(`\[\[/module\]\]`)
 
-	reWDCenter  = regexp.MustCompile(`(?s)\[\[=\]\](.*?)\[\[/=\]\]`)
-	reWDRight   = regexp.MustCompile(`(?s)\[\[>\]\](.*?)\[\[/>\]\]`)
-	reWDJustify = regexp.MustCompile(`(?s)\[\[==\]\](.*?)\[\[/==\]\]`)
+	reWDCenter    = regexp.MustCompile(`(?s)\[\[=\]\](.*?)\[\[/=\]\]`)
+	reWDLeftBlock = regexp.MustCompile(`(?s)\[\[<\]\](.*?)\[\[/<\]\]`)
+	reWDRight     = regexp.MustCompile(`(?s)\[\[>\]\](.*?)\[\[/>\]\]`)
+	reWDJustify   = regexp.MustCompile(`(?s)\[\[==\]\](.*?)\[\[/==\]\]`)
+
+	// Single-line alignment shortcuts. The Wikidot spec lets
+	// authors start a line with `= text` (center), `< text`
+	// (left) to apply a one-line alignment block — the
+	// block form `[[=]]...[[/=]]` is for multi-line
+	// content. The `<` form has to be on its own line and
+	// followed by whitespace to distinguish it from the
+	// less-than operator (which doesn't really appear in
+	// wikidot text, but we keep the leading-anchor rule for
+	// safety).
+	reWDCenterLine = regexp.MustCompile(`(?m)^=\s+(.+)$`)
+	reWDLeftLine   = regexp.MustCompile(`(?m)^<\s+(.+)$`)
+
+	// `+*` heading prefix — same leading-plus count as the
+	// normal `+` / `++` / etc. heading, but the trailing
+	// `*` marks the heading as "skip in TOC". We still
+	// emit a stable anchor id (so `[#name text]` and
+	// `[[[page#anchor]]]` keep working) — only the TOC
+	// builder filters these out. Multi-line mode so each
+	// `+*` heading is matched on its own line.
+	reWDH1Star = regexp.MustCompile(`(?m)^\+\*\s+(.+)$`)
+	reWDH2Star = regexp.MustCompile(`(?m)^\+\+\*\s+(.+)$`)
+	reWDH3Star = regexp.MustCompile(`(?m)^\+\+\+\*\s+(.+)$`)
+	reWDH4Star = regexp.MustCompile(`(?m)^\+\+\+\+\*\s+(.+)$`)
+	reWDH5Star = regexp.MustCompile(`(?m)^\+\+\+\+\+\*\s+(.+)$`)
+	reWDH6Star = regexp.MustCompile(`(?m)^\+\+\+\+\+\+\*\s+(.+)$`)
 
 	// Inline formatting (Phase 2). Bold/italic/underline/etc. kept verbatim
 	// from the original parser; new additions below.
@@ -106,8 +133,24 @@ var (
 	// alias. Treat the boundary as "non-`]` non-whitespace" so the
 	// name capture is greedy.
 	reWDAnchor = regexp.MustCompile(`\[#([^\]\s]+)(?:\s+([^\]]+))?\]`)
-	reWDMono   = regexp.MustCompile(`@@([^@]+?)@@`)
-	reWDBold   = regexp.MustCompile(`\*\*(.+?)\*\*`)
+	// reWDLiteral — `@@...@@` is the Wikidot literal-escape
+	// construct: the inner text is rendered VERBATIM, with
+	// no wikidot markup expansion. We stash the inner text
+	// as a block (HTML-escaped) in Phase 0 so that every
+	// downstream phase — Phase 1 (block storage), Phase 1.5
+	// (TOC), Phase 2 (inline formatting), Phase 9 (lists) —
+	// sees the placeholder, not the inner markup. The block
+	// is restored in Phase 10 with the inner text already
+	// entity-escaped, so even content like `**` or `[[code]]`
+	// inside `@@...@@` survives the round-trip unchanged.
+	//
+	// Note: this is a behavioural change from the previous
+	// parser, which treated `@@...@@` as monospace (a `<code>`
+	// wrapper). Wikidot's actual spec uses `@@...@@` for
+	// literal escape; monospace wikidot text is a separate
+	// feature (`{{...}}`, also still supported).
+	reWDLiteral = regexp.MustCompile(`@@([^@]+?)@@`)
+	reWDBold    = regexp.MustCompile(`\*\*(.+?)\*\*`)
 	// Italic `//x//` — the opening `//` must NOT be preceded by `:`,
 	// so URLs like `https://example.com` (which contain `://`) don't
 	// false-positive when they appear inside HTML tags the auto-linker
@@ -118,20 +161,36 @@ var (
 	reWDStrikethrough = regexp.MustCompile(`--(.+?)--`)
 	reWDInlineCode    = regexp.MustCompile(`\{\{(.+?)\}\}`)
 	// Inline colour in the Wikidot "##color|text##" form (no brackets).
+	// The colour can be either a name from `colorNames` (e.g.
+	// "blue", "red") or a CSS hex value (e.g. "#44FF88", "#fff").
 	// Must run before the bold/italic passes — `**` and `##` are
 	// syntactically unrelated, but processing colour early keeps the
 	// pipeline simple.
-	reWDInlineColor = regexp.MustCompile(`##([A-Za-z]+)\|([^#]+)##`)
+	reWDInlineColor = regexp.MustCompile(`##([A-Za-z]+|#[0-9A-Fa-f]{3,8})\|([^#]+)##`)
 
 	// Phase 3 links — external [url text] and mailto [mailto:addr text].
 	// Wikidot's internal link form `[[[page|alias]]]` is below.
 	reWDExternalLink = regexp.MustCompile(`\[(https?://[^\s\]]+)(?:\s+([^\]]+))?\]`)
 	reWDMailto       = regexp.MustCompile(`\[mailto:([^\s\]]+)(?:\s+([^\]]+))?\]`)
 	reWDWikiLink     = regexp.MustCompile(`\[\[\[([^\]]+?)(?:\s*\|\s*([^\]]+?))?\]\]\]`)
-	// [[image URL]] and [[image URL link="..."]] — the optional link=
-	// attribute wraps the <img> in an <a>. The first capture is the URL,
-	// the (optional) second is the link target.
-	reWDImage = regexp.MustCompile(`(?i)\[\[image\s+([^\s\]]+)(?:\s+link\s*=\s*"([^"]+)")?\s*\]\]`)
+	// [[image URL key="value" ...]] — generic attribute syntax.
+	// Supported keys (Wikidot spec):
+	//   - link="..." wraps the <img> in an <a href="...">
+	//   - width="Npx" sets the rendered width
+	//   - height="Npx" sets the rendered height
+	//   - class="..." applies a class
+	//   - style="..." applies inline CSS
+	// Unknown attributes are silently dropped (no warning,
+	// matching the spec's "anything else is ignored" behaviour).
+	// The regex captures the URL in group 1 and the
+	// attribute tail in group 2; an unquoted or
+	// alternate-form attribute would not match — Wikidot
+	// always uses `key="value"` with double quotes.
+	reWDImage = regexp.MustCompile(`(?i)\[\[image\s+([^\s\]]+)((?:\s+[a-zA-Z][\w-]*\s*=\s*"[^"]*")*)\s*\]\]`)
+	// reWDImageAttr matches a single `key="value"` pair, used
+	// by parseImageAttrs to break the attribute tail captured
+	// by reWDImage into a map.
+	reWDImageAttr = regexp.MustCompile(`([a-zA-Z][\w-]*)\s*=\s*"([^"]*)"`)
 
 	reWDH6_ = regexp.MustCompile(`(?m)^\+\+\+\+\+\+\s+(.+)$`)
 	reWDH5_ = regexp.MustCompile(`(?m)^\+\+\+\+\+\s+(.+)$`)
@@ -146,6 +205,19 @@ var (
 	reWDHR            = regexp.MustCompile(`(?m)^-{3,}$`)
 	reWDAdmonition    = regexp.MustCompile(`(?sm)^!!!\s+(note|warning|danger|info|tip)\s*\n(.*?)(\n!!!|\n\[\[|\z)`)
 	reWDHTMLBlock     = regexp.MustCompile(`(?s)(<(?:pre|table|ul|ol|blockquote|div|details|summary)\b.*?</(?:pre|table|ul|ol|blockquote|div|details|summary)>)`)
+
+	// reWDLineContinuation matches `X _\nY` and captures `X` —
+	// the trailing ` _` and the newline get stripped in the
+	// rewrite, so the next line joins onto the current line.
+	// Wikidot uses this for table cells and list items:
+	//   ||超长 _\n内容 8||   →   ||超长\n内容 8||   (cell
+	//   content merges with `<br />` at wrap time)
+	//   * 事项1 _\n另一行   →   * 事项1\n另一行   (list
+	//   body merges with `<br />` at wrap time)
+	// The `(?m)` multi-line flag is essential — the `^` /
+	// `$` anchors must match per-line, not just the start /
+	// end of the whole document.
+	reWDLineContinuation = regexp.MustCompile(`(?m)^([^\n]*[^\s]) _\r?\n`)
 
 	// %%var%% — names are simple identifiers, not nested. Anything
 	// not in the Vars map at render time is left as-is so authors
@@ -310,6 +382,12 @@ type headingEntry struct {
 	Level int
 	ID    string
 	Text  string
+	// SkipTOC is true for headings introduced via the `+*`
+	// prefix. The anchor id is still emitted (so
+	// `[#name text]` / `[[[page#anchor]]]` can target
+	// the heading), but the TOC builder omits these
+	// entries from its rendered list.
+	SkipTOC bool
 }
 
 var wpPool = sync.Pool{New: func() any { return &wikidotParser{} }}
@@ -378,6 +456,21 @@ func (p *wikidotParser) convertInternal(source string, appendFootnotes bool) str
 	// ── Phase 0.5: %%var%% substitution ────────────────────────────
 	out = p.replaceVars(out)
 
+	// ── Phase 0.6: literal escape @@...@@ ─────────────────────────
+	// Runs AFTER %%var%% (so vars are still substituted
+	// outside `@@...@@`) and AFTER the var pass, but BEFORE
+	// Phase 1's block-stash pass — that way `[[code]]`, div
+	// tags, and every other block construct inside `@@...@@`
+	// is left alone (the literal construct protects the
+	// inner text from any further interpretation).
+	out = reWDLiteral.ReplaceAllStringFunc(out, func(s string) string {
+		m := reWDLiteral.FindStringSubmatch(s)
+		// HTML-escape the inner text BEFORE stashing so the
+		// restored block is safe to drop into a paragraph
+		// without re-running the entity-encoding pass.
+		return p.storeBlock(html.EscapeString(m[1]))
+	})
+
 	// ── Phase 1: block storage ─────────────────────────────────────
 	// The order matters: anything that can contain `]]` later in the
 	// content (math, code, div, html) has to be stashed before patterns
@@ -414,9 +507,36 @@ func (p *wikidotParser) convertInternal(source string, appendFootnotes bool) str
 		return p.storeBlock(fmt.Sprintf(`<details class="wiki-collapsible"><summary>%s</summary><div class="collapsible-content">%s</div></details>`, m[1], inner))
 	})
 
+	// 1d.5 Line continuation — runs after the block-level
+	// stash phases (`[[code]]`, `[[collapsible]]`, etc.)
+	// but BEFORE the table-row pass (1e) and the inline
+	// stack.
+	//
+	// A line ending in ` _` (space + underscore) is
+	// joined onto the next line with a single space —
+	// this matches Wikidot's behaviour for list items
+	// (`* 事项1 _\n另一行` → `* 事项1 另一行`).
+	//
+	// Table cells are NOT folded by this pass; the
+	// `||超长 _\n内容 8||` form (which Wikidot renders
+	// as a multi-line cell with a soft break) would
+	// require the table-row pass to accept multi-line
+	// cells via `<br />`, which the current regex
+	// doesn't support. We log a TODO rather than
+	// silently break the cell layout.
+	//
+	// The regex is `^X _\n` (multi-line): the line
+	// ending in ` _` (space + underscore) is joined
+	// onto the next line with a space. Subsequent
+	// `[[code]]`-protected blocks are already
+	// `%%BLOCK_N%%` placeholders so the regex can't
+	// accidentally fold lines inside one.
+	out = reWDLineContinuation.ReplaceAllString(out, "$1 ")
+
 	// 1e. Row-based tables (`|| ... ||` lines, contiguous group). Build
 	// the table HTML and stash it so subsequent regex passes don't try
 	// to interpret `|` characters or re-parse the cell content.
+	out = renderWikidotTableRows(p, out)
 	out = renderWikidotTableRows(p, out)
 
 	// 1f. [[table]]...[[/table]] block syntax
@@ -514,10 +634,20 @@ func (p *wikidotParser) convertInternal(source string, appendFootnotes bool) str
 		return fmt.Sprintf(`<span style="color:%s">%s</span>`, css, inlineOnly(m[2]))
 	})
 
-	// 1m. Alignment blocks ([[=]] / [[>]] / [[==]])
+	// 1m. Alignment blocks ([[=]] / [[<]] / [[>]] / [[==]])
 	out = reWDCenter.ReplaceAllString(out, `<div style="text-align:center">$1</div>`)
+	out = reWDLeftBlock.ReplaceAllString(out, `<div style="text-align:left">$1</div>`)
 	out = reWDRight.ReplaceAllString(out, `<div style="text-align:right">$1</div>`)
 	out = reWDJustify.ReplaceAllString(out, `<div style="text-align:justify">$1</div>`)
+
+	// 1m.5 Single-line alignment shortcuts. Runs after the
+	// block forms so a `[[<]]` opener on the same line as
+	// the inline shortcut can't be confused for one. The
+	// regex matches `=` / `<` followed by a space at the
+	// START of a line, so inline mentions of `=` (e.g.
+	// `x = y`) are not promoted into alignment divs.
+	out = reWDCenterLine.ReplaceAllString(out, `<div style="text-align:center">$1</div>`)
+	out = reWDLeftLine.ReplaceAllString(out, `<div style="text-align:left">$1</div>`)
 
 	// 1n. [[youtube ID]] — emit a placeholder div carrying the ID as
 	// a data attribute. The iframe itself is NOT emitted here because
@@ -587,23 +717,38 @@ func (p *wikidotParser) convertInternal(source string, appendFootnotes bool) str
 	// so `//` isn't confused with italic markers.
 	out = strings.ReplaceAll(out, `\\/`, "\x00SL")
 
-	// 2a. @@mono@@ — Wikidot convention is monospace (was mis-labelled
-	// as "escape" in the previous pipeline; raw < > in user content are
-	// already caught by the client's DOMPurify pass).
-	out = reWDMono.ReplaceAllString(out, `<code>$1</code>`)
+	// 2a. (no-op here — `@@...@@` is now handled in Phase 0.6
+	// as a literal-escape construct. The old `@@...@@` →
+	// `<code>...</code>` monospace behaviour was a Wikidot
+	// spec misread; the real convention is `{{...}}` for
+	// monospaced text and `@@...@@` for verbatim. The
+	// Phase-0.6 stash replaces every `@@...@@` in the
+	// source with a `%%BLOCK_N%%` placeholder by the time
+	// we reach this point, so no inline handling is
+	// required here.)
 
-	// 2b. Inline colour `##colorname|text##`
+	// 2b. Inline colour `##colorname|text##` or `##hex|text##`
 	out = reWDInlineColor.ReplaceAllStringFunc(out, func(s string) string {
 		m := reWDInlineColor.FindStringSubmatch(s)
-		name := strings.ToLower(strings.TrimSpace(m[1]))
+		name := strings.TrimSpace(m[1])
 		text := m[2]
-		// Inline `##...##` syntax only accepts the named colour
-		// lookup table — we don't fall back to raw CSS values
-		// (use `[[color name]]text[[/color]]` for arbitrary CSS).
-		// This keeps `##greyish|...##` from silently rendering as
-		// `style="color:greyish"` (invalid CSS, but allowed by the
-		// generic char whitelist).
-		css, ok := colorNames[name]
+		// Named colour: look up in the colourNames table for
+		// canonical CSS values. We don't fall back to raw CSS
+		// values here so `##greyish|...##` doesn't silently
+		// render as `style="color:greyish"`.
+		// Hex colour: pass through sanitizeCSSValue which
+		// validates the value is exactly `#RRGGBB[AA]`-shaped
+		// and contains no metacharacters. Unknown / invalid
+		// colours drop the wrapper and return the inner text
+		// (matching the existing `##<badname>|...##` →
+		// `...` behaviour).
+		if strings.HasPrefix(name, "#") {
+			if css := sanitizeCSSValue(name); css != "" {
+				return fmt.Sprintf(`<span style="color:%s">%s</span>`, css, html.EscapeString(text))
+			}
+			return text
+		}
+		css, ok := colorNames[strings.ToLower(name)]
 		if !ok {
 			return text
 		}
@@ -693,15 +838,20 @@ func (p *wikidotParser) convertInternal(source string, appendFootnotes bool) str
 		return html.EscapeString(text)
 	})
 
-	// 3d. Image — optional `link="…"` attribute wraps the <img>.
+	// 3d. Image — generic attribute syntax. Supports
+	// `link` (wraps the <img> in an <a>), `width`, `height`,
+	// `class`, `style` (arbitrary CSS). Unknown keys are
+	// silently dropped.
 	out = reWDImage.ReplaceAllStringFunc(out, func(s string) string {
 		m := reWDImage.FindStringSubmatch(s)
 		src := strings.TrimSpace(m[1])
-		link := strings.TrimSpace(m[2])
+		attrs := parseImageAttrs(m[2])
 		if safe := sanitizeURLForAttr(src); safe != "" {
-			img := fmt.Sprintf(`<img src="%s" alt="" loading="lazy" style="max-width:100%%">`, safe)
-			if linkSafe := sanitizeURLForAttr(link); linkSafe != "" {
-				return fmt.Sprintf(`<a href="%s">%s</a>`, linkSafe, img)
+			img := buildImageTag(safe, attrs)
+			if link, ok := attrs["link"]; ok {
+				if linkSafe := sanitizeURLForAttr(link); linkSafe != "" {
+					return fmt.Sprintf(`<a href="%s">%s</a>`, linkSafe, img)
+				}
 			}
 			return img
 		}
@@ -713,27 +863,50 @@ func (p *wikidotParser) convertInternal(source string, appendFootnotes bool) str
 	// before `++++` (regex leftmost-longest match would handle this,
 	// but explicit ordering keeps the pipeline readable).
 	//
+	// `+*` variants (skip-toc) are matched FIRST per level so they
+	// don't fall through to the plain `+` regex below — both regexes
+	// would match the same line otherwise, and the wrong one would
+	// win depending on regex order.
+	//
 	// Each heading also gets a deterministic id ("h2-1", "h3-1", …) so
 	// [[toc]] can link to it. Authors who want a stable, named anchor
 	// can still use [[a name=…]] explicitly; the auto-ids are
 	// reserved for the toc-link target.
+	out = reWDH6Star.ReplaceAllStringFunc(out, func(s string) string {
+		return p.emitHeadingStar(6, s)
+	})
+	out = reWDH5Star.ReplaceAllStringFunc(out, func(s string) string {
+		return p.emitHeadingStar(5, s)
+	})
+	out = reWDH4Star.ReplaceAllStringFunc(out, func(s string) string {
+		return p.emitHeadingStar(4, s)
+	})
+	out = reWDH3Star.ReplaceAllStringFunc(out, func(s string) string {
+		return p.emitHeadingStar(3, s)
+	})
+	out = reWDH2Star.ReplaceAllStringFunc(out, func(s string) string {
+		return p.emitHeadingStar(2, s)
+	})
+	out = reWDH1Star.ReplaceAllStringFunc(out, func(s string) string {
+		return p.emitHeadingStar(1, s)
+	})
 	out = reWDH6_.ReplaceAllStringFunc(out, func(s string) string {
-		return p.emitHeading(6, s)
+		return p.emitHeading(6, s, false)
 	})
 	out = reWDH5_.ReplaceAllStringFunc(out, func(s string) string {
-		return p.emitHeading(5, s)
+		return p.emitHeading(5, s, false)
 	})
 	out = reWDH4_.ReplaceAllStringFunc(out, func(s string) string {
-		return p.emitHeading(4, s)
+		return p.emitHeading(4, s, false)
 	})
 	out = reWDH3_.ReplaceAllStringFunc(out, func(s string) string {
-		return p.emitHeading(3, s)
+		return p.emitHeading(3, s, false)
 	})
 	out = reWDH2_.ReplaceAllStringFunc(out, func(s string) string {
-		return p.emitHeading(2, s)
+		return p.emitHeading(2, s, false)
 	})
 	out = reWDH1_.ReplaceAllStringFunc(out, func(s string) string {
-		return p.emitHeading(1, s)
+		return p.emitHeading(1, s, false)
 	})
 
 	// ── Phase 5: horizontal rules ────────────────────────────────────
@@ -820,8 +993,11 @@ func renderCodeBlock(code, lang string) string {
 // emitHeading converts a heading regex match into the corresponding
 // <hN id="...">HTML</hN> tag, records the (level, id, text) tuple
 // for the [[toc]] phase, and increments the per-render heading
-// sequence counter.
-func (p *wikidotParser) emitHeading(level int, match string) string {
+// sequence counter. skipTOC marks the heading for exclusion from
+// the TOC (used by the `+*` heading-prefix form, which still
+// gets a stable anchor id for cross-references but doesn't show
+// up in the rendered contents list).
+func (p *wikidotParser) emitHeading(level int, match string, skipTOC bool) string {
 	re := headingRegexFor(level)
 	m := re.FindStringSubmatch(match)
 	if m == nil {
@@ -833,7 +1009,28 @@ func (p *wikidotParser) emitHeading(level int, match string) string {
 	if p.headings == nil {
 		p.headings = make([]headingEntry, 0, 16)
 	}
-	p.headings = append(p.headings, headingEntry{Level: level, ID: id, Text: text})
+	p.headings = append(p.headings, headingEntry{Level: level, ID: id, Text: text, SkipTOC: skipTOC})
+	return fmt.Sprintf(`<h%d id="%s">%s</h%d>`, level, id, text, level)
+}
+
+// emitHeadingStar handles the `+*` variant — same id
+// sequence counter as the normal headings, so existing
+// `[[[page#h2-1]]]` / `[#name text]` cross-references
+// keep working. SkipTOC is set so the TOC builder
+// omits the entry.
+func (p *wikidotParser) emitHeadingStar(level int, match string) string {
+	re := headingStarRegexFor(level)
+	m := re.FindStringSubmatch(match)
+	if m == nil {
+		return match
+	}
+	p.headingSeq++
+	id := fmt.Sprintf("h%d-%d", level, p.headingSeq)
+	text := m[1]
+	if p.headings == nil {
+		p.headings = make([]headingEntry, 0, 16)
+	}
+	p.headings = append(p.headings, headingEntry{Level: level, ID: id, Text: text, SkipTOC: true})
 	return fmt.Sprintf(`<h%d id="%s">%s</h%d>`, level, id, text, level)
 }
 
@@ -851,6 +1048,24 @@ func headingRegexFor(level int) *regexp.Regexp {
 		return reWDH5_
 	case 6:
 		return reWDH6_
+	}
+	return nil
+}
+
+func headingStarRegexFor(level int) *regexp.Regexp {
+	switch level {
+	case 1:
+		return reWDH1Star
+	case 2:
+		return reWDH2Star
+	case 3:
+		return reWDH3Star
+	case 4:
+		return reWDH4Star
+	case 5:
+		return reWDH5Star
+	case 6:
+		return reWDH6Star
 	}
 	return nil
 }
@@ -1227,6 +1442,13 @@ func (p *wikidotParser) renderTOC(source string) string {
 		if h.Level < 2 || h.Level > 3 {
 			continue
 		}
+		// `+*` heading prefix: same anchor id, but the entry
+		// is filtered out of the rendered TOC. The author can
+		// still target it via `[[a name=...]]`, `[#name text]`,
+		// or `[[[page#h2-N]]]`.
+		if h.SkipTOC {
+			continue
+		}
 		cls := ""
 		if h.Level == 3 {
 			cls = ` class="toc-h3"`
@@ -1376,10 +1598,76 @@ func renderWikidotTableRows(p *wikidotParser, text string) string {
 	return result.String()
 }
 
+// parseImageAttrs extracts `key="value"` pairs from the
+// attribute tail of a `[[image ...]]` block. Returns an
+// empty map for an empty tail. Keys are normalised to
+// lowercase so callers can look them up case-insensitively.
+func parseImageAttrs(raw string) map[string]string {
+	out := make(map[string]string)
+	if raw == "" {
+		return out
+	}
+	for _, m := range reWDImageAttr.FindAllStringSubmatch(raw, -1) {
+		out[strings.ToLower(m[1])] = m[2]
+	}
+	return out
+}
+
+// buildImageTag composes the <img> tag from a sanitised
+// source URL and a map of recognised attributes. We always
+// emit `max-width:100%` so a wide source image doesn't blow
+// out the article column — user-supplied `style` is
+// prepended so the author can still override other props
+// (the `max-width` is preserved by appending after the
+// user's value).
+func buildImageTag(src string, attrs map[string]string) string {
+	var sb strings.Builder
+	sb.WriteString(`<img src="`)
+	sb.WriteString(src)
+	sb.WriteString(`" alt="" loading="lazy"`)
+	if w, ok := attrs["width"]; ok && w != "" {
+		sb.WriteString(` width="`)
+		sb.WriteString(html.EscapeString(w))
+		sb.WriteString(`"`)
+	}
+	if h, ok := attrs["height"]; ok && h != "" {
+		sb.WriteString(` height="`)
+		sb.WriteString(html.EscapeString(h))
+		sb.WriteString(`"`)
+	}
+	if cls, ok := attrs["class"]; ok && cls != "" {
+		sb.WriteString(` class="`)
+		sb.WriteString(sanitizeAnchorID(cls))
+		sb.WriteString(`"`)
+	}
+	userStyle := ""
+	if st, ok := attrs["style"]; ok {
+		if css := sanitizeCSSValue(st); css != "" {
+			userStyle = css
+		}
+	}
+	if userStyle != "" {
+		sb.WriteString(` style="`)
+		sb.WriteString(userStyle)
+		// sanitizeCSSValue accepts declarations with or
+		// without a trailing `;` (it normalises by
+		// appending one if missing). We add a space
+		// before max-width so the two declarations
+		// are visually separated regardless of how
+		// the author wrote the trailing punctuation.
+		sb.WriteString(` max-width:100%"`)
+	} else {
+		sb.WriteString(` style="max-width:100%"`)
+	}
+	sb.WriteString(`>`)
+	return sb.String()
+}
+
 func renderWikidotTable(p *wikidotParser, raw string) string {
 	lines := strings.Split(strings.TrimSpace(raw), "\n")
 	var sb strings.Builder
 	sb.WriteString(`<table class="wiki-table"><tbody>`)
+
 	for i, line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" {
@@ -1447,7 +1735,6 @@ func inlineOnly(text string) string {
 		}
 		return s
 	})
-	text = reWDMono.ReplaceAllString(text, `<code>$1</code>`)
 	text = reWDBold.ReplaceAllString(text, `<strong>$1</strong>`)
 	// See note on the package-level reWDItalic — same fix applied here
 	// so a Phase-9 list / Phase-1g span / Phase-1e table call back into
@@ -1464,9 +1751,15 @@ func inlineOnly(text string) string {
 	text = reWDInlineCode.ReplaceAllString(text, `<code>$1</code>`)
 	text = reWDInlineColor.ReplaceAllStringFunc(text, func(s string) string {
 		m := reWDInlineColor.FindStringSubmatch(s)
-		name := strings.ToLower(strings.TrimSpace(m[1]))
+		name := strings.TrimSpace(m[1])
 		text := m[2]
-		css, ok := colorNames[name]
+		if strings.HasPrefix(name, "#") {
+			if css := sanitizeCSSValue(name); css != "" {
+				return fmt.Sprintf(`<span style="color:%s">%s</span>`, css, html.EscapeString(text))
+			}
+			return text
+		}
+		css, ok := colorNames[strings.ToLower(name)]
 		if !ok {
 			return text
 		}

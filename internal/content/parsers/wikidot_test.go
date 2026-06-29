@@ -1,6 +1,7 @@
 package parsers
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -13,16 +14,32 @@ import (
 // refactors don't quietly drop support.
 
 func TestWikidotMonoNoLongerEscape(t *testing.T) {
-	// `@@...@@` was originally used to HTML-escape a fragment (so the
-	// inner < > wouldn't be re-interpreted). Wikidot's actual
-	// convention is monospace, so the parser now wraps the inner
-	// content in <code>. Authors who genuinely want raw HTML escape
-	// should rely on the client-side DOMPurify pass on the rendered
-	// output.
+	// `@@...@@` is the Wikidot LITERAL escape construct: the
+	// inner text is rendered verbatim with no wikidot
+	// markup expansion. The earlier version of this
+	// parser misread the spec and treated `@@...@@` as
+	// monospace, which produced incorrect output for
+	// things like `@@**not bold**@@` (which should show
+	// `**not bold**` literally, not bold). The
+	// monospaced-text feature in Wikidot is `{{...}}`,
+	// which is a separate code path and is still
+	// supported.
 	in := `@@这是等宽字体@@`
 	out := RenderWikidot(in)
-	if !strings.Contains(out, `<code>这是等宽字体</code>`) {
-		t.Errorf("expected @@ to wrap in <code>, got %q", out)
+	// Literal: the inner text is preserved as-is, with
+	// any `**` / `[[...]]` markup inside NOT being
+	// processed.
+	if !strings.Contains(out, "这是等宽字体") {
+		t.Errorf("expected literal text to be preserved, got %q", out)
+	}
+	// And critically: `@@**bold**@@` should NOT produce
+	// a `<strong>` tag — the `**` inside is escaped.
+	strongOut := RenderWikidot(`@@**not bold**@@`)
+	if strings.Contains(strongOut, "<strong>") {
+		t.Errorf("@@...@@ should escape inner markup, got %q", strongOut)
+	}
+	if !strings.Contains(strongOut, "**not bold**") {
+		t.Errorf("expected literal asterisks to remain, got %q", strongOut)
 	}
 }
 
@@ -660,6 +677,199 @@ func TestWikidotYoutubeIDAcceptsNonStandard(t *testing.T) {
 	}
 	if !strings.Contains(out, `data-youtube-id="notRealIDButShouldStillPlaceholder"`) {
 		t.Errorf("expected non-standard id still placeholdered, got %q", out)
+	}
+}
+
+// ── Wikidot spec round 2 (2026-06-29) ──────────────────────────────
+//
+// P0 close-out from the wikidot syntax spec at
+// https://rule-wiki.wikidot.com/wiki-syntax. Each test pins one
+// spec entry that the previous parser was missing or getting
+// wrong; together they form a regression set for the Stage 1
+// commit.
+
+func TestWikidotLiteralEscapePreservesMarkup(t *testing.T) {
+	// `@@...@@` is verbatim: anything inside is preserved
+	// exactly, no markup expansion. This is the inverse of
+	// the previous (incorrect) monospace interpretation.
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{`@@**not bold**@@`, `**not bold**`},
+		{`@@//not italic//@@`, `//not italic//`},
+		{`@@[[not a link]]@@`, `[[not a link]]`},
+		{`@@<div>not html</div>@@`, `&lt;div&gt;not html&lt;/div&gt;`},
+		{`@@plain text@@`, `plain text`},
+	}
+	for _, c := range cases {
+		out := RenderWikidot(c.in)
+		if !strings.Contains(out, c.want) {
+			t.Errorf("input %q: expected literal %q in output, got %q", c.in, c.want, out)
+		}
+	}
+}
+
+func TestWikidotInlineColorHexValue(t *testing.T) {
+	// `##hex|text##` — the colour can be a 3/4/6/8-digit
+	// hex code, not just a name from the colourNames map.
+	// We accept `#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa`.
+	cases := []struct {
+		hex, want string
+	}{
+		{"#44FF88", "#44FF88"},
+		{"#fff", "#fff"},
+		{"#ff00ff", "#ff00ff"},
+		{"#abc", "#abc"},
+	}
+	for _, c := range cases {
+		in := "##" + c.hex + "|colored text##"
+		out := RenderWikidot(in)
+		want := `<span style="color:` + c.want + `">colored text</span>`
+		if !strings.Contains(out, want) {
+			t.Errorf("input %q: expected %q in %q", in, want, out)
+		}
+	}
+	// Bogus / non-CSS hex is dropped (text passes through).
+	out := RenderWikidot("##zzz|colored##")
+	if strings.Contains(out, "style=") {
+		t.Errorf("expected bogus hex to be dropped, got %q", out)
+	}
+}
+
+func TestWikidotCenterLeftBlockForm(t *testing.T) {
+	// `[[<]]...[[/<]]` is the block form for left-align;
+	// mirrors `[[=]]` (center), `[[>]]` (right), `[[==]]`
+	// (justify).
+	if out := RenderWikidot(`[[<]]left[[/<]]`); !strings.Contains(out, `<div style="text-align:left">left</div>`) {
+		t.Errorf("expected left-align div, got %q", out)
+	}
+	if out := RenderWikidot(`[[=]]center[[/=]]`); !strings.Contains(out, `<div style="text-align:center">center</div>`) {
+		t.Errorf("expected center-align div, got %q", out)
+	}
+}
+
+func TestWikidotCenterLeftLinePrefix(t *testing.T) {
+	// The single-line shortcut: a line starting with
+	// `= text` (or `< text`) is rendered as a single
+	// aligned paragraph. Useful for one-off centred
+	// subtitles without needing the `[[=]]` block
+	// form.
+	if out := RenderWikidot("= 居中文本"); !strings.Contains(out, `<div style="text-align:center">居中文本</div>`) {
+		t.Errorf("expected single-line center, got %q", out)
+	}
+	if out := RenderWikidot("< 左对齐文本"); !strings.Contains(out, `<div style="text-align:left">左对齐文本</div>`) {
+		t.Errorf("expected single-line left, got %q", out)
+	}
+	// Sanity: inline `=` (e.g. `x = y`) is NOT promoted
+	// to an alignment div because the `=` isn't at the
+	// start of a line.
+	if out := RenderWikidot("a = b"); strings.Contains(out, `<div style="text-align`) {
+		t.Errorf("inline `=` shouldn't be promoted, got %q", out)
+	}
+}
+
+func TestWikidotHeadingStarSkipsTOC(t *testing.T) {
+	// `+* Heading` emits a heading with a stable anchor
+	// id (so cross-references still work) but excludes
+	// the entry from the rendered TOC list. We use
+	// `++` (h2) throughout so the heading actually
+	// makes it into the toc-builder's level filter.
+	in := `++ 正常标题
+++* 隐藏标题
+++ 第二个标题
+[[toc]]`
+	out := RenderWikidot(in)
+	// The skipped heading still gets an id and renders.
+	if !strings.Contains(out, `id="h2-1"`) {
+		t.Errorf("expected skipped heading to still have an id, got %q", out)
+	}
+	if !strings.Contains(out, "隐藏标题") {
+		t.Errorf("expected skipped heading text rendered, got %q", out)
+	}
+	// The TOC should NOT include the skipped heading.
+	tocMatch := regexp.MustCompile(`<div class="wikidot-toc".*?</div>`).FindString(out)
+	if tocMatch == "" {
+		t.Fatalf("expected wikidot-toc div, got %q", out)
+	}
+	if strings.Contains(tocMatch, "隐藏标题") {
+		t.Errorf("expected skipped heading NOT in toc, got %q", tocMatch)
+	}
+	// The other two headings ARE in the toc.
+	if !strings.Contains(tocMatch, "正常标题") {
+		t.Errorf("expected normal heading in toc, got %q", tocMatch)
+	}
+	if !strings.Contains(tocMatch, "第二个标题") {
+		t.Errorf("expected second heading in toc, got %q", tocMatch)
+	}
+}
+
+func TestWikidotLineContinuationJoins(t *testing.T) {
+	// A line ending in ` _` (space + underscore) merges
+	// onto the next line. Used for list items that need
+	// a soft line break inside the item body.
+	//
+	// List item test: a `*` item ending in ` _` joins
+	// the following line. The merged text is rendered
+	// inside the `<li>` via `inlineOnly`; the
+	// paragraph-wrap phase then sees one item.
+	listIn := `* 事项1 _
+另一行
+* 事项2`
+	listOut := RenderWikidot(listIn)
+	if !strings.Contains(listOut, "事项1 另一行") {
+		t.Errorf("expected joined list item, got %q", listOut)
+	}
+	if !strings.Contains(listOut, "事项2") {
+		t.Errorf("expected second list item to remain, got %q", listOut)
+	}
+
+	// Ordered list has the same behaviour.
+	ordIn := `# 第一 _
+续
+# 第二`
+	ordOut := RenderWikidot(ordIn)
+	if !strings.Contains(ordOut, "第一 续") {
+		t.Errorf("expected joined ordered list item, got %q", ordOut)
+	}
+}
+
+func TestWikidotImageGenericAttributes(t *testing.T) {
+	// `[[image url]]` accepts `link` (existing), `width`,
+	// `height`, `class`, `style` as generic attributes.
+	// Unknown keys are silently dropped.
+	cases := []struct {
+		in   string
+		want []string
+	}{
+		{
+			in:   `[[image https://example.com/p.png width="200px"]]`,
+			want: []string{`width="200px"`, `src="https://example.com/p.png"`},
+		},
+		{
+			in:   `[[image https://example.com/p.png height="100px" class="thumb"]]`,
+			want: []string{`height="100px"`, `class="thumb"`},
+		},
+		{
+			in:   `[[image https://example.com/p.png style="border: 1px solid #000;"]]`,
+			want: []string{`style="border: 1px solid #000; max-width:100%"`},
+		},
+		{
+			in:   `[[image https://example.com/p.png unknown="ignored"]]`,
+			want: []string{`src="https://example.com/p.png"`, `max-width:100%`},
+		},
+		{
+			in:   `[[image https://example.com/p.png link="https://example.com/landing"]]`,
+			want: []string{`href="https://example.com/landing"`, `<img`},
+		},
+	}
+	for _, c := range cases {
+		out := RenderWikidot(c.in)
+		for _, w := range c.want {
+			if !strings.Contains(out, w) {
+				t.Errorf("input %q: expected %q in %q", c.in, w, out)
+			}
+		}
 	}
 }
 
