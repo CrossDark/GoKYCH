@@ -115,7 +115,48 @@ func (s *Server) getArticle(c *gin.Context) {
 		c.Header("Cache-Control", "no-store")
 	}
 
-	html := parsers.Render(parsers.ArticleType(atype), a.ID, a.Content)
+	// The vars injection needs the rating summary, so we
+	// load it BEFORE the render. We do the load lazily here
+	// (after the cheaper comments/line-comments queries that
+	// come later in this handler) to keep the original
+	// ordering of error reporting — a rating load failure
+	// should still produce a 500, not silently omit
+	// `%%rating%%` from the rendered output. voterKey is
+	// empty for anonymous users; the rating summary ignores
+	// it and returns the unfiltered average.
+	voterKey := ""
+	if currentUser != nil {
+		voterKey = content.VoterKey(&currentUser.ID, currentUser.Username)
+	}
+	rating, err := content.GetRatingSummary(s.DB, a.ID, voterKey)
+	if err != nil {
+		slog.Error("getArticle: load rating", "article_id", a.ID, "err", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载评分失败。"})
+		return
+	}
+
+	// Render with a context that wires up the page-lookup
+	// adapter (for `[[include …]]` / `[[module ListPages]]`)
+	// and the per-article `%%var%%` substitutions
+	// (`%%user_name%%`, `%%title%%`, `%%tags%%`, `%%rating%%`,
+	// `%%created_at%%`, etc.). For non-wikidot types the
+	// context is a no-op (only the wikidot renderer reads it
+	// today), so this stays free for md/bbcode/html.
+	lookup := &wikidotPageLookup{
+		db:          s.DB,
+		currentType: a.Type,
+		currentSlug: a.Slug,
+	}
+	if currentUser != nil {
+		lookup.currentUserID = &currentUser.ID
+	}
+	vars := buildArticleVars(a, currentUser, rating)
+	renderCtx := &parsers.RenderContext{
+		PageLookup:  lookup,
+		Vars:        vars,
+		ArticleType: a.Type,
+	}
+	html := parsers.RenderCtx(parsers.ArticleType(atype), a.ID, a.Content, renderCtx)
 
 	// Sub-query failures are now fail-fast: a partial response (article +
 	// half-broken comments) is worse than a 500, since the frontend can't
@@ -141,22 +182,21 @@ func (s *Server) getArticle(c *gin.Context) {
 		return
 	}
 
-	voterKey := ""
+	// (voterKey was set earlier — before the render — so the
+	// rating summary could be loaded with the viewer's score
+	// for the `%%rating%%` substitution. canEdit is still
+	// local to this block.)
 	canEdit := false
 	if currentUser != nil {
-		voterKey = content.VoterKey(&currentUser.ID, currentUser.Username)
 		// Admin/owner can edit; author can edit their own.
 		if currentUser.Role == "admin" || currentUser.Role == "owner" ||
 			(a.AuthorID != nil && *a.AuthorID == currentUser.ID) {
 			canEdit = true
 		}
 	}
-	rating, err := content.GetRatingSummary(s.DB, a.ID, voterKey)
-	if err != nil {
-		slog.Error("getArticle: load rating", "article_id", a.ID, "err", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载评分失败。"})
-		return
-	}
+	// (rating was already loaded earlier, before the render, so
+	// `%%rating%%` could be substituted into the wikidot vars
+	// map. We reuse the existing local here.)
 
 	c.JSON(http.StatusOK, ArticleDetail{
 		Article:           a,
