@@ -951,6 +951,78 @@ hr {
     margin: 0.5rem 0;
 }
 
+/* `[[tabview]]…[[/tabview]]` — Wikidot tabbed UI.
+ * The parser emits a `.wikidot-tabview` container
+ * with a `.wikidot-tab-nav` (the clickable buttons)
+ * and `.wikidot-tab-panels` (one panel per tab).
+ * Clicking a button swaps the `.active` class so
+ * only the matching panel is visible; default state
+ * is the first tab active. The tabs are styled as a
+ * horizontal pill row with a divider between nav
+ * and panels; on narrow screens (< 480px) the tabs
+ * wrap so a 5-tab view doesn't overflow. */
+.content-body .wikidot-tabview {
+    margin: 1rem 0;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg-card);
+    overflow: hidden;
+}
+.content-body .wikidot-tab-nav {
+    display: flex;
+    flex-wrap: wrap;
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    background: var(--code-bg);
+    border-bottom: 1px solid var(--border);
+}
+.content-body .wikidot-tab-tab {
+    flex: 0 0 auto;
+    padding: 0;
+    margin: 0;
+}
+.content-body .wikidot-tab-tab a {
+    display: block;
+    padding: 0.55rem 1.1rem;
+    color: var(--text-secondary);
+    text-decoration: none;
+    font-size: 0.95rem;
+    line-height: 1.4;
+    border-right: 1px solid var(--border);
+    transition: background 0.12s, color 0.12s;
+    cursor: pointer;
+}
+.content-body .wikidot-tab-tab a:hover {
+    background: rgba(128, 128, 128, 0.06);
+    color: var(--text);
+    text-decoration: none;
+}
+.content-body .wikidot-tab-tab.active a {
+    background: var(--bg-card);
+    color: var(--accent);
+    font-weight: 500;
+    box-shadow: inset 0 -2px 0 var(--accent);
+}
+.content-body .wikidot-tab-panels {
+    padding: 0.5rem 0.75rem;
+}
+.content-body .wikidot-tab-panel {
+    display: none;
+}
+.content-body .wikidot-tab-panel.active {
+    display: block;
+}
+/* The panel can contain paragraphs / lists / divs;
+ * tighten the spacing so a short tab doesn't feel
+ * cramped. */
+.content-body .wikidot-tab-panel > p:first-child {
+    margin-top: 0;
+}
+.content-body .wikidot-tab-panel > p:last-child {
+    margin-bottom: 0;
+}
+
 /* ── 行号（中屏及以上在文章左侧显示） ── */
 @media (min-width: 768px) {
     .content-body {

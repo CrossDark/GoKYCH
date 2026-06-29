@@ -1909,3 +1909,129 @@ func TestWikidotDateWikidotFormat(t *testing.T) {
 		t.Errorf("expected $YYYY-$MM-$DD to render as YYYY-MM-DD, got %q", out)
 	}
 }
+
+// ── Stage 5 (P2 Stage 3) — tabview ─────────────────────────
+
+// TestWikidotTabviewBasic verifies the `[[tabview]]…[[/tabview]]`
+// outer + `[[tab Title]]…[[/tab]]` children render to the
+// expected DOM shape: a `.wikidot-tabview` container with a
+// `.wikidot-tab-nav` list and a `.wikidot-tab-panels` stack.
+// The first tab is `.active` so the panel shows by default;
+// the client-side script (ArticleView.tsx) handles the rest.
+func TestWikidotTabviewBasic(t *testing.T) {
+	in := `[[tabview]]
+[[tab 第一页]]
+内容 1
+[[/tab]]
+[[tab 第二页]]
+内容 2
+[[/tab]]
+[[/tabview]]`
+	out := RenderWikidot(in)
+	if !strings.Contains(out, `<div class="wikidot-tabview">`) {
+		t.Errorf("expected tabview container, got %q", out)
+	}
+	if !strings.Contains(out, `<ul class="wikidot-tab-nav">`) {
+		t.Errorf("expected tab-nav list, got %q", out)
+	}
+	if !strings.Contains(out, `<div class="wikidot-tab-panels">`) {
+		t.Errorf("expected tab-panels stack, got %q", out)
+	}
+	// Two nav entries — count the opening `<li class="wikidot-tab-tab"`
+	// (which appears once per tab). Using the
+	// class-attribute shape avoids the substring overlap
+	// with `wikidot-tab-tabs` (plural) or `wikidot-tab-tab`
+	// appearing inside a `data-` attribute name.
+	if strings.Count(out, `<li class="wikidot-tab-tab`) != 2 {
+		t.Errorf("expected 2 nav entries, got %q", out)
+	}
+	// Two panels (count `<div class="wikidot-tab-panel` —
+	// the active panel adds a space + `active` between
+	// `panel` and the closing quote, so we count the
+	// un-quoted form). Use the longer prefix
+	// `wikidot-tab-panel` so we don't double-count the
+	// `wikidot-tab-panels` wrapper.
+	if strings.Count(out, `<div class="wikidot-tab-panel`) != 3 {
+		// 1 wrapper (`tab-panels`) + 2 actual
+		// panels = 3 substring matches.
+		t.Errorf("expected 2 panels + 1 wrapper, got %q", out)
+	}
+	// First tab is active
+	if !strings.Contains(out, `wikidot-tab-tab active" data-tab-id="0"`) {
+		t.Errorf("expected first tab active, got %q", out)
+	}
+	if !strings.Contains(out, `wikidot-tab-panel active" data-tab-id="0"`) {
+		t.Errorf("expected first panel active, got %q", out)
+	}
+	// Tab titles in nav (HTML-escaped)
+	if !strings.Contains(out, `>第一页</a>`) {
+		t.Errorf("expected first title in nav, got %q", out)
+	}
+	if !strings.Contains(out, `>第二页</a>`) {
+		t.Errorf("expected second title in nav, got %q", out)
+	}
+}
+
+// TestWikidotTabviewEmpty verifies a `[[tabview]]` with
+// no `[[tab …]]` children renders to an empty container
+// (so the author sees the silent typo). When the body
+// DOES contain a `[[tab ` opener without a closer, the
+// raw marker is preserved (separate path; see
+// TestWikidotTabviewUnmatchedTab).
+func TestWikidotTabviewEmpty(t *testing.T) {
+	out := RenderWikidot(`[[tabview]][[/tabview]]`)
+	if !strings.Contains(out, `<div class="wikidot-tabview"></div>`) {
+		t.Errorf("expected empty tabview, got %q", out)
+	}
+}
+
+// TestWikidotTabviewUnmatchedTab verifies a tab opener
+// without a matching `[[/tab]]` keeps the marker raw
+// (so the author can see the typo). The fall-through
+// is preferable to silently dropping the tab content.
+func TestWikidotTabviewUnmatchedTab(t *testing.T) {
+	in := `[[tabview]]
+[[tab 漏闭合]]
+内容
+[[/tabview]]`
+	out := RenderWikidot(in)
+	if !strings.Contains(out, `[[tab 漏闭合]]`) {
+		t.Errorf("expected unmatched tab preserved as raw, got %q", out)
+	}
+	if strings.Contains(out, `<div class="wikidot-tabview"><ul`) {
+		t.Errorf("expected NO nav list when tab is unmatched, got %q", out)
+	}
+}
+
+// TestWikidotTabviewBodyMarkup verifies that block-
+// level markup inside a tab body (e.g. `[[div style="..."]]`)
+// is rendered through the convert pipeline. Wikidot's
+// tabs allow nested block content; we route through
+// `convertNoFootnote` so the panel can contain lists,
+// blockquotes, code blocks, etc.
+func TestWikidotTabviewBodyMarkup(t *testing.T) {
+	in := `[[tabview]]
+[[tab 页1]]
+[[div style="color:red"]]红色文字[[/div]]
+[[/tab]]
+[[/tabview]]`
+	out := RenderWikidot(in)
+	if !strings.Contains(out, `style="color:red"`) {
+		t.Errorf("expected div styling inside tab, got %q", out)
+	}
+	if !strings.Contains(out, `红色文字`) {
+		t.Errorf("expected div content inside tab, got %q", out)
+	}
+}
+
+// TestWikidotTabviewUnmatchedOuter verifies a
+// `[[tabview]]` without a `[[/tabview]]` closer keeps
+// the marker raw. The depth-counting scanner runs to
+// EOF without finding a close at depth 0; we emit
+// the opener + everything after it as-is.
+func TestWikidotTabviewUnmatchedOuter(t *testing.T) {
+	out := RenderWikidot(`[[tabview]]\n[[tab x]]\n内容`)
+	if !strings.Contains(out, `[[tabview]]`) {
+		t.Errorf("expected raw [[tabview]] preserved on unmatched, got %q", out)
+	}
+}

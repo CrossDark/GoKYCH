@@ -113,9 +113,21 @@ var (
 	// we default to the site-friendly `2006-01-02`
 	// (Wikidot's default behaviour; the author can
 	// override per locale).
-	reWDDate    = regexp.MustCompile(`(?i)\[\[date(?:\s+([^\]]+))?\]\]`)
-	reWDMath    = regexp.MustCompile(`(?is)\[\[math\]\](.*?)\[\[/math\]\]`)
-	reWDHTMLRaw = regexp.MustCompile(`(?is)\[\[html\]\](.*?)\[\[/html\]\]`)
+	reWDDate = regexp.MustCompile(`(?i)\[\[date(?:\s+([^\]]+))?\]\]`)
+	// [[tabview]]…[[/tabview]] + [[tab Title]]…[[/tab]].
+	// The opener / closer pair is matched by a depth-
+	// counting scanner (not a regex) so a nested
+	// `[[tabview]]` inside a tab body doesn't break the
+	// outer match — same posture as the indent block.
+	// The per-tab regex below is what splits the body
+	// once the outer span is identified; it captures
+	// (title, content) and uses the same `.*?` non-
+	// greedy convention since tabs don't nest.
+	reWDTabOpen  = regexp.MustCompile(`(?is)\[\[tabview\]\]`)
+	reWDTabClose = regexp.MustCompile(`(?is)\[\[/tabview\]\]`)
+	reWDTabItem  = regexp.MustCompile(`(?is)\[\[tab\s+([^\]\n]+?)\]\](.*?)\[\[/tab\]\]`)
+	reWDMath     = regexp.MustCompile(`(?is)\[\[math\]\](.*?)\[\[/math\]\]`)
+	reWDHTMLRaw  = regexp.MustCompile(`(?is)\[\[html\]\](.*?)\[\[/html\]\]`)
 	// YouTube ID — Wikidot's real rule is broader than `[A-Za-z0-9_-]{6,20}`
 	// (it accepts 11-char base64-ish IDs plus our authors occasionally paste
 	// long, oddly-formatted test strings like 中文). Loosen to a generic
@@ -1076,6 +1088,21 @@ func (p *wikidotParser) convertInternal(source string, appendFootnotes bool) str
 		format = mapWikidotDateFormat(format)
 		return html.EscapeString(time.Now().Format(format))
 	})
+
+	// 1k.10 `[[tabview]]…[[/tabview]]` — Wikidot's
+	// tabbed UI. The outer block contains a sequence
+	// of `[[tab TITLE]]…[[/tab]]` children, each
+	// becoming a tab button + content panel. Output
+	// is a `.wikidot-tabview` container with a nav
+	// list (`.wikidot-tab-nav`) and a panels stack
+	// (`.wikidot-tab-panels`); a small client-side
+	// script (see web/components/ArticleView.tsx)
+	// wires the clicks. We use balanced matching
+	// because nested `[[tabview]]` inside a tab
+	// (rare but legal) should not break the outer
+	// match — same depth-counting trick as the
+	// indent block.
+	out = renderWikidotTabviews(out, p)
 
 	// 1m. Alignment blocks ([[=]] / [[<]] / [[>]] / [[==]])
 	out = reWDCenter.ReplaceAllString(out, `<div style="text-align:center">$1</div>`)
@@ -3034,6 +3061,162 @@ func renderWikidotIndentBlocks(source string, p *wikidotParser) string {
 		sb.WriteString(source[i+oi:])
 		return sb.String()
 	nextBlock:
+	}
+	return sb.String()
+}
+
+// renderWikidotTabviews walks `source` left-to-right,
+// matching `[[tabview]]…[[/tabview]]` blocks via a
+// depth-counter (so a nested `[[tabview]]` inside a
+// tab body doesn't confuse the outer match), then
+// splits each matched body by `[[tab Title]]…[[/tab]]`
+// entries. Output is a `.wikidot-tabview` container
+// with:
+//   - `<ul class="wikidot-tab-nav">` listing each
+//     tab as a `<li class="wikidot-tab-tab">` (the
+//     first tab gets `.active`)
+//   - `<div class="wikidot-tab-panels">` listing
+//     each panel as `<div class="wikidot-tab-panel">`
+//     (the first panel gets `.active`)
+//
+// Each tab and panel share a `data-tab-id="N"`
+// attribute (N is the 0-based index) so the
+// client-side script (ArticleView.tsx) can match
+// nav clicks to panel visibility without re-parsing
+// the DOM.
+//
+// Tab titles are HTML-escaped (they're plain text,
+// not wikidot source). Tab bodies are routed through
+// `convertNoFootnote` so block-level markup inside
+// (lists, blockquotes, code blocks, even nested
+// tabviews) still renders — but a tab can't spawn
+// its own footnote list (Wikidot's behaviour;
+// footnote lists are article-scoped).
+//
+// An empty tabview (no `[[tab …]]` children) renders
+// to an empty container so the author can see the
+// (silent) mistake.
+func renderWikidotTabviews(source string, p *wikidotParser) string {
+	const open = "[[tabview]]"
+	const close = "[[/tabview]]"
+	var sb strings.Builder
+	i := 0
+	for i < len(source) {
+		oi := strings.Index(source[i:], open)
+		if oi < 0 {
+			sb.WriteString(source[i:])
+			return sb.String()
+		}
+		// Emit the prefix up to the tabview opener.
+		sb.WriteString(source[i : i+oi])
+		blockStart := i + oi + len(open)
+		// Walk from blockStart, counting nested
+		// `[[tabview]]` opens (so an inner opener
+		// doesn't trip the depth back to 0).
+		depth := 1
+		j := blockStart
+		for j < len(source) {
+			nextOpen := strings.Index(source[j:], open)
+			nextClose := strings.Index(source[j:], close)
+			if nextClose < 0 {
+				// Unmatched — emit the
+				// opener raw, plus
+				// everything after.
+				sb.WriteString(source[i+oi:])
+				return sb.String()
+			}
+			if nextOpen >= 0 && nextOpen < nextClose {
+				depth++
+				j += nextOpen + len(open)
+				continue
+			}
+			depth--
+			closeEnd := j + nextClose + len(close)
+			if depth == 0 {
+				body := source[blockStart : j+nextClose]
+				// Recurse so a nested
+				// `[[tabview]]` inside a
+				// tab body gets rendered
+				// as its own container,
+				// not as raw text.
+				preNested := renderWikidotTabviews(body, p)
+				tabs := reWDTabItem.FindAllStringSubmatch(preNested, -1)
+				if len(tabs) == 0 {
+					// No well-formed
+					// `[[tab …]]…[[/tab]]`
+					// children. Two sub-
+					// cases:
+					//   1. body has a
+					//      `[[tab ` opener
+					//      with no matching
+					//      `[[/tab]]` —
+					//      leave the
+					//      opener raw so
+					//      the author can
+					//      see the typo.
+					//   2. body is empty
+					//      or has no
+					//      `[[tab ` at all
+					//      — emit an empty
+					//      container.
+					if strings.Contains(preNested, "[[tab ") {
+						sb.WriteString(source[i+oi : closeEnd])
+					} else {
+						sb.WriteString(`<div class="wikidot-tabview"></div>`)
+					}
+					i = closeEnd
+					goto nextTab
+				}
+				sb.WriteString(`<div class="wikidot-tabview">`)
+				sb.WriteString(`<ul class="wikidot-tab-nav">`)
+				for idx, t := range tabs {
+					title := strings.TrimSpace(t[1])
+					if idx == 0 {
+						sb.WriteString(`<li class="wikidot-tab-tab active" data-tab-id="`)
+						sb.WriteString(strconv.Itoa(idx))
+						sb.WriteString(`"><a href="#" data-tab-id="`)
+						sb.WriteString(strconv.Itoa(idx))
+						sb.WriteString(`">`)
+						sb.WriteString(html.EscapeString(title))
+						sb.WriteString(`</a></li>`)
+					} else {
+						sb.WriteString(`<li class="wikidot-tab-tab" data-tab-id="`)
+						sb.WriteString(strconv.Itoa(idx))
+						sb.WriteString(`"><a href="#" data-tab-id="`)
+						sb.WriteString(strconv.Itoa(idx))
+						sb.WriteString(`">`)
+						sb.WriteString(html.EscapeString(title))
+						sb.WriteString(`</a></li>`)
+					}
+				}
+				sb.WriteString(`</ul>`)
+				sb.WriteString(`<div class="wikidot-tab-panels">`)
+				for idx, t := range tabs {
+					content := strings.TrimSpace(p.convertNoFootnote(t[2]))
+					if idx == 0 {
+						sb.WriteString(`<div class="wikidot-tab-panel active" data-tab-id="`)
+						sb.WriteString(strconv.Itoa(idx))
+						sb.WriteString(`">`)
+					} else {
+						sb.WriteString(`<div class="wikidot-tab-panel" data-tab-id="`)
+						sb.WriteString(strconv.Itoa(idx))
+						sb.WriteString(`">`)
+					}
+					sb.WriteString(content)
+					sb.WriteString(`</div>`)
+				}
+				sb.WriteString(`</div>`)
+				sb.WriteString(`</div>`)
+				i = closeEnd
+				goto nextTab
+			}
+			j = closeEnd
+		}
+		// Reached EOF without a matching close —
+		// emit the opener raw.
+		sb.WriteString(source[i+oi:])
+		return sb.String()
+	nextTab:
 	}
 	return sb.String()
 }

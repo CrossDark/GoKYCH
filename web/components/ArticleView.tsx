@@ -223,7 +223,7 @@ useEffect(() => {
       ],
       ALLOWED_ATTR: [
         "href", "title", "alt", "src", "class", "style", "id", "target",
-        "rel", "colspan", "rowspan", "data-line",
+        "rel", "colspan", "rowspan", "data-line", "data-tab-id",
       ],
       ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto):|[#/])/i,
       FORBID_TAGS: ["script", "iframe", "object", "embed", "form"],
@@ -247,6 +247,33 @@ useEffect(() => {
       iframe.setAttribute("referrerpolicy", "strict-origin-when-cross-origin");
       iframe.setAttribute("title", "YouTube video");
       el.replaceChildren(iframe);
+    });
+
+    // Wikidot `[[tabview]]…[[/tabview]]` — wire up the
+    // click-to-switch behaviour. The parser already
+    // marked the first tab as `.active`; we just need
+    // to swap the `.active` class on click. Each tab
+    // button has `data-tab-id="N"` matching the panel
+    // with the same id; we look up both within the
+    // same `.wikidot-tabview` container so multiple
+    // tabviews on one page are independent.
+    container.querySelectorAll<HTMLElement>(".wikidot-tabview").forEach((tv) => {
+      const tabs = tv.querySelectorAll<HTMLElement>(".wikidot-tab-tab");
+      const panels = tv.querySelectorAll<HTMLElement>(".wikidot-tab-panel");
+      tabs.forEach((tab) => {
+        tab.addEventListener("click", (e) => {
+          e.preventDefault();
+          const id = tab.dataset.tabId;
+          if (id === undefined) return;
+          tabs.forEach((t) => t.classList.remove("active"));
+          panels.forEach((p) => p.classList.remove("active"));
+          tab.classList.add("active");
+          const target = tv.querySelector<HTMLElement>(
+            `.wikidot-tab-panel[data-tab-id="${id}"]`,
+          );
+          if (target) target.classList.add("active");
+        });
+      });
     });
 
     // Assign line numbers to block elements
