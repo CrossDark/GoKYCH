@@ -903,6 +903,25 @@ func (m *mockPageLookup) RandomPage(category string) *ListPageEntry {
 	return &m.entries[0]
 }
 
+// mockUserLookup is a tiny in-memory UserLookup used by
+// the user-mention tests below. Production adapters wrap
+// the MySQL queries against the users table; this stub
+// keeps the parser tests self-contained (no DB needed).
+// Lookups are case-insensitive on the canonical
+// `username` (matching the production SQL).
+type mockUserLookup struct {
+	users map[string]*UserProfile
+}
+
+func (m *mockUserLookup) UserByName(name string) *UserProfile {
+	if m == nil {
+		return nil
+	}
+	// Match the production adapter's case-insensitive
+	// behaviour by lowercasing the lookup key.
+	return m.users[strings.ToLower(strings.TrimSpace(name))]
+}
+
 // ── Stage 2 (P1) — Wikidot 标点符号 + 高级列表 + 用户提及 ─────
 
 // TestWikidotSmartQuotes covers the typographic pair forms
@@ -1498,5 +1517,189 @@ function helloWorld() {
 	}
 	if !strings.Contains(out, `function helloWorld() {`) {
 		t.Errorf("expected code body verbatim, got %q", out)
+	}
+}
+
+// ── UserLookup integration (P2 Stage 1) ───────────────────────
+
+// TestUserMentionLookupResolved verifies that when a
+// UserLookup returns a profile for the typed name, the
+// rendered mention carries:
+//   - `data-user-id`    = the resolved ID
+//   - `data-avatar`     = the resolved avatar URL
+//   - `data-username`   = the typed name (preserved for
+//     debugging — author may have
+//     typed "Alice" when DB stores
+//     "alice")
+//   - visible text      = the resolved nickname
+//
+// The link target (`/user/<slug>`) and the staff /
+// non-staff class are unchanged from the pre-lookup
+// behaviour, so existing CSS keeps working.
+func TestUserMentionLookupResolved(t *testing.T) {
+	lookup := &mockUserLookup{
+		users: map[string]*UserProfile{
+			"alice": {
+				ID:        42,
+				Username:  "alice",
+				Nickname:  "Alice Smith",
+				AvatarURL: "https://cdn.example.com/u/alice.png",
+				IsStaff:   false,
+			},
+		},
+	}
+	ctx := &RenderContext{UserLookup: lookup, ArticleType: "wikidot"}
+	out := RenderWikidotCtx(ctx, `[[user Alice]]`)
+	if !strings.Contains(out, `data-user-id="42"`) {
+		t.Errorf("expected data-user-id attribute, got %q", out)
+	}
+	if !strings.Contains(out, `data-avatar="https://cdn.example.com/u/alice.png"`) {
+		t.Errorf("expected data-avatar attribute, got %q", out)
+	}
+	// The typed name is preserved verbatim — the
+	// author typed "Alice" (capital A) and we
+	// shouldn't silently rewrite their intent.
+	if !strings.Contains(out, `data-username="Alice"`) {
+		t.Errorf("expected typed name in data-username, got %q", out)
+	}
+	// The visible link text is the resolved
+	// nickname, NOT the typed login name.
+	if !strings.Contains(out, `>@Alice Smith</a>`) {
+		t.Errorf("expected nickname as link text, got %q", out)
+	}
+}
+
+// TestUserMentionLookupCaseInsensitive verifies that
+// the lookup matches case-insensitively. The author
+// typed "ALICE", the DB stores "alice"; the link
+// should resolve to alice's profile. This matches
+// the production SQL (`WHERE LOWER(username) = ?`).
+func TestUserMentionLookupCaseInsensitive(t *testing.T) {
+	lookup := &mockUserLookup{
+		users: map[string]*UserProfile{
+			"alice": {ID: 7, Username: "alice", Nickname: "Alice"},
+		},
+	}
+	ctx := &RenderContext{UserLookup: lookup, ArticleType: "wikidot"}
+	out := RenderWikidotCtx(ctx, `[[user ALICE]]`)
+	if !strings.Contains(out, `data-user-id="7"`) {
+		t.Errorf("expected case-insensitive lookup, got %q", out)
+	}
+}
+
+// TestUserMentionLookupMiss verifies that an unknown
+// username degrades cleanly: the link is still emitted
+// (so the URL is clickable and the author can see what
+// they typed) but no `data-user-id` / `data-avatar`
+// attributes are added, and the visible text falls
+// back to the typed name.
+func TestUserMentionLookupMiss(t *testing.T) {
+	lookup := &mockUserLookup{
+		users: map[string]*UserProfile{
+			"alice": {ID: 7, Username: "alice", Nickname: "Alice"},
+		},
+	}
+	ctx := &RenderContext{UserLookup: lookup, ArticleType: "wikidot"}
+	out := RenderWikidotCtx(ctx, `[[user ghost]]`)
+	if strings.Contains(out, `data-user-id`) {
+		t.Errorf("expected NO data-user-id on miss, got %q", out)
+	}
+	if strings.Contains(out, `data-avatar`) {
+		t.Errorf("expected NO data-avatar on miss, got %q", out)
+	}
+	// The typed name still appears as the link
+	// text — better than dropping the mention
+	// entirely, since the author can fix the
+	// typo themselves.
+	if !strings.Contains(out, `>@ghost</a>`) {
+		t.Errorf("expected typed name as link text on miss, got %q", out)
+	}
+	// `data-username` is always emitted (the
+	// typed name, useful for debugging).
+	if !strings.Contains(out, `data-username="ghost"`) {
+		t.Errorf("expected data-username on miss, got %q", out)
+	}
+}
+
+// TestUserMentionLookupNoContext verifies that the
+// renderer still works when no context (and therefore
+// no UserLookup) is passed. The output should match
+// the pre-UserLookup behaviour exactly: plain link
+// with the typed name, no `data-user-id`, no
+// `data-avatar`.
+func TestUserMentionLookupNoContext(t *testing.T) {
+	out := RenderWikidot(`[[user Alice]] [[*user Bob]]`)
+	if strings.Contains(out, `data-user-id`) {
+		t.Errorf("expected NO data-user-id without context, got %q", out)
+	}
+	if strings.Contains(out, `data-avatar`) {
+		t.Errorf("expected NO data-avatar without context, got %q", out)
+	}
+	if !strings.Contains(out, `@Alice`) {
+		t.Errorf("expected typed name, got %q", out)
+	}
+	if !strings.Contains(out, `@Bob`) {
+		t.Errorf("expected typed name for staff variant, got %q", out)
+	}
+}
+
+// TestUserMentionLookupStaffFromProfile verifies that
+// the staff class is applied based on the resolved
+// profile's IsStaff flag, NOT just on the `*` markup
+// form. An admin who lost their `*` still gets the
+// staff styling if the DB says they're staff.
+func TestUserMentionLookupStaffFromProfile(t *testing.T) {
+	lookup := &mockUserLookup{
+		users: map[string]*UserProfile{
+			"alice": {ID: 1, Username: "alice", Nickname: "Alice", IsStaff: true},
+		},
+	}
+	ctx := &RenderContext{UserLookup: lookup, ArticleType: "wikidot"}
+	// Author wrote plain `[[user Alice]]` (no `*`)
+	// but the user IS staff per the profile.
+	out := RenderWikidotCtx(ctx, `[[user Alice]]`)
+	if !strings.Contains(out, `user-mention-staff`) {
+		t.Errorf("expected staff class from profile, got %q", out)
+	}
+}
+
+// TestUserMentionLookupStaffFromMarkup verifies the
+// original "star form" staff styling still works
+// even when the profile doesn't have IsStaff set
+// (e.g. for a logged-in but not-admin user). This is
+// the historical Wikidot convention.
+func TestUserMentionLookupStaffFromMarkup(t *testing.T) {
+	lookup := &mockUserLookup{
+		users: map[string]*UserProfile{
+			"bob": {ID: 2, Username: "bob", Nickname: "Bob", IsStaff: false},
+		},
+	}
+	ctx := &RenderContext{UserLookup: lookup, ArticleType: "wikidot"}
+	out := RenderWikidotCtx(ctx, `[[*user Bob]]`)
+	if !strings.Contains(out, `user-mention-staff`) {
+		t.Errorf("expected staff class from markup, got %q", out)
+	}
+}
+
+// TestUserMentionLookupEmptyNickname verifies that
+// when the profile has no nickname set, the visible
+// text falls back to the typed name (NOT empty, NOT
+// the canonical username — the typed name is what
+// the author meant to communicate).
+func TestUserMentionLookupEmptyNickname(t *testing.T) {
+	lookup := &mockUserLookup{
+		users: map[string]*UserProfile{
+			"alice": {ID: 1, Username: "alice", Nickname: ""},
+		},
+	}
+	ctx := &RenderContext{UserLookup: lookup, ArticleType: "wikidot"}
+	out := RenderWikidotCtx(ctx, `[[user Alice]]`)
+	if !strings.Contains(out, `>@Alice</a>`) {
+		t.Errorf("expected typed name fallback when nickname empty, got %q", out)
+	}
+	// We still emit data-user-id (the lookup HIT,
+	// even though the profile is sparse).
+	if !strings.Contains(out, `data-user-id="1"`) {
+		t.Errorf("expected data-user-id even without nickname, got %q", out)
 	}
 }

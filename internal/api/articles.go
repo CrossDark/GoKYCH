@@ -150,9 +150,19 @@ func (s *Server) getArticle(c *gin.Context) {
 	if currentUser != nil {
 		lookup.currentUserID = &currentUser.ID
 	}
+	// UserLookup is wired alongside PageLookup so the
+	// renderer's `[[user Name]]` mentions resolve to the
+	// users table — the link gets the user's nickname /
+	// avatar / staff badge instead of the typed name.
+	// The lookup is a thin DB-only adapter (no per-render
+	// state) so a single instance is reused; constructing
+	// it per render is still cheaper than the per-render
+	// PageLookup allocation pattern.
+	userLookup := &wikidotUserLookup{db: s.DB}
 	vars := buildArticleVars(a, currentUser, rating)
 	renderCtx := &parsers.RenderContext{
 		PageLookup:  lookup,
+		UserLookup:  userLookup,
 		Vars:        vars,
 		ArticleType: a.Type,
 	}

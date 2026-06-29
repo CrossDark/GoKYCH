@@ -432,6 +432,15 @@ type RenderContext struct {
 	// tests can pass a stub.
 	PageLookup PageLookup
 
+	// UserLookup resolves `[[user Name]]` and `[[*user Name]]`
+	// mentions to actual user rows so the rendered link can
+	// show the user's nickname / avatar / staff badge. When
+	// the lookup fails (no context, no adapter, or unknown
+	// name) the renderer falls back to a plain `@Name` link,
+	// matching the pre-existing behaviour before the lookup
+	// was wired in.
+	UserLookup UserLookup
+
 	// Vars feeds `%%name%%` substitutions. The article renderer
 	// populates this with the current article, current user, rating,
 	// etc. before each render.
@@ -488,6 +497,43 @@ type ListPageEntry struct {
 	CreatedAt      time.Time
 	Tags           []string
 	Rating         float64
+}
+
+// UserLookup is the interface the wikidot renderer needs to
+// resolve `[[user Name]]` / `[[*user Name]]` mentions. The
+// production adapter (in internal/api) queries MySQL; tests
+// can pass an in-memory stub. A nil lookup (or a lookup that
+// returns nil for a name) degrades to the plain
+// `@<Name>` link with no avatar — the same output the
+// pre-UserLookup era rendered.
+type UserLookup interface {
+	// UserByName returns the user matching `name` (case-
+	// insensitive on the canonical `username` column),
+	// or nil if no such user exists. The renderer does
+	// NOT pre-slug the name; the lookup is free to do
+	// its own normalisation. The returned profile's
+	// fields are all optional (zero-valued means "no
+	// avatar / no nickname / no staff badge").
+	UserByName(name string) *UserProfile
+}
+
+// UserProfile is what UserLookup.UserByName returns. Only
+// the fields the renderer actually consumes are populated;
+// the production adapter picks them from the users table
+// row directly. Username is the canonical lowercased
+// login name (what the user typed with whatever casing
+// gets stored as `username` in the DB); Nickname is the
+// display name (often the same as Username when the
+// author didn't set a separate nickname); AvatarURL is
+// the absolute URL to the avatar image (or empty when
+// the user hasn't uploaded one); IsStaff is the staff /
+// admin flag the front-end uses to draw the badge.
+type UserProfile struct {
+	ID        int64
+	Username  string
+	Nickname  string
+	AvatarURL string
+	IsStaff   bool
 }
 
 // RenderWikidot converts Wikidot markup source to HTML. Calls
@@ -1309,16 +1355,26 @@ func (p *wikidotParser) convertInternal(source string, appendFootnotes bool) str
 	out = reWDLineBreak.ReplaceAllString(out, `<br>`)
 	// User mention: `[[user name]]` or `[[*user name]]`
 	// (the `*` form is the staff / logged-in variant).
-	// Render as a `<span class="user-mention">` with a
-	// `data-username` attribute; the future UserLookup
-	// will rewrite the display text and inject a link
-	// to the user profile. We escape the captured name
-	// once for the `data-` attribute and once for the
-	// visible text, then again via html.EscapeString
-	// for the visible text since the name is plain
-	// text (not wikidot source). The two-pass escape
-	// keeps `<` and `>` in the name harmless to the
-	// surrounding HTML.
+	//
+	// When a UserLookup is wired in via RenderContext, we
+	// resolve the typed name against the users table; the
+	// rendered link then carries:
+	//   - `data-username` = the typed name (the author's
+	//     intent, preserved for debugging / accessibility)
+	//   - `data-user-id`  = the resolved user's ID (or omitted
+	//     if the lookup failed)
+	//   - `data-avatar`   = the avatar URL (or empty)
+	//   - the visible link text is the user's nickname when
+	//     one is set, falling back to the typed name, falling
+	//     back to the canonical username
+	//
+	// When the lookup fails (no context / no adapter / unknown
+	// name) we still emit the link — same shape, just without
+	// the avatar / nickname enrichment. The page profile route
+	// (`/user/<slug>`) returns 404 in that case but the
+	// hyperlink is still clickable; the next round can wire
+	// up a "user not found" placeholder page if the author
+	// wants it.
 	out = reWDUser.ReplaceAllStringFunc(out, func(s string) string {
 		// Recover the leading `*` (if any) and the
 		// captured username. The regex is case-
@@ -1339,17 +1395,53 @@ func (p *wikidotParser) convertInternal(source string, appendFootnotes bool) str
 		if staff {
 			cls = "user-mention user-mention-staff"
 		}
-		// The visible text is the raw username the
-		// author wrote (so they can see the typo /
-		// casing they used). We DO strip the `*`
-		// prefix from the visible text; it's
-		// markup, not name.
+		// Visible text starts as the typed name. The
+		// UserLookup, when present, replaces it with
+		// the user's nickname (when set) so the reader
+		// sees the display name rather than the login.
 		visible := name
+		var profile *UserProfile
+		if p.ctx != nil && p.ctx.UserLookup != nil {
+			profile = p.ctx.UserLookup.UserByName(name)
+		}
+		// Build the data-* attributes. We always
+		// emit `data-username` (the typed name) so
+		// the front-end can still show "you typed
+		// 'Foo', we found 'foo@example.com'" if
+		// needed; `data-user-id` / `data-avatar`
+		// are only emitted when the lookup hit.
+		attrs := []string{
+			`data-username="` + html.EscapeString(name) + `"`,
+		}
+		if profile != nil {
+			if profile.ID != 0 {
+				attrs = append(attrs,
+					fmt.Sprintf(`data-user-id="%d"`, profile.ID))
+			}
+			if profile.AvatarURL != "" {
+				attrs = append(attrs,
+					`data-avatar="`+html.EscapeString(profile.AvatarURL)+`"`)
+			}
+			if profile.Nickname != "" {
+				visible = profile.Nickname
+			}
+			// Staff override: if the resolved user
+			// is staff OR the author used the `*`
+			// form, keep the staff class. The `*`
+			// form is the historical "logged-in"
+			// marker; staff status is now an
+			// attribute of the user record, not the
+			// markup, but we honour both for
+			// backward-compat.
+			if profile.IsStaff {
+				cls = "user-mention user-mention-staff"
+			}
+		}
 		return fmt.Sprintf(
-			`<a class="%s" href="/user/%s" data-username="%s">@%s</a>`,
+			`<a class="%s" href="/user/%s" %s>@%s</a>`,
 			cls,
 			html.EscapeString(slugifyUsername(name)),
-			html.EscapeString(name),
+			strings.Join(attrs, " "),
 			html.EscapeString(visible),
 		)
 	})
