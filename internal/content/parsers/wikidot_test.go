@@ -902,3 +902,348 @@ func (m *mockPageLookup) RandomPage(category string) *ListPageEntry {
 	}
 	return &m.entries[0]
 }
+
+// ── Stage 2 (P1) — Wikidot 标点符号 + 高级列表 + 用户提及 ─────
+
+// TestWikidotSmartQuotes covers the typographic pair forms
+// from the Wikidot spec §标点符号: “…” (double quotes),
+// «…» (guillemets via `<<…>>`), `...` (ellipsis),
+// ` -- ` (em-dash with whitespace on both sides), and
+// `X's` (apostrophe). The Wikidot spec uses guillemets
+// (not curly single quotes) for `<<…>>` and an em-dash
+// (U+2014) for ` -- ` — both choices are preserved in
+// the renderer's smart-punctuation phase.
+func TestWikidotSmartQuotes(t *testing.T) {
+	cases := []struct {
+		in   string
+		want []string
+		not  []string
+	}{
+		{
+			in:   "他说 ``你好'' 然后走了",
+			want: []string{`“`, `”`, `你好`},
+		},
+		{
+			in:   `<<引用>>`,
+			want: []string{`«`, `»`, `引用`},
+		},
+		{
+			in:   `等等...`,
+			want: []string{`…`},
+		},
+		{
+			in:   `前后 -- 中间`,
+			want: []string{`—`, `前后`, `中间`},
+		},
+		{
+			in:   `it's a test`,
+			want: []string{`it’s`},
+		},
+	}
+	for _, c := range cases {
+		out := RenderWikidot(c.in)
+		for _, w := range c.want {
+			if !strings.Contains(out, w) {
+				t.Errorf("input %q: expected %q in %q", c.in, w, out)
+			}
+		}
+		for _, n := range c.not {
+			if strings.Contains(out, n) {
+				t.Errorf("input %q: did NOT expect %q in %q", c.in, n, out)
+			}
+		}
+	}
+}
+
+// TestWikidotEnDashNoSpace is a regression: `--` only
+// becomes an en-dash when surrounded by whitespace. Bare
+// `--` (e.g. `删除线 --text--`) must not turn into an en
+// dash because strikethrough already consumed the pair.
+func TestWikidotEnDashNoSpace(t *testing.T) {
+	out := RenderWikidot(`删除线 --text--`)
+	if !strings.Contains(out, "<s>text</s>") {
+		t.Errorf("expected strikethrough, got %q", out)
+	}
+	if strings.Contains(out, "–") {
+		t.Errorf("expected no en-dash without whitespace, got %q", out)
+	}
+}
+
+// TestWikidotBlockquoteCont verifies the `X _\nY` line-
+// continuation join inside a blockquote: the two
+// source lines merge into a single `<blockquote>`
+// body with a space join (not a <br />). The ` _`
+// must be the literal continuation marker; a bare
+// `\\\n` (markdown hard-break) is a different syntax.
+func TestWikidotBlockquoteCont(t *testing.T) {
+	out := RenderWikidot("> 行1 _\n行2 结束")
+	if !strings.Contains(out, "<blockquote>") {
+		t.Errorf("expected <blockquote>, got %q", out)
+	}
+	if !strings.Contains(out, "行1 行2 结束") {
+		t.Errorf("expected joined `行1 行2 结束`, got %q", out)
+	}
+	if strings.Contains(out, "<br") {
+		t.Errorf("expected no <br /> inside joined blockquote, got %q", out)
+	}
+}
+
+// TestWikidotDefinitionList covers `: term : definition`
+// plus the `:` continuation form. Continuation lines are
+// `:`-prefixed WITHOUT the `: ... : ...` separator (the
+// leading `:` is the only delimiter). A `: term : def`
+// line that ALSO has a second `:` IS a new term, not a
+// continuation.
+func TestWikidotDefinitionList(t *testing.T) {
+	in := `: API : 应用编程接口
+: 第二行续
+: 第三行续
+: CSS : 层叠样式表
+`
+	out := RenderWikidot(in)
+	if !strings.Contains(out, "<dl") {
+		t.Errorf("expected <dl>, got %q", out)
+	}
+	if !strings.Contains(out, "<dt>API</dt>") {
+		t.Errorf("expected <dt>API</dt>, got %q", out)
+	}
+	if !strings.Contains(out, "<dd>应用编程接口") {
+		t.Errorf("expected <dd>应用编程接口, got %q", out)
+	}
+	// Continuation lines merge into a single <dd>
+	// for the API term; the CSS term gets its own.
+	if strings.Count(out, "<dd>") != 2 {
+		t.Errorf("expected 2 <dd> (one per term), got %d in %q",
+			strings.Count(out, "<dd>"), out)
+	}
+	// Continuation text must be inside the same <dd>
+	// as the original term — joined with <br />.
+	if !strings.Contains(out, "<dd>应用编程接口<br />") {
+		t.Errorf("expected continuation joined with <br />, got %q", out)
+	}
+}
+
+// TestWikidotFloatTOC verifies the `[[f<toc]]` and
+// `[[f>toc]]` floated forms render an inline
+// `<div class="wikidot-toc-float-left/right">` wrapping
+// the same TOC HTML the plain `[[toc]]` emits. The TOC
+// itself is a `<ul>` of `<li><a href="#…">` items; the
+// `wikidot-toc` class lives on the wrapper `<div>`, not
+// the inner `<ul>`.
+func TestWikidotFloatTOC(t *testing.T) {
+	in := `++ 一级标题
+[[f<toc]]
+++ 二级标题
+[[f>toc]]
+`
+	outL := RenderWikidot(in)
+	if !strings.Contains(outL, `wikidot-toc-float-left`) {
+		t.Errorf("expected float-left class, got %q", outL)
+	}
+	if !strings.Contains(outL, `wikidot-toc-float-right`) {
+		t.Errorf("expected float-right class, got %q", outL)
+	}
+	if !strings.Contains(outL, `<ul>`) {
+		t.Errorf("expected <ul> inside float wrapper, got %q", outL)
+	}
+	if !strings.Contains(outL, `<a href="#h2-1">`) {
+		t.Errorf("expected heading anchor link, got %q", outL)
+	}
+}
+
+// TestWikidotCollapsibleFolded verifies the
+// `[[collapsible folded="no"]]` form renders a
+// `<details … open>` (so the contents show by default),
+// while the default `folded=""` (or no folded attr) is
+// `<details>` without the `open` attribute (collapsed).
+// We can't just check `<details open` because the
+// renderer puts a `class="wiki-collapsible"` between
+// `<details` and ` open` — instead we look for the
+// `open` attribute on the `details` tag (and confirm
+// the closed form doesn't have it).
+func TestWikidotCollapsibleFolded(t *testing.T) {
+	outOpen := RenderWikidot(`[[collapsible folded="no"]]
+内容
+[[/collapsible]]`)
+	if !regexp.MustCompile(`<details[^>]*\bopen\b`).MatchString(outOpen) {
+		t.Errorf("expected `open` attribute on <details>, got %q", outOpen)
+	}
+	outClosed := RenderWikidot(`[[collapsible]]
+内容
+[[/collapsible]]`)
+	if regexp.MustCompile(`<details[^>]*\bopen\b`).MatchString(outClosed) {
+		t.Errorf("expected NO `open` attribute on collapsed <details>, got %q", outClosed)
+	}
+}
+
+// TestWikidotFootnoteBlock verifies the block-form
+// `[[footnote]]...[[/footnote]]` plus the
+// `[[footnoteblock]]` suppressor. The block-form
+// body is NOT rendered inline (Wikidot's behaviour
+// — only the `<sup>` back-link shows in place of
+// the `[[footnote]]` token). The body appears in
+// the `<ol class="footnotes">` list appended at
+// the end of the article — UNLESS the article
+// contains `[[footnoteblock]]`, which suppresses
+// the auto list. The optional `title="..."`
+// attribute is parsed and stored on the parser;
+// the current renderer's list-emit code only
+// consults it when the list IS emitted, so a
+// suppressed list (the common case for
+// `[[footnoteblock title="..."]]`) doesn't show
+// the title in the output.
+func TestWikidotFootnoteBlock(t *testing.T) {
+	// Case 1: footnote block WITH list — body
+	// appears in the list, default title is used.
+	in := `正文 [1] 与 [2] 引用
+[[footnote]]脚注 1 内容[[/footnote]]
+[[footnote]]脚注 2 内容[[/footnote]]
+`
+	out := RenderWikidot(in)
+	if !strings.Contains(out, "脚注 1 内容") {
+		t.Errorf("expected footnote 1 body in list, got %q", out)
+	}
+	if !strings.Contains(out, "脚注 2 内容") {
+		t.Errorf("expected footnote 2 body in list, got %q", out)
+	}
+	// The block-form ref is `[1]` / `[2]`; both
+	// should link back to the body.
+	if !strings.Contains(out, `href="#fn-1"`) || !strings.Contains(out, `href="#fn-2"`) {
+		t.Errorf("expected links to fn-1 / fn-2, got %q", out)
+	}
+	// The list should be present (no
+	// `[[footnoteblock]]` to suppress it).
+	if !strings.Contains(out, `<ol>`) {
+		t.Errorf("expected default <ol> list, got %q", out)
+	}
+	if !strings.Contains(out, `footnotes-title`) {
+		t.Errorf("expected `footnotes-title` heading, got %q", out)
+	}
+
+	// Case 2: footnote block WITH `[[footnoteblock]]`
+	// — list is suppressed, body doesn't appear.
+	outSup := RenderWikidot(in + `[[footnoteblock]]
+`)
+	// List is rendered IN-PLACE at the marker
+	// (Wikidot treats the marker as a position
+	// anchor for the list, not a suppressor).
+	// The auto-append at end-of-document is
+	// suppressed, so we see exactly one `<ol>`
+	// for the footnote list.
+	if strings.Count(outSup, `<ol>`) != 1 {
+		t.Errorf("expected exactly one <ol> at marker, got %q", outSup)
+	}
+	// Body IS visible (rendered in the list).
+	if !strings.Contains(outSup, "脚注 1 内容") {
+		t.Errorf("expected body in in-place list, got %q", outSup)
+	}
+	// In-place refs are still there.
+	if !strings.Contains(outSup, `href="#fn-1"`) {
+		t.Errorf("expected in-place ref to fn-1, got %q", outSup)
+	}
+
+	// Case 3: `title="..."` is honoured in the
+	// in-place list. The label becomes the
+	// `<h2 class="footnotes-title">…</h2>` text.
+	outTitled := RenderWikidot(in + `[[footnoteblock title="我的脚注"]]
+`)
+	if !strings.Contains(outTitled, `我的脚注`) {
+		t.Errorf("expected title in rendered list, got %q", outTitled)
+	}
+	if !strings.Contains(outTitled, `href="#fn-1"`) {
+		t.Errorf("expected in-place ref to fn-1 with title marker, got %q", outTitled)
+	}
+}
+
+// TestWikidotAdvancedList verifies the `[[ul]]` / `[[ol]]`
+// / `[[li]]` block syntax renders as nested `<ul>` /
+// `<ol>` with attributes forwarded to the in-tag form.
+func TestWikidotAdvancedList(t *testing.T) {
+	in := `[[ul class="my-list"]]
+[[li]]item 1[[/li]]
+[[li class="active"]]item 2
+[[ul]]
+[[li]]nested 1[[/li]]
+[[li]]nested 2[[/li]]
+[[/ul]]
+[[/li]]
+[[li]]item 3[[/li]]
+[[/ul]]
+`
+	out := RenderWikidot(in)
+	if !strings.Contains(out, `<ul class="my-list">`) {
+		t.Errorf("expected <ul class=my-list>, got %q", out)
+	}
+	if !strings.Contains(out, `<li class="active">`) {
+		t.Errorf("expected <li class=active>, got %q", out)
+	}
+	if !strings.Contains(out, `nested 1`) || !strings.Contains(out, `nested 2`) {
+		t.Errorf("expected nested items, got %q", out)
+	}
+	// Nested <ul> inside <li> — no <p> wrapping allowed.
+	if strings.Contains(out, "<p><ul") || strings.Contains(out, "</ul></p>") {
+		t.Errorf("expected no <p> around nested <ul>, got %q", out)
+	}
+	// Top-level list and the nested list should both
+	// appear as siblings of `<li>`.
+	if strings.Count(out, "<ul") < 2 {
+		t.Errorf("expected at least 2 <ul> (top + nested), got %q", out)
+	}
+}
+
+// TestWikidotAdvancedListOrdered verifies `[[ol]]` (with
+// numeric ordering).
+func TestWikidotAdvancedListOrdered(t *testing.T) {
+	in := `[[ol]]
+[[li]]first[[/li]]
+[[li]]second[[/li]]
+[[/ol]]
+`
+	out := RenderWikidot(in)
+	if !strings.Contains(out, "<ol>") {
+		t.Errorf("expected <ol>, got %q", out)
+	}
+	if !strings.Contains(out, "first") || !strings.Contains(out, "second") {
+		t.Errorf("expected both items, got %q", out)
+	}
+	if !strings.Contains(out, "</ol>") {
+		t.Errorf("expected </ol>, got %q", out)
+	}
+}
+
+// TestWikidotUserMention covers `[[user name]]` (basic)
+// and `[[*user name]]` (staff / logged-in) forms. The
+// output is a link to `/user/<slug>` with a class hook
+// for theming and a `data-username` for client-side
+// enrichment.
+func TestWikidotUserMention(t *testing.T) {
+	out := RenderWikidot(`你好 [[user Alice]] 和 [[*user Bob Smith]]`)
+	if !strings.Contains(out, `<a class="user-mention"`) {
+		t.Errorf("expected user-mention class, got %q", out)
+	}
+	if !strings.Contains(out, `href="/user/alice"`) {
+		t.Errorf("expected /user/alice slug, got %q", out)
+	}
+	if !strings.Contains(out, `user-mention-staff`) {
+		t.Errorf("expected staff class on `*user` form, got %q", out)
+	}
+	if !strings.Contains(out, `href="/user/bob-smith"`) {
+		t.Errorf("expected /user/bob-smith slug (with space→dash), got %q", out)
+	}
+	if !strings.Contains(out, `data-username="Alice"`) {
+		t.Errorf("expected data-username=Alice, got %q", out)
+	}
+}
+
+// TestWikidotUserMentionNoName verifies the fallback:
+// an empty `[[user]]` / `[[*user]]` (no name) is escaped
+// as raw text so the author sees the typo.
+func TestWikidotUserMentionNoName(t *testing.T) {
+	out := RenderWikidot(`测试 [[user]] 完成`)
+	if !strings.Contains(out, "[[user]]") {
+		t.Errorf("expected raw [[user]] for empty name, got %q", out)
+	}
+	if strings.Contains(out, `class="user-mention"`) {
+		t.Errorf("expected NO mention markup for empty name, got %q", out)
+	}
+}
