@@ -3,24 +3,39 @@ package parsers
 import (
 	"fmt"
 	"html"
+	"log/slog"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // ── Wikidot regexes ────────────────────────────────────────────────────
 //
 // Coverage matches what authors actually write on the site, not the full
-// Wikidot spec (modules / include / page variables stay as raw source on
-// purpose — those are server-side dynamic and the page already notes
-// where they're headed). Block patterns are stored as placeholders so the
-// inner content doesn't get re-processed by inline passes.
+// Wikidot spec. Block patterns are stored as placeholders so the inner
+// content doesn't get re-processed by inline passes.
+//
+// `[[include]]`, `[[module …]]`, `[[toc]]`, `%%var%%`, footnotes, and
+// nested lists were added on top of the basic wikidot syntax (the
+// static subset, which the previous parser already covered). All of
+// them run off an optional *RenderContext — when no context is passed
+// in, the dynamic constructs degrade to their raw source (matching the
+// pre-existing behaviour so SSR for /api/articles without a context
+// keeps working).
 
 var (
-	reWDCode       = regexp.MustCompile(`(?is)\[\[code(?:\s+type\s*=\s*['"]([^'"]+)['"])?\]\](.*?)\[\[/code\]\]`)
-	reWDCodeMarker = regexp.MustCompile(`(?is)\[\[code(?:\s+type\s*=\s*['"]([^'"]+)['"])?\]\](.*?)\[\[/code\]\]`)
+	reWDCode = regexp.MustCompile(`(?is)\[\[code(?:\s+type\s*=\s*['"]([^'"]+)['"])?\]\](.*?)\[\[/code\]\]`)
 	// [[[wikidot link]]] is matched in Phase 3 (links) alongside
 	// [url text] and [mailto:…] external link forms.
+
+	// reBlockMarkerInLine splits a paragraph-wrap line on
+	// `%%BLOCK_N%%` / `%%WRAP_BLOCK_N%%` placeholders. Used by
+	// wrapWikidotParagraphs to keep block-level placeholders
+	// out of `<p>…</p>` wrappers (where they'd be invalid HTML
+	// after the placeholder is restored in Phase 10).
+	reBlockMarkerInLine = regexp.MustCompile(`(.*?)(%%(?:BLOCK|WRAP_BLOCK)_\d+%%)(.*)`)
 
 	reWDDiv       = regexp.MustCompile(`(?is)\[\[div\s+class="([^"]*)"\]\](.*?)\[\[/div\]\]`)
 	reWDDivStyle  = regexp.MustCompile(`(?is)\[\[div\s+style="([^"]*)"\]\](.*?)\[\[/div\]\]`)
@@ -28,23 +43,45 @@ var (
 	reWDTable     = regexp.MustCompile(`(?is)\[\[table\]\](.*?)\[\[/table\]\]`)
 	// Row-based table syntax: lines starting with `||` and ending with `||`.
 	// Each `||` is a cell separator; `||~ header ~||` denotes a header cell.
-	// Merged-cell syntax `|| ||` (empty) or `||||` collapses to one cell.
+	// Merged-cell syntax `|| ||` (empty) or `||||` collapses to one cell with
+	// colspan.
 	reWDTableRowLine = regexp.MustCompile(`(?m)^\s*\|\|[^|\n]*?(?:\|\|[^|\n]*?)*\|\|\s*$`)
 
-	reWDSpanClass = regexp.MustCompile(`(?is)\[\[span\s+class="([^"]*)"\]\](.*?)\[\[/span\]\]`)
-	reWDSpanStyle = regexp.MustCompile(`(?is)\[\[span\s+style="([^"]*)"\]\](.*?)\[\[/span\]\]`)
-	reWDCollapsible = regexp.MustCompile(`(?is)\[\[collapsible\s+show="([^"]*)"\s+hide="([^"]*)"\]\](.*?)\[\[/collapsible\]\]`)
-	reWDSize        = regexp.MustCompile(`(?is)\[\[size\s+([^\]]+)\]\](.*?)\[\[/size\]\]`)
-	reWDColor       = regexp.MustCompile(`(?is)\[\[color\s+([^\]]+)\]\](.*?)\[\[/color\]\]`)
-	reWDMath        = regexp.MustCompile(`(?is)\[\[math\]\](.*?)\[\[/math\]\]`)
-	reWDHTMLRaw     = regexp.MustCompile(`(?is)\[\[html\]\](.*?)\[\[/html\]\]`)
-	reWDYoutube     = regexp.MustCompile(`(?i)\[\[youtube\s+([A-Za-z0-9_-]{6,20})\]\]`)
-	reWDAnchorDef   = regexp.MustCompile(`(?i)\[\[a\s+name\s*=\s*"?([^"\]]+?)"?\s*\]\]`)
+	reWDSpanClass    = regexp.MustCompile(`(?is)\[\[span\s+class="([^"]*)"\]\](.*?)\[\[/span\]\]`)
+	reWDSpanStyle    = regexp.MustCompile(`(?is)\[\[span\s+style="([^"]*)"\]\](.*?)\[\[/span\]\]`)
+	reWDCollapsible  = regexp.MustCompile(`(?is)\[\[collapsible\s+show="([^"]*)"\s+hide="([^"]*)"\]\](.*?)\[\[/collapsible\]\]`)
+	reWDSize         = regexp.MustCompile(`(?is)\[\[size\s+([^\]]+)\]\](.*?)\[\[/size\]\]`)
+	reWDColor        = regexp.MustCompile(`(?is)\[\[color\s+([^\]]+)\]\](.*?)\[\[/color\]\]`)
+	reWDMath         = regexp.MustCompile(`(?is)\[\[math\]\](.*?)\[\[/math\]\]`)
+	reWDHTMLRaw      = regexp.MustCompile(`(?is)\[\[html\]\](.*?)\[\[/html\]\]`)
+	// YouTube ID — Wikidot's real rule is broader than `[A-Za-z0-9_-]{6,20}`
+	// (it accepts 11-char base64-ish IDs plus our authors occasionally paste
+	// long, oddly-formatted test strings like 中文). Loosen to a generic
+	// "any non-bracket non-space run" and rely on the client-side JS
+	// pass to ignore ids the iframe can't load.
+	reWDYoutube    = regexp.MustCompile(`(?i)\[\[youtube\s+([^\s\]]+?)\s*\]\]`)
+	reWDAnchorDef  = regexp.MustCompile(`(?i)\[\[a\s+name\s*=\s*"?([^"\]]+?)"?\s*\]\]`)
 	// Paired form: `[[a name="x"]]content[[/a]]` — wraps the inner block
 	// in a span with id="x" so the [#x text] jump-link below can land
 	// on it. Same anchor id rules as reWDAnchorDef (HTML-escape the id;
 	// we don't constrain to ASCII because the test doc uses Chinese ids).
 	reWDAnchorPair = regexp.MustCompile(`(?is)\[\[a\s+name\s*=\s*"?([^"\]]+?)"?\s*\]\](.*?)\[\[/a\]\]`)
+	// [[toc]] — replaced in Phase 12 with a nested <ul> of the h2/h3
+	// headings collected during Phase 4. We stash the match with a
+	// placeholder so later passes don't touch it.
+	reWDTOC = regexp.MustCompile(`\[\[toc\]\]`)
+	// [[include SLUG | key=val | key=val]] — recursive page embed.
+	// SLUG can be "category:page-name" (Wikidot colon-namespace) or
+	// "page-name". The kv tail is a space- or pipe-separated
+	// attribute list; the include'd page's %%var%% substitutions
+	// see the keys, which is how Wikidot templates work.
+	reWDInclude = regexp.MustCompile(`(?is)\[\[include\s+([^\s\]]+?)((?:\s*\|\s*[^\]]*?)?)\]\]`)
+	// [[module Name key="val" key="val"]] … [[/module]] — block module.
+	// We do paired matching in convert() so the inner template
+	// (which can contain its own %%, *, [[ ]]) is captured as a
+	// whole before any inline pass.
+	reWDModuleOpen  = regexp.MustCompile(`(?is)\[\[module\s+([A-Za-z]+)((?:\s+[^\]]*?)?)\]\]`)
+	reWDModuleClose = regexp.MustCompile(`\[\[/module\]\]`)
 
 	reWDCenter  = regexp.MustCompile(`(?s)\[\[=\]\](.*?)\[\[/=\]\]`)
 	reWDRight   = regexp.MustCompile(`(?s)\[\[>\]\](.*?)\[\[/>\]\]`)
@@ -52,10 +89,10 @@ var (
 
 	// Inline formatting (Phase 2). Bold/italic/underline/etc. kept verbatim
 	// from the original parser; new additions below.
-	reWDSuperscript   = regexp.MustCompile(`\^\^(.+?)\^\^`)
-	reWDSubscript     = regexp.MustCompile(`,,(.+?),,`)
-	reWDAutoURL = regexp.MustCompile(`(?i)\b(https?://[^\s<>\[\]]+)`)
-	reWDLineBreak  = regexp.MustCompile(`(?i)\[\[br\]\]`)
+	reWDSuperscript = regexp.MustCompile(`\^\^(.+?)\^\^`)
+	reWDSubscript   = regexp.MustCompile(`,,(.+?),,`)
+	reWDAutoURL     = regexp.MustCompile(`(?i)\b(https?://[^\s<>\[\]]+)`)
+	reWDLineBreak   = regexp.MustCompile(`(?i)\[\[br\]\]`)
 	// Jump-link `[#name]` or `[#name text]` (Wikidot uses SINGLE
 	// brackets here, unlike the `[[a name=…]]` anchor def above).
 	// When text is present, emit a clickable anchor that scrolls to
@@ -69,8 +106,8 @@ var (
 	// alias. Treat the boundary as "non-`]` non-whitespace" so the
 	// name capture is greedy.
 	reWDAnchor = regexp.MustCompile(`\[#([^\]\s]+)(?:\s+([^\]]+))?\]`)
-	reWDMono          = regexp.MustCompile(`@@([^@]+?)@@`)
-	reWDBold          = regexp.MustCompile(`\*\*(.+?)\*\*`)
+	reWDMono   = regexp.MustCompile(`@@([^@]+?)@@`)
+	reWDBold   = regexp.MustCompile(`\*\*(.+?)\*\*`)
 	// Italic `//x//` — the opening `//` must NOT be preceded by `:`,
 	// so URLs like `https://example.com` (which contain `://`) don't
 	// false-positive when they appear inside HTML tags the auto-linker
@@ -106,9 +143,26 @@ var (
 	reWDBlockquote    = regexp.MustCompile(`(?m)^(?:&gt;|>)\s?(.*)$`)
 	reWDUnorderedItem = regexp.MustCompile(`(?m)^(\s*)\*\s+(.+)$`)
 	reWDOrderedItem   = regexp.MustCompile(`(?m)^(\s*)#\s+(.+)$`)
-	reWDHR            = regexp.MustCompile(`(?m)^-{4,}$`)
+	reWDHR            = regexp.MustCompile(`(?m)^-{3,}$`)
 	reWDAdmonition    = regexp.MustCompile(`(?sm)^!!!\s+(note|warning|danger|info|tip)\s*\n(.*?)(\n!!!|\n\[\[|\z)`)
 	reWDHTMLBlock     = regexp.MustCompile(`(?s)(<(?:pre|table|ul|ol|blockquote|div|details|summary)\b.*?</(?:pre|table|ul|ol|blockquote|div|details|summary)>)`)
+
+	// %%var%% — names are simple identifiers, not nested. Anything
+	// not in the Vars map at render time is left as-is so authors
+	// can see they typo'd a name (matching Wikidot's behaviour of
+	// rendering unknown variables verbatim).
+	reWDVar = regexp.MustCompile(`%%([A-Za-z_][A-Za-z0-9_]*)%%`)
+
+	// Footnote DEFINITION lines: `^[ \t]*[N] content` (line-leading
+	// only — inline [1] refs are matched separately).  The capture
+	// group is the digit; the second capture is the rest of the line.
+	reWDFootnoteDef = regexp.MustCompile(`(?m)^\s*\[(\d+)\]\s+(.+?)\s*$`)
+
+	// Footnote REFERENCE in body text: `[N]` (digits only, anywhere
+	// inline). We constrain to bare numbers so the URL bracket
+	// syntax `[https://...]` and the email `[mailto:...]` aren't
+	// confused.
+	reWDFootnoteRef = regexp.MustCompile(`\[(\d+)\]`)
 )
 
 // ── Size / color lookup tables ─────────────────────────────────────────
@@ -135,27 +189,142 @@ var admonitionTitles = map[string]string{
 	"tip":     "💡 提示",
 }
 
-// RenderWikidot converts Wikidot markup source to HTML.
+// ── Render context (the dynamic side-channel) ─────────────────────────
+
+// RenderContext carries the per-render side-channel state the wikidot
+// parser needs for dynamic constructs. A nil context is fine for
+// purely static content — include/module/toc/var all degrade to their
+// raw source in that case (matching the pre-existing behaviour).
+type RenderContext struct {
+	// PageLookup resolves `[[include slug]]`, `[[module ListPages]]`,
+	// and `RandomPage` to actual article rows. The production
+	// implementation in internal/api/articles.go queries MySQL;
+	// tests can pass a stub.
+	PageLookup PageLookup
+
+	// Vars feeds `%%name%%` substitutions. The article renderer
+	// populates this with the current article, current user, rating,
+	// etc. before each render.
+	Vars map[string]string
+
+	// ArticleType is the type of the article currently being rendered
+	// ("wikidot" / "md" / etc.). Used as the default atype for
+	// `[[include slug-without-type]]` lookups; without it, an
+	// ambiguous include is rejected.
+	ArticleType string
+}
+
+// PageLookup is the minimal interface the parser needs to resolve
+// dynamic wikidot constructs. The production adapter (in
+// internal/api/articles.go) wraps the MySQL queries against the
+// articles table; tests provide an in-memory stub.
+type PageLookup interface {
+	// IncludeBySlug returns the article matching (atype, slug), or
+	// nil if no such article exists. atype defaults to the current
+	// article's type when empty.
+	IncludeBySlug(atype, slug string) *IncludedPage
+
+	// ListPages returns up to `limit` articles matching `category`,
+	// ordered by `order`. category="*" means no category filter.
+	// order is one of the whitelist the module syntax supports
+	// (e.g. "created_at desc", "title", "updated_at desc").
+	ListPages(category string, limit int, order string) []ListPageEntry
+
+	// RandomPage returns one random article in `category` (or any if
+	// "*"), or nil if the set is empty.
+	RandomPage(category string) *ListPageEntry
+}
+
+// IncludedPage is what PageLookup.IncludeBySlug returns when an include
+// target is found. Content is the raw source — the parser recurses
+// into RenderWikidotCtx (or the matching renderer for the target's
+// Type) so the embedded page's wikidot/markdown/bbcode syntax is
+// fully expanded.
+type IncludedPage struct {
+	Type    string // "wikidot" / "md" / "bbcode" / "html"
+	Content string // raw source
+	Title   string
+}
+
+// ListPageEntry is the minimal row the wikidot module template needs.
+// We don't reuse content.Article directly to keep the parser package
+// from depending on the full row schema (which would create an
+// import cycle through the content package).
+type ListPageEntry struct {
+	Slug           string
+	Title          string
+	AuthorName     string
+	AuthorNickname string
+	CreatedAt      time.Time
+	Tags           []string
+	Rating         float64
+}
+
+// RenderWikidot converts Wikidot markup source to HTML. Calls
+// RenderWikidotCtx with a nil context — dynamic constructs (include,
+// module, var) degrade to their raw source.
 func RenderWikidot(source string) string {
+	return RenderWikidotCtx(nil, source)
+}
+
+// RenderWikidotCtx converts Wikidot markup source to HTML using the
+// provided context for dynamic constructs (include, module, var,
+// footnote definitions across pages). ctx may be nil.
+func RenderWikidotCtx(ctx *RenderContext, source string) string {
 	if source == "" {
 		return ""
 	}
 	p := wpGet()
 	defer wpPut(p)
+	p.ctx = ctx
+	if ctx != nil {
+		p.vars = ctx.Vars
+	} else {
+		p.vars = nil
+	}
 	return p.convert(source)
 }
 
 // ── WikidotParser (singleton, pooled for thread safety) ────────────────
 
 type wikidotParser struct {
-	blocks  map[string]string
-	counter int
+	blocks    map[string]string
+	counter   int
+	ctx       *RenderContext
+	vars      map[string]string
+	// footnoteDefs maps the footnote number (as string) to its raw
+	// text. Populated by Phase 0 (pre-parse scan) and consumed by
+	// Phase 13 (post-render append). We stash the original
+	// definition line as a placeholder so the inline pass doesn't
+	// mis-treat the `[N]` as a body reference.
+	footnoteDefs map[string]string
+	// headingSeq is the running counter for heading anchor ids
+	// (e.g. "h2-1", "h2-2", "h3-1"). Reset per render.
+	headingSeq int
+	// headings collects the (level, id, text) tuples that [[toc]]
+	// walks over to build the table of contents.
+	headings []headingEntry
+}
+
+type headingEntry struct {
+	Level int
+	ID    string
+	Text  string
 }
 
 var wpPool = sync.Pool{New: func() any { return &wikidotParser{} }}
 
-func wpGet() *wikidotParser  { return wpPool.Get().(*wikidotParser) }
-func wpPut(p *wikidotParser) { p.blocks = nil; p.counter = 0; wpPool.Put(p) }
+func wpGet() *wikidotParser { return wpPool.Get().(*wikidotParser) }
+func wpPut(p *wikidotParser) {
+	p.blocks = nil
+	p.counter = 0
+	p.ctx = nil
+	p.vars = nil
+	p.footnoteDefs = nil
+	p.headingSeq = 0
+	p.headings = nil
+	wpPool.Put(p)
+}
 
 func (p *wikidotParser) storeBlock(html string) string {
 	p.counter++
@@ -168,9 +337,48 @@ func (p *wikidotParser) storeBlock(html string) string {
 }
 
 func (p *wikidotParser) convert(source string) string {
+	return p.convertInternal(source, true)
+}
+
+// convertNoFootnote is the same as convert but skips the final
+// footnote-list append. Internal recursive calls (e.g. nested
+// `[[div ...]]` blocks recursing into their inner content) use
+// this so a wikidot page that has both `[[div ...]]` and
+// `[[footnote]]` style references doesn't end up with N
+// footnote lists (one per nested div level).
+func (p *wikidotParser) convertNoFootnote(source string) string {
+	return p.convertInternal(source, false)
+}
+
+func (p *wikidotParser) convertInternal(source string, appendFootnotes bool) string {
 	out := source
 
-	// ── Phase 1: block storage ────────────────────────────────────────
+	// Shadow the vars map so inlineOnly callbacks (which don't
+	// have a parser pointer) can read it. The shadow is
+	// per-render — concurrent renders don't share state, but
+	// each render's pipeline sees a stable table.
+	p.setInlineVars()
+	defer p.clearInlineVars()
+
+	// ── Phase 0: pre-scan for footnote definitions ──────────────────
+	//
+	// Wikidot footnote semantics: `[1] foo` lines (when they appear
+	// as standalone line-leading text, typically under a "脚注:"
+	// header at the bottom of the article) are the definition
+	// lines. Inline `[1]` in body paragraphs is a reference.
+	//
+	// We collect the defs into a map AND replace each def line
+	// with a placeholder marker. The inline pass later sees
+	// placeholder markers instead of `[N]`, so it doesn't
+	// double-convert definitions into body references. The marker
+	// is restored in Phase 10 with a follow-up "ignored" comment
+	// so a reader can see that a def was consumed.
+	out = p.collectFootnoteDefs(out)
+
+	// ── Phase 0.5: %%var%% substitution ────────────────────────────
+	out = p.replaceVars(out)
+
+	// ── Phase 1: block storage ─────────────────────────────────────
 	// The order matters: anything that can contain `]]` later in the
 	// content (math, code, div, html) has to be stashed before patterns
 	// that match raw HTML, otherwise the placeholder markers would be
@@ -202,7 +410,7 @@ func (p *wikidotParser) convert(source string) string {
 	// 1d. Collapsible sections
 	out = reWDCollapsible.ReplaceAllStringFunc(out, func(s string) string {
 		m := reWDCollapsible.FindStringSubmatch(s)
-		inner := p.convert(m[3])
+		inner := p.convertNoFootnote(m[3])
 		return p.storeBlock(fmt.Sprintf(`<details class="wiki-collapsible"><summary>%s</summary><div class="collapsible-content">%s</div></details>`, m[1], inner))
 	})
 
@@ -217,26 +425,46 @@ func (p *wikidotParser) convert(source string) string {
 		return p.storeBlock(renderWikidotTable(p, m[1]))
 	})
 
-	// 1g. [[div class=…]] and [[div style=…]]
-	out = reWDDiv.ReplaceAllStringFunc(out, func(s string) string {
-		m := reWDDiv.FindStringSubmatch(s)
-		inner := p.convert(m[2])
-		cls := sanitizeAnchorID(m[1])
-		return p.storeBlock(fmt.Sprintf(`<div class="%s">%s</div>`, cls, inner))
-	})
-	out = reWDDivStyle.ReplaceAllStringFunc(out, func(s string) string {
-		m := reWDDivStyle.FindStringSubmatch(s)
-		inner := p.convert(m[2])
-		if css := sanitizeCSSValue(m[1]); css != "" {
-			return p.storeBlock(fmt.Sprintf(`<div style="%s">%s</div>`, css, inner))
+	// 1g. [[include SLUG | key=val | …]] — recursive page embed.
+	// Resolved here, before div/float/span, so an include that
+	// wraps block-level wikidot syntax in its target page is
+	// already HTML by the time the paragraph-wrapper runs. A
+	// missing PageLookup or unknown slug degrades to the raw
+	// source (matching Wikidot's "leave the markup visible" fallback).
+	out = reWDInclude.ReplaceAllStringFunc(out, func(s string) string {
+		m := reWDInclude.FindStringSubmatch(s)
+		slug := strings.TrimSpace(m[1])
+		attrs := parseIncludeAttrs(m[2])
+		target := p.lookupInclude(slug, attrs)
+		if target == nil {
+			// Leave the original markup intact so the author can
+			// see and fix the missing slug. We DON'T stash as a
+			// block — the raw text is fine for visibility.
+			return s
 		}
-		return inner
+		return p.storeBlock(p.renderInclude(target, attrs))
 	})
 
-	// 1h. [[float=left|right]] — wrap content in a floating div
+	// 1h. [[module Name attrs]]…[[/module]] — block module.
+	// Paired matching so the inner template survives into the
+	// block resolver. The inner template can contain any wikidot
+	// syntax (e.g. `* %%title%%` for ListPages list rendering),
+	// so we re-run the whole pipeline on it after the per-page
+	// %%-substitution.
+	out = p.renderModules(out)
+
+	// 1i. [[div class=…]] and [[div style=…]] — deepest-first so
+	// nested divs don't have their inner [[div …]] close the
+	// outer [[/div]] early. Regex non-greedy matching can't
+	// handle balanced nesting on its own; we use a manual
+	// stack-based scanner that finds each pair by counting
+	// [[div ...]] and [[/div]] occurrences from each open tag.
+	out = p.renderDivBlocks(out)
+
+	// 1j. [[float=left|right]] — wrap content in a floating div
 	out = reWDDivFloat.ReplaceAllStringFunc(out, func(s string) string {
 		m := reWDDivFloat.FindStringSubmatch(s)
-		inner := p.convert(m[2])
+		inner := p.convertNoFootnote(m[2])
 		side := strings.ToLower(strings.TrimSpace(m[1]))
 		if side != "left" && side != "right" {
 			side = "left"
@@ -244,7 +472,7 @@ func (p *wikidotParser) convert(source string) string {
 		return p.storeBlock(fmt.Sprintf(`<div style="float:%s">%s</div>`, side, inner))
 	})
 
-	// 1i. [[span class=…]] / [[span style=…]] — inline only, no block
+	// 1k. [[span class=…]] / [[span style=…]] — inline only, no block
 	// patterns or paragraph wrapping (span is inline; nesting <p> inside
 	// it is invalid HTML).
 	out = reWDSpanClass.ReplaceAllStringFunc(out, func(s string) string {
@@ -264,7 +492,7 @@ func (p *wikidotParser) convert(source string) string {
 		return inner
 	})
 
-	// 1j. [[size]] / [[color]]
+	// 1l. [[size]] / [[color]]
 	out = reWDSize.ReplaceAllStringFunc(out, func(s string) string {
 		m := reWDSize.FindStringSubmatch(s)
 		css := m[1]
@@ -286,26 +514,26 @@ func (p *wikidotParser) convert(source string) string {
 		return fmt.Sprintf(`<span style="color:%s">%s</span>`, css, inlineOnly(m[2]))
 	})
 
-	// 1k. Alignment blocks ([[=]] / [[>]] / [[==]])
+	// 1m. Alignment blocks ([[=]] / [[>]] / [[==]])
 	out = reWDCenter.ReplaceAllString(out, `<div style="text-align:center">$1</div>`)
 	out = reWDRight.ReplaceAllString(out, `<div style="text-align:right">$1</div>`)
 	out = reWDJustify.ReplaceAllString(out, `<div style="text-align:justify">$1</div>`)
 
-	// 1l. [[youtube ID]] — emit a placeholder div carrying the ID as
+	// 1n. [[youtube ID]] — emit a placeholder div carrying the ID as
 	// a data attribute. The iframe itself is NOT emitted here because
 	// the ArticleView client passes rendered HTML through DOMPurify,
 	// which forbids <iframe> outright to keep untrusted author markup
 	// from pulling in arbitrary third-party pages. ArticleView has a
 	// small post-DOMPurify pass that swaps these placeholders for the
-	// real <iframe>, with the ID already sanitised by the regex
-	// above (`[A-Za-z0-9_-]{6,20}`) so the constructed src is
-	// guaranteed to be https://www.youtube.com/embed/<id>.
+	// real <iframe>, with the ID validated to a safe URL path segment
+	// by the client.
 	out = reWDYoutube.ReplaceAllStringFunc(out, func(s string) string {
 		m := reWDYoutube.FindStringSubmatch(s)
-		return p.storeBlock(fmt.Sprintf(`<div class="wikidot-youtube" data-youtube-id="%s"></div>`, html.EscapeString(m[1])))
+		id := strings.TrimSpace(m[1])
+		return p.storeBlock(fmt.Sprintf(`<div class="wikidot-youtube" data-youtube-id="%s"></div>`, html.EscapeString(id)))
 	})
 
-	// 1m. Paired anchor block `[[a name="x"]]content[[/a]]` runs
+	// 1o. Paired anchor block `[[a name="x"]]content[[/a]]` runs
 	// FIRST so the non-greedy `.*?` between opening and `[[/a]]`
 	// closing can capture the inner content before the simpler
 	// self-closing `reWDAnchorDef` below eats just the opening tag.
@@ -320,11 +548,11 @@ func (p *wikidotParser) convert(source string) string {
 	out = reWDAnchorPair.ReplaceAllStringFunc(out, func(s string) string {
 		m := reWDAnchorPair.FindStringSubmatch(s)
 		id := html.EscapeString(strings.TrimSpace(m[1]))
-		inner := p.convert(m[2])
+		inner := p.convertNoFootnote(m[2])
 		return p.storeBlock(fmt.Sprintf(`<span id="%s" class="wiki-anchor"></span>`, id)) + inner
 	})
 
-	// 1m2. Self-closing `[[a name="…"]]` (no `[[/a]]`). Stored as a
+	// 1o2. Self-closing `[[a name="…"]]` (no `[[/a]]`). Stored as a
 	// placeholder so the regex that resolves [#name] jumps later
 	// doesn't try to also fire on this line.
 	out = reWDAnchorDef.ReplaceAllStringFunc(out, func(s string) string {
@@ -338,7 +566,23 @@ func (p *wikidotParser) convert(source string) string {
 		return p.storeBlock(fmt.Sprintf(`<span id="%s" class="wiki-anchor"></span>`, id))
 	})
 
-	// ── Phase 2: inline formatting ───────────────────────────────────
+	// 1p. [[toc]] — keep the marker in place; Phase 12 will swap it
+	// for a real <ul> built from the headings collected in Phase 4.
+	// We store the marker as a block placeholder so paragraph-wrap
+	// doesn't try to wrap it in <p>.
+	out = reWDTOC.ReplaceAllStringFunc(out, func(s string) string {
+		return p.storeBlock("[[__TOC__]]")
+	})
+
+	// ── Phase 1.5: horizontal rules ─────────────────────────────────
+	// Run BEFORE the Phase-2 inline stack so the strikethrough
+	// regex (`--(.+?)--`) doesn't eat a 3-5 dash run and turn
+	// `---` / `----` into `<s>--</s>` / `<s>---</s>` instead of
+	// a horizontal rule. Wikidot's `---` (3+) and Markdown's
+	// `---` both denote a thematic break, so we accept 3+ here.
+	out = reWDHR.ReplaceAllString(out, `<hr>`)
+
+	// ── Phase 2: inline formatting ─────────────────────────────────
 	// Pre-process: replace backslash-escaped slashes with a sentinel
 	// so `//` isn't confused with italic markers.
 	out = strings.ReplaceAll(out, `\\/`, "\x00SL")
@@ -382,12 +626,27 @@ func (p *wikidotParser) convert(source string) string {
 	out = reWDSuperscript.ReplaceAllString(out, `<sup>$1</sup>`)
 	out = reWDSubscript.ReplaceAllString(out, `<sub>$1</sub>`)
 	out = reWDInlineCode.ReplaceAllString(out, `<code>$1</code>`)
-	if strings.Contains(out, "直接URL") {
-	}
+
+	// 2d. Footnote REFERENCES in body text — `[N]` becomes a
+	// back-link to the matching <li id="fn-N"> in the footer
+	// list. We do this AFTER bold/italic so `**[1]**` is rendered
+	// as a bold reference, not a bold raw digit. Definition
+	// lines were already replaced with placeholders in Phase 0,
+	// so this regex only fires on body references.
+	out = reWDFootnoteRef.ReplaceAllStringFunc(out, func(s string) string {
+		m := reWDFootnoteRef.FindStringSubmatch(s)
+		n := m[1]
+		// Suppress the link entirely if there's no matching def —
+		// a stray `[42]` shouldn't render as a broken anchor.
+		if _, ok := p.footnoteDefs[n]; !ok {
+			return fmt.Sprintf(`<sup class="footnote-ref-unresolved">[%s]</sup>`, html.EscapeString(n))
+		}
+		return fmt.Sprintf(`<sup class="footnote-ref"><a href="#fn-%s" id="fnref-%s">%s</a></sup>`, n, n, html.EscapeString(n))
+	})
 
 	out = strings.ReplaceAll(out, "\x00SL", "/")
 
-	// ── Phase 3: links & images ──────────────────────────────────────
+	// ── Phase 3: links & images ─────────────────────────────────────
 	// 3a. External link `[url text]` (open in new tab; rel=noopener
 	// is the safe default for user-authored content).
 	out = reWDExternalLink.ReplaceAllStringFunc(out, func(s string) string {
@@ -453,20 +712,36 @@ func (p *wikidotParser) convert(source string) string {
 	// Order longest-prefix first so `++++++` is consumed before `+++++`
 	// before `++++` (regex leftmost-longest match would handle this,
 	// but explicit ordering keeps the pipeline readable).
-	out = reWDH6_.ReplaceAllString(out, `<h6>$1</h6>`)
-	out = reWDH5_.ReplaceAllString(out, `<h5>$1</h5>`)
-	out = reWDH4_.ReplaceAllString(out, `<h4>$1</h4>`)
-	out = reWDH3_.ReplaceAllString(out, `<h3>$1</h3>`)
-	out = reWDH2_.ReplaceAllString(out, `<h2>$1</h2>`)
-	out = reWDH1_.ReplaceAllString(out, `<h1>$1</h1>`)
+	//
+	// Each heading also gets a deterministic id ("h2-1", "h3-1", …) so
+	// [[toc]] can link to it. Authors who want a stable, named anchor
+	// can still use [[a name=…]] explicitly; the auto-ids are
+	// reserved for the toc-link target.
+	out = reWDH6_.ReplaceAllStringFunc(out, func(s string) string {
+		return p.emitHeading(6, s)
+	})
+	out = reWDH5_.ReplaceAllStringFunc(out, func(s string) string {
+		return p.emitHeading(5, s)
+	})
+	out = reWDH4_.ReplaceAllStringFunc(out, func(s string) string {
+		return p.emitHeading(4, s)
+	})
+	out = reWDH3_.ReplaceAllStringFunc(out, func(s string) string {
+		return p.emitHeading(3, s)
+	})
+	out = reWDH2_.ReplaceAllStringFunc(out, func(s string) string {
+		return p.emitHeading(2, s)
+	})
+	out = reWDH1_.ReplaceAllStringFunc(out, func(s string) string {
+		return p.emitHeading(1, s)
+	})
 
 	// ── Phase 5: horizontal rules ────────────────────────────────────
-	out = reWDHR.ReplaceAllString(out, `<hr>`)
+	// (No-op — moved to Phase 1.5 above so HR runs before
+	// strikethrough, which would otherwise eat 3-5 dash runs.)
 
 	// ── Phase 6: line breaks & jump-anchor links & auto-URLs ─────────
 	out = reWDLineBreak.ReplaceAllString(out, `<br>`)
-	if strings.Contains(out, "直接URL") {
-	}
 	// Auto-link bare URLs (Wikidot's default behaviour). Runs after the
 	// explicit `[url text]` form so a hand-formatted link isn't double-
 	// wrapped. The regex excludes `<`, `>`, `[`, `]` to avoid eating
@@ -493,16 +768,12 @@ func (p *wikidotParser) convert(source string) string {
 		}
 		return fmt.Sprintf(`<a href="#%s" class="wiki-anchor-link">%s</a>`, html.EscapeString(name), html.EscapeString(text))
 	})
-	if strings.Contains(out, "直接URL") {
-	}
 
 	// ── Phase 7: admonitions ─────────────────────────────────────────
-	if strings.Contains(out, "直接URL") {
-	}
 	out = reWDAdmonition.ReplaceAllStringFunc(out, func(s string) string {
 		m := reWDAdmonition.FindStringSubmatch(s)
 		typ := m[1]
-		content := strings.TrimSpace(p.convert(m[2]))
+		content := strings.TrimSpace(p.convertNoFootnote(m[2]))
 		title, ok := admonitionTitles[typ]
 		if !ok {
 			title = typ
@@ -513,18 +784,24 @@ func (p *wikidotParser) convert(source string) string {
 	// ── Phase 8: blockquotes ─────────────────────────────────────────
 	out = renderWikidotBlockquotes(out)
 
-	// ── Phase 9: lists ───────────────────────────────────────────────
+	// ── Phase 9: lists (rewritten for nesting) ───────────────────────
 	out = renderWikidotLists(out)
 
 	// ── Phase 10: restore stored blocks ──────────────────────────────
-	if strings.Contains(out, "直接URL") {
-	}
 	for key, blk := range p.blocks {
 		out = strings.ReplaceAll(out, key, blk)
 	}
 
 	// ── Phase 11: paragraph wrapping ─────────────────────────────────
 	out = wrapWikidotParagraphs(out)
+
+	// ── Phase 12: TOC resolution ─────────────────────────────────────
+	out = p.renderTOC(out)
+
+	// ── Phase 13: footnote list append ───────────────────────────────
+	if appendFootnotes {
+		out = p.renderFootnoteList(out)
+	}
 
 	return out
 }
@@ -540,9 +817,475 @@ func renderCodeBlock(code, lang string) string {
 	return fmt.Sprintf(`<pre><code%s>%s</code></pre>`, cls, c)
 }
 
+// emitHeading converts a heading regex match into the corresponding
+// <hN id="...">HTML</hN> tag, records the (level, id, text) tuple
+// for the [[toc]] phase, and increments the per-render heading
+// sequence counter.
+func (p *wikidotParser) emitHeading(level int, match string) string {
+	re := headingRegexFor(level)
+	m := re.FindStringSubmatch(match)
+	if m == nil {
+		return match
+	}
+	p.headingSeq++
+	id := fmt.Sprintf("h%d-%d", level, p.headingSeq)
+	text := m[1]
+	if p.headings == nil {
+		p.headings = make([]headingEntry, 0, 16)
+	}
+	p.headings = append(p.headings, headingEntry{Level: level, ID: id, Text: text})
+	return fmt.Sprintf(`<h%d id="%s">%s</h%d>`, level, id, text, level)
+}
+
+func headingRegexFor(level int) *regexp.Regexp {
+	switch level {
+	case 1:
+		return reWDH1_
+	case 2:
+		return reWDH2_
+	case 3:
+		return reWDH3_
+	case 4:
+		return reWDH4_
+	case 5:
+		return reWDH5_
+	case 6:
+		return reWDH6_
+	}
+	return nil
+}
+
+// collectFootnoteDefs pre-scans the source for `^[ \t]*[N] text` lines
+// (footnote DEFINITIONS, not body references) and stashes them so the
+// inline pass doesn't re-process them as body references. The original
+// line is replaced with a placeholder, which the paragraph-wrapper
+// recognises as a block boundary and emits as an empty <p>. After
+// Phase 13's footnote-list append, the visible effect is: definitions
+// disappear from the body and re-appear as a numbered <ol> at the
+// bottom.
+func (p *wikidotParser) collectFootnoteDefs(source string) string {
+	return reWDFootnoteDef.ReplaceAllStringFunc(source, func(s string) string {
+		m := reWDFootnoteDef.FindStringSubmatch(s)
+		n := m[1]
+		text := strings.TrimSpace(m[2])
+		if p.footnoteDefs == nil {
+			p.footnoteDefs = make(map[string]string)
+		}
+		// First occurrence wins; a duplicate [N] in the source is
+		// almost always a paste error and Wikidot's real behaviour
+		// is "use the first one", so we mirror that.
+		if _, exists := p.footnoteDefs[n]; !exists {
+			p.footnoteDefs[n] = text
+		}
+		// Stash as a block placeholder so the line gets dropped
+		// (the wrap-phase treats `%%BLOCK_N%%` as a block boundary
+		// and emits an empty <p>; Phase 10 then expands the
+		// placeholder into empty content, leaving the line
+		// effectively gone).
+		return p.storeBlock("")
+	})
+}
+
+// replaceVars substitutes `%%name%%` from p.vars. Unknown names are
+// left as-is so authors can spot typos (matching Wikidot's
+// behaviour). Built-in `nil` vars map is a no-op.
+func (p *wikidotParser) replaceVars(source string) string {
+	if len(p.vars) == 0 {
+		return source
+	}
+	return reWDVar.ReplaceAllStringFunc(source, func(s string) string {
+		m := reWDVar.FindStringSubmatch(s)
+		if v, ok := p.vars[m[1]]; ok {
+			return html.EscapeString(v)
+		}
+		return s
+	})
+}
+
+// lookupInclude resolves a `[[include SLUG]]` target via the
+// configured PageLookup. Returns nil for a missing lookup / unknown
+// slug (caller falls back to raw source). The "default atype"
+// fallback uses the current article's type — wikidot articles can
+// include wikidot pages, md articles can include md pages, and so
+// on.
+func (p *wikidotParser) lookupInclude(slug string, attrs map[string]string) *IncludedPage {
+	if p.ctx == nil || p.ctx.PageLookup == nil {
+		return nil
+	}
+	atype := p.ctx.ArticleType
+	if atype == "" {
+		atype = "wikidot"
+	}
+	return p.ctx.PageLookup.IncludeBySlug(atype, slug)
+}
+
+// renderInclude recursively renders an included page's source, with
+// the include attributes exposed as %%var%% substitutions. The
+// recursive call uses RenderWikidotCtx / RenderMarkdown as
+// appropriate so the included content is fully expanded (links,
+// tables, code blocks, etc.).
+func (p *wikidotParser) renderInclude(target *IncludedPage, attrs map[string]string) string {
+	// Compose a vars map: parent vars + include attrs (attrs win).
+	vars := make(map[string]string, len(p.vars)+len(attrs))
+	for k, v := range p.vars {
+		vars[k] = v
+	}
+	for k, v := range attrs {
+		vars[k] = v
+	}
+	ctx := &RenderContext{
+		PageLookup:  nil, // include'd pages don't recursively include by default
+		Vars:        vars,
+		ArticleType: target.Type,
+	}
+	switch target.Type {
+	case "wikidot":
+		return RenderWikidotCtx(ctx, target.Content)
+	case "md", "markdown":
+		// Markdown doesn't honour %%var%% — pass-through keeps
+		// the surface small. If we ever need md-article vars
+		// injection, the right place is a pre-pass in this
+		// branch (mirror RenderWikidotCtx's vars substitution
+		// before the goldmark conversion).
+		return RenderMarkdown(target.Content)
+	case "bbcode":
+		return RenderBBCode(target.Content)
+	case "html":
+		return target.Content // trusted
+	}
+	return target.Content
+}
+
+// renderModules does paired `[[module Name attrs]]…[[/module]]`
+// matching, evaluates each supported module, and replaces the
+// whole construct with the rendered HTML. Inner templates can
+// contain their own wikidot syntax (lists, links, %%vars%%), so
+// the module's output is run through inlineOnly / the full
+// pipeline as appropriate.
+func (p *wikidotParser) renderModules(source string) string {
+	var sb strings.Builder
+	last := 0
+	opens := reWDModuleOpen.FindAllStringSubmatchIndex(source, -1)
+	if len(opens) == 0 {
+		return source
+	}
+	// Pair each [[module …]] with the next [[/module]] AFTER it.
+	// We don't try to handle nested modules (Wikidot's own
+	// semantics disallow it), so a simple linear scan works.
+	for _, loc := range opens {
+		openStart, openEnd := loc[0], loc[1]
+		// Append everything before this open tag verbatim.
+		if openStart > last {
+			sb.WriteString(source[last:openStart])
+		}
+		name := source[loc[2]:loc[3]]
+		rawAttrs := source[loc[4]:loc[5]]
+		attrs := parseModuleAttrs(rawAttrs)
+		// Find the next [[/module]] after openEnd.
+		closeStart := reWDModuleClose.FindStringIndex(source[openEnd:])
+		if closeStart == nil {
+			// Unclosed module — keep everything verbatim so the
+			// author can see the broken markup.
+			sb.WriteString(source[openStart:openEnd])
+			last = openEnd
+			continue
+		}
+		bodyStart := openEnd
+		bodyEnd := openEnd + closeStart[0]
+		afterEnd := openEnd + closeStart[1]
+		body := source[bodyStart:bodyEnd]
+
+		rendered := p.runModule(name, attrs, body)
+		// Module output is a complete HTML fragment (e.g.
+		// `<ul class="wikidot-module-list">…</ul>`). If we
+		// inline it directly, the downstream list pass
+		// (Phase 9) would see any literal `* ` characters
+		// in the row template and try to convert them to
+		// list items — for a `[[module ListPages]]` body
+		// like `* %%title%%`, that produces a spurious
+		// nested <ul> under each <li>. Stash the rendered
+		// output as a block and let Phase 10 restore it
+		// AFTER the list pass, so the literal `* ` chars
+		// are protected by the placeholder syntax.
+		sb.WriteString(p.storeBlock(rendered))
+		last = afterEnd
+	}
+	if last < len(source) {
+		sb.WriteString(source[last:])
+	}
+	return sb.String()
+}
+
+// runModule dispatches a single module call to the per-module
+// handler. The body is the raw inner template; the per-module
+// helper takes care of substituting %%vars%% and wrapping each
+// result in the appropriate list/anchor markup.
+func (p *wikidotParser) runModule(name string, attrs map[string]string, body string) string {
+	if p.ctx == nil || p.ctx.PageLookup == nil {
+		return fmt.Sprintf(`<p class="wikidot-module-error">[[module %s]] 需要后端支持 (PageLookup 未配置)</p>`, html.EscapeString(name))
+	}
+	switch strings.ToLower(name) {
+	case "listpages":
+		return p.runListPages(attrs, body)
+	case "randompage":
+		return p.runRandomPage(attrs, body)
+	default:
+		return fmt.Sprintf(`<p class="wikidot-module-error">[[module %s]] 不支持 (仅支持 ListPages / RandomPage)</p>`, html.EscapeString(name))
+	}
+}
+
+// runListPages — `[[module ListPages category="X" limit="5" order="created_at desc"]]body[[/module]]`.
+// The body is a template evaluated per row. `%%title%%`, `%%slug%%`,
+// `%%author_name%%`, `%%created_at%%`, `%%tags%%`, `%%rating%%` are
+// substituted. We don't try to parse `* body` as Wikidot list
+// syntax — instead the body is run through inlineOnly (so bold,
+// links, %%var%%, etc. all work) and wrapped in <li>. The whole
+// thing is wrapped in <ul class="wikidot-module-list">.
+func (p *wikidotParser) runListPages(attrs map[string]string, body string) string {
+	category := attrs["category"]
+	if category == "" {
+		category = "*"
+	}
+	limit := 10
+	if v, ok := attrs["limit"]; ok {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 100 {
+			limit = n
+		}
+	}
+	order := attrs["order"]
+	entries := p.ctx.PageLookup.ListPages(category, limit, order)
+	if len(entries) == 0 {
+		return `<ul class="wikidot-module-list wiki-module-empty"><li><em>没有匹配的文章。</em></li></ul>`
+	}
+	// Strip a leading " * " if the template is a single bullet
+	// line — Wikidot authors expect this to expand as a list, and
+	// we wrap each entry in <li> so the `*` would be a stray
+	// marker.
+	tpl := body
+	tpl = strings.TrimLeft(tpl, " \t")
+	tpl = strings.TrimPrefix(tpl, "* ")
+	tpl = strings.TrimPrefix(tpl, "*\t")
+
+	var sb strings.Builder
+	sb.WriteString(`<ul class="wikidot-module-list">`)
+	// Trim leading/trailing whitespace (incl. newlines) from
+	// the body before the prefix-strip — the regex pair
+	// between the open tag and `[[/module]]` typically
+	// captures the surrounding newlines as part of the
+	// body, and a stray `\n* %%title%%` template would
+	// otherwise leak a literal `* ` into the output.
+	tpl = strings.TrimSpace(tpl)
+	tpl = strings.TrimPrefix(tpl, "* ")
+	tpl = strings.TrimPrefix(tpl, "*\t")
+
+	for _, e := range entries {
+		row := tpl
+		row = strings.ReplaceAll(row, "%%title%%", e.Title)
+		row = strings.ReplaceAll(row, "%%slug%%", e.Slug)
+		row = strings.ReplaceAll(row, "%%author_name%%", e.AuthorName)
+		row = strings.ReplaceAll(row, "%%author_nickname%%", e.AuthorNickname)
+		if !e.CreatedAt.IsZero() {
+			row = strings.ReplaceAll(row, "%%created_at%%", e.CreatedAt.Format("2006-01-02"))
+		}
+		row = strings.ReplaceAll(row, "%%tags%%", strings.Join(e.Tags, ", "))
+		row = strings.ReplaceAll(row, "%%rating%%", fmt.Sprintf("%.1f", e.Rating))
+		sb.WriteString("<li>")
+		sb.WriteString(inlineOnly(row))
+		sb.WriteString("</li>")
+	}
+	sb.WriteString("</ul>")
+	return sb.String()
+}
+
+// runRandomPage — `[[module RandomPage category="X"]]label[[/module]]`.
+// Emits a single anchor pointing to one random article in the
+// category. If the body is empty, the article title is used as
+// link text.
+func (p *wikidotParser) runRandomPage(attrs map[string]string, body string) string {
+	category := attrs["category"]
+	if category == "" {
+		category = "*"
+	}
+	entry := p.ctx.PageLookup.RandomPage(category)
+	if entry == nil {
+		return `<a class="wikidot-random-page wiki-module-empty" href="#">没有可选页面</a>`
+	}
+	text := strings.TrimSpace(body)
+	if text == "" {
+		text = entry.Title
+	}
+	href := "/wikidot/" + entry.Slug
+	return fmt.Sprintf(`<a class="wikidot-random-page" href="%s">%s</a>`, html.EscapeString(href), html.EscapeString(text))
+}
+
+// parseModuleAttrs parses the raw attribute tail of `[[module Name …]]`
+// into a map. Both `key="val"` (quoted) and `key=val` (bare) are
+// accepted; spaces or pipes separate the pairs.
+func parseModuleAttrs(raw string) map[string]string {
+	out := make(map[string]string)
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return out
+	}
+	// Strip a leading `|` so `category="*"|limit=5` parses the
+	// same as `category="*" limit=5`.
+	raw = strings.TrimLeft(raw, "|")
+	// Tokenize on `|` (Wikidot's official separator) OR on
+	// whitespace — both are seen in the wild.
+	tokens := splitModuleTokens(raw)
+	for _, t := range tokens {
+		t = strings.TrimSpace(t)
+		if t == "" {
+			continue
+		}
+		eq := strings.Index(t, "=")
+		if eq < 0 {
+			out[strings.ToLower(t)] = ""
+			continue
+		}
+		k := strings.ToLower(strings.TrimSpace(t[:eq]))
+		v := strings.TrimSpace(t[eq+1:])
+		v = strings.Trim(v, `"'`)
+		out[k] = v
+	}
+	return out
+}
+
+func splitModuleTokens(s string) []string {
+	// Walk character by character to keep `key="value with space"`
+	// intact. The `|`-separator is only a token boundary when it's
+	// NOT inside quotes.
+	var (
+		tokens []string
+		buf    strings.Builder
+		inQ    bool
+		qCh    byte
+	)
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case inQ:
+			buf.WriteByte(c)
+			if c == qCh {
+				inQ = false
+			}
+		case c == '"' || c == '\'':
+			inQ = true
+			qCh = c
+			buf.WriteByte(c)
+		case c == '|':
+			tokens = append(tokens, buf.String())
+			buf.Reset()
+		case c == ' ' || c == '\t':
+			if buf.Len() > 0 {
+				tokens = append(tokens, buf.String())
+				buf.Reset()
+			}
+		default:
+			buf.WriteByte(c)
+		}
+	}
+	if buf.Len() > 0 {
+		tokens = append(tokens, buf.String())
+	}
+	return tokens
+}
+
+// parseIncludeAttrs is the same idea as parseModuleAttrs but for
+// `[[include slug | k=v | k="v"]]`. The slug itself is the first
+// token in the include regex; the attrs start at the `|` separator.
+func parseIncludeAttrs(raw string) map[string]string {
+	raw = strings.TrimSpace(raw)
+	if !strings.HasPrefix(raw, "|") {
+		return map[string]string{}
+	}
+	return parseModuleAttrs(raw[1:])
+}
+
+// renderTOC replaces `[[__TOC__]]` placeholders (stored in
+// Phase 1p) with a nested <ul> built from the headings collected
+// during Phase 4. If no headings were collected, the toc
+// placeholder is left as-is so the author can see why it's empty.
+//
+// Implementation note: we emit a flat <ul> with a `toc-h3` class
+// on h3-level entries rather than a true <ul>-in-<ul> nesting.
+// The visual indentation is provided by CSS (`.wikidot-toc
+// .toc-h3 { padding-left: 1.5em; }`) which avoids a class of
+// bugs around keeping the parent <li> open across the whole
+// sibling range of h3 entries. The semantic loss is minor — a
+// heading list with indent is a common TOC pattern.
+func (p *wikidotParser) renderTOC(source string) string {
+	if !strings.Contains(source, "[[__TOC__]]") {
+		return source
+	}
+	if len(p.headings) == 0 {
+		return strings.ReplaceAll(source, "[[__TOC__]]", `<p class="wikidot-toc-empty"><em>本文暂无章节</em></p>`)
+	}
+	var sb strings.Builder
+	sb.WriteString(`<div class="wikidot-toc"><ul>`)
+	for _, h := range p.headings {
+		if h.Level < 2 || h.Level > 3 {
+			continue
+		}
+		cls := ""
+		if h.Level == 3 {
+			cls = ` class="toc-h3"`
+		}
+		sb.WriteString(fmt.Sprintf(`<li%s><a href="#%s">%s</a></li>`, cls, h.ID, html.EscapeString(h.Text)))
+	}
+	sb.WriteString("</ul></div>")
+	return strings.ReplaceAll(source, "[[__TOC__]]", sb.String())
+}
+
+// renderFootnoteList appends a `<ol class="footnotes">` block at
+// the end of the document IF any footnote definitions were
+// collected in Phase 0. The list items link back to the body
+// references (`<a href="#fnref-N">↩</a>`). Order: numeric ascending.
+func (p *wikidotParser) renderFootnoteList(source string) string {
+	if len(p.footnoteDefs) == 0 {
+		return source
+	}
+	// Collect and sort by footnote number.
+	keys := make([]int, 0, len(p.footnoteDefs))
+	for k := range p.footnoteDefs {
+		n, err := strconv.Atoi(k)
+		if err != nil {
+			continue
+		}
+		keys = append(keys, n)
+	}
+	sortInts(keys)
+	var sb strings.Builder
+	sb.WriteString(`<section class="footnotes"><ol>`)
+	for _, n := range keys {
+		def := p.footnoteDefs[strconv.Itoa(n)]
+		sb.WriteString(fmt.Sprintf(`<li id="fn-%d">%s <a class="footnote-backref" href="#fnref-%d" title="回到正文">↩</a></li>`, n, inlineOnly(def), n))
+	}
+	sb.WriteString(`</ol></section>`)
+	return source + sb.String()
+}
+
+// sortInts is a tiny insertion sort — Go's stdlib sort package
+// is fine, but pulling it in for a 5-key map is overkill, and
+// the wikidot parser package already has no other use of sort.
+func sortInts(a []int) {
+	for i := 1; i < len(a); i++ {
+		v := a[i]
+		j := i - 1
+		for j >= 0 && a[j] > v {
+			a[j+1] = a[j]
+			j--
+		}
+		a[j+1] = v
+	}
+}
+
+// ── Table rendering ─────────────────────────────────────────────────────
+
 // renderWikidotTableRowLine parses one `||…||` line into cells. A cell
 // starting with `~` is a header cell. Empty cells (from `|| ||` or
-// `||||` merges) are preserved as empty strings.
+// `||||` merges) are collapsed to a single cell with `colspan`
+// proportional to the number of `||` separators consumed.
 //
 // Inline-only on cell content so <p> doesn't end up inside <td>/<th>.
 // Authors wanting block content inside a cell should use the
@@ -552,21 +1295,34 @@ func renderWikidotTableRowLine(p *wikidotParser, line string, headerRow bool) st
 	// Strip leading/trailing `||`
 	line = strings.TrimPrefix(line, "||")
 	line = strings.TrimSuffix(line, "||")
-	cells := strings.Split(line, "||")
+	// Split on `||` and walk — consecutive empty splits indicate
+	// a `||||` cell-separator, which the original parser rendered
+	// as a single empty <th>/<td>. We keep that behaviour and
+	// additionally emit `colspan="N"` so the table actually
+	// collapses instead of leaving a visible empty column.
+	raw := strings.Split(line, "||")
 	var sb strings.Builder
-	for _, c := range cells {
-		c = strings.TrimSpace(c)
-		if headerRow || strings.HasPrefix(c, "~") {
-			headerRow = true
-			c = strings.TrimPrefix(c, "~")
-			c = strings.TrimSpace(c)
-			sb.WriteString("<th>")
-			sb.WriteString(inlineOnly(c))
-			sb.WriteString("</th>")
+	for i := 0; i < len(raw); i++ {
+		// Count runs of empty cells ahead.
+		colspan := 1
+		for i+1 < len(raw) && strings.TrimSpace(raw[i+1]) == "" {
+			colspan++
+			i++
+		}
+		c := strings.TrimSpace(raw[i])
+		isHeader := headerRow || strings.HasPrefix(c, "~")
+		tag := "td"
+		if isHeader {
+			tag = "th"
+			if c != "" {
+				c = strings.TrimPrefix(c, "~")
+				c = strings.TrimSpace(c)
+			}
+		}
+		if colspan > 1 {
+			sb.WriteString(fmt.Sprintf(`<%s colspan="%d">%s</%s>`, tag, colspan, inlineOnly(c), tag))
 		} else {
-			sb.WriteString("<td>")
-			sb.WriteString(inlineOnly(c))
-			sb.WriteString("</td>")
+			sb.WriteString(fmt.Sprintf(`<%s>%s</%s>`, tag, inlineOnly(c), tag))
 		}
 	}
 	return sb.String()
@@ -645,8 +1401,52 @@ func renderWikidotTable(p *wikidotParser, raw string) string {
 	return sb.String()
 }
 
+// ── inlineOnly ─────────────────────────────────────────────────────────
+
+// inlineVars is the package-level shadow of the current
+// render's `%%var%%` substitution table. The wikidotParser sets
+// it in convert() before any inline pass and clears it after —
+// inlineOnly then reads it without the parser-instance plumbing
+// (which would otherwise force every list/table/span callback
+// to thread the parser pointer through). The shadow is
+// protected by a mutex so concurrent renders (each with their
+// own parser instance) don't trample each other. Cost: one
+// mutex acquire per inline pass per render — negligible
+// against the surrounding regex work.
+var (
+	inlineVarsMu sync.Mutex
+	inlineVars   map[string]string
+)
+
+func (p *wikidotParser) setInlineVars() {
+	inlineVarsMu.Lock()
+	inlineVars = p.vars
+	inlineVarsMu.Unlock()
+}
+
+func (p *wikidotParser) clearInlineVars() {
+	inlineVarsMu.Lock()
+	inlineVars = nil
+	inlineVarsMu.Unlock()
+}
+
 // inlineOnly applies inline formatting to text (no block elements).
 func inlineOnly(text string) string {
+	// Apply %%var%% substitution against the current render's
+	// shadow table (set by the calling wikidotParser.convert()).
+	text = reWDVar.ReplaceAllStringFunc(text, func(s string) string {
+		inlineVarsMu.Lock()
+		vars := inlineVars
+		inlineVarsMu.Unlock()
+		if len(vars) == 0 {
+			return s
+		}
+		m := reWDVar.FindStringSubmatch(s)
+		if v, ok := vars[m[1]]; ok {
+			return html.EscapeString(v)
+		}
+		return s
+	})
 	text = reWDMono.ReplaceAllString(text, `<code>$1</code>`)
 	text = reWDBold.ReplaceAllString(text, `<strong>$1</strong>`)
 	// See note on the package-level reWDItalic — same fix applied here
@@ -671,6 +1471,17 @@ func inlineOnly(text string) string {
 			return text
 		}
 		return fmt.Sprintf(`<span style="color:%s">%s</span>`, css, html.EscapeString(text))
+	})
+	// Inline footnote refs in list items / table cells.
+	text = reWDFootnoteRef.ReplaceAllStringFunc(text, func(s string) string {
+		m := reWDFootnoteRef.FindStringSubmatch(s)
+		// No parser-context access from inlineOnly — we
+		// conservatively render all numeric `[N]` as a generic
+		// footnote-ref back-link. The parser's main pass will
+		// already have replaced body refs with the real id;
+		// this is just defensive.
+		n := m[1]
+		return fmt.Sprintf(`<sup class="footnote-ref"><a href="#fn-%s">%s</a></sup>`, n, html.EscapeString(n))
 	})
 	text = reWDExternalLink.ReplaceAllStringFunc(text, func(s string) string {
 		m := reWDExternalLink.FindStringSubmatch(s)
@@ -714,6 +1525,8 @@ func inlineOnly(text string) string {
 	return text
 }
 
+// ── blockquote / list rendering ─────────────────────────────────────────
+
 func renderWikidotBlockquotes(text string) string {
 	lines := strings.Split(text, "\n")
 	result := make([]string, 0, len(lines))
@@ -736,74 +1549,482 @@ func renderWikidotBlockquotes(text string) string {
 	return strings.Join(result, "\n")
 }
 
+// renderWikidotLists — rewritten to support nested lists. Each line
+// starting with `* ` (unordered) or `# ` (ordered) at a given
+// indent depth becomes a <li>; indent is computed as
+// `len(leadingSpaces) / 2` (Wikidot's convention is 2 spaces per
+// level). Adjacent same-type list items form a <ul>/<ol>; depth
+// changes open/close nested lists.
+//
+// Mixed types (a `* ` line followed by `# ` lines at the same
+// level) close the current list and start a new one of the other
+// type. This matches Wikidot's own rendering: a depth-1 `#`
+// under a depth-1 `*` becomes a child <ol> inside the <li> of
+// the surrounding <ul>.
 func renderWikidotLists(text string) string {
+	// Split on newlines but keep blank-line groups together — a
+	// blank line breaks the current list (Wikidot doesn't fuse
+	// lists across blank lines, and the paragraph wrapper would
+	// otherwise wrap the gap in <p>).
 	lines := strings.Split(text, "\n")
-	result := make([]string, 0, len(lines))
-	var buf []string
-	var listType string // "ul" or "ol"
-	flushList := func() {
-		if len(buf) > 0 {
-			result = append(result, "<"+listType+">"+strings.Join(buf, "")+"</"+listType+">")
-			buf = nil
+	var out strings.Builder
+	i := 0
+	for i < len(lines) {
+		j := i
+		// Find a contiguous run of list-able lines.
+		for j < len(lines) {
+			t := strings.TrimLeft(lines[j], " \t")
+			if !(strings.HasPrefix(t, "* ") || strings.HasPrefix(t, "# ")) {
+				break
+			}
+			// But a blank line in the middle breaks the run.
+			if strings.TrimSpace(lines[j]) == "" {
+				break
+			}
+			j++
 		}
+		if j == i {
+			out.WriteString(lines[i])
+			if i < len(lines)-1 {
+				out.WriteString("\n")
+			}
+			i++
+			continue
+		}
+		out.WriteString(renderListBlock(lines[i:j]))
+		if j < len(lines) {
+			out.WriteString("\n")
+		}
+		i = j
 	}
+	return out.String()
+}
+
+// renderListBlock turns a slice of `* ` / `# ` lines (all part of
+// one list region) into the corresponding nested HTML. We walk the
+// lines with an explicit depth stack so the open/close order is
+// always well-formed.
+//
+// Wikidot's nesting rules (mirrored here):
+//   - 2 spaces of leading indent = 1 level of nesting depth.
+//   - A child list sits INSIDE its parent's <li>: the parent's
+//     <li> stays open until the child list is fully closed.
+//   - Mixing `*` and `#` at the same level closes the current
+//     list and opens a new one of the other type.
+//
+// Bug history: an earlier version of this function used the
+// marker character itself ("*" / "#") as the HTML tag name,
+// emitting `<*>` / `<#>` instead of `<ul>` / `<ol>`. That was
+// visually plausible (browsers treat unknown tags as inline
+// elements and don't break the layout) but rendered as
+// content-less anchors and broke the DOM-based line-comment
+// targeting. Fixed by routing every list open/close through
+// listTagForMarker.
+func renderListBlock(lines []string) string {
+	type item struct {
+		marker string // "*" or "#"
+		indent int    // 0 = depth 1, 1 = depth 2, etc.
+		body   string
+	}
+	items := make([]item, 0, len(lines))
 	for _, line := range lines {
-		um := reWDUnorderedItem.FindStringSubmatch(line)
-		om := reWDOrderedItem.FindStringSubmatch(line)
-		if um != nil {
-			if listType != "ul" {
-				flushList()
-				listType = "ul"
-			}
-			indent := len(um[1]) / 2
-			prefix := strings.Repeat("  ", indent)
-			buf = append(buf, prefix+"<li>"+inlineOnly(um[2])+"</li>")
-		} else if om != nil {
-			if listType != "ol" {
-				flushList()
-				listType = "ol"
-			}
-			indent := len(om[1]) / 2
-			prefix := strings.Repeat("  ", indent)
-			buf = append(buf, prefix+"<li>"+inlineOnly(om[2])+"</li>")
+		leading := len(line) - len(strings.TrimLeft(line, " \t"))
+		// Wikidot uses 2 spaces per indent level. Halve, rounding
+		// down so a 1-space indent is still depth 1 (more
+		// forgiving than the old "depth = leading/2 exactly").
+		depth := leading / 2
+		t := strings.TrimLeft(line, " \t")
+		if strings.HasPrefix(t, "* ") {
+			items = append(items, item{"*", depth, t[2:]})
+		} else if strings.HasPrefix(t, "# ") {
+			items = append(items, item{"#", depth, t[2:]})
 		} else {
-			flushList()
-			result = append(result, line)
+			items = append(items, item{"", depth, t})
 		}
 	}
-	flushList()
-	return strings.Join(result, "\n")
+
+	var sb strings.Builder
+	// openStack holds the marker for each currently-open list
+	// (top = innermost). len(openStack) == current depth.
+	openStack := make([]string, 0, 4)
+
+	// emitLiOpen is called for every item to bring the open
+	// <ul>/<ol> nesting to the right level for the upcoming
+	// <li>. After this, the matching <li> has its parent list
+	// open and any shallower lists closed. The caller still
+	// has to decide whether to defer the </li> based on the
+	// NEXT item's depth.
+	emitLiOpen := func(it item) {
+		target := it.indent + 1
+		// Close levels that are deeper than we need now.
+		for len(openStack) > target {
+			sb.WriteString("</")
+			sb.WriteString(listTagForMarker(openStack[len(openStack)-1]))
+			sb.WriteString(">")
+			openStack = openStack[:len(openStack)-1]
+		}
+		// Open levels until we hit the target depth.
+		for len(openStack) < target {
+			// Pick the marker: prefer the current item's
+			// marker when we're opening fresh (no parent
+			// list to inherit from), else fall back to the
+			// last open marker so a continued `*` at the
+			// same depth nests under the same <ul>.
+			var m string
+			if len(openStack) == 0 || (len(openStack) < it.indent) {
+				if it.marker != "" {
+					m = it.marker
+				} else {
+					m = "*"
+				}
+			} else {
+				m = openStack[len(openStack)-1]
+			}
+			sb.WriteString("<")
+			sb.WriteString(listTagForMarker(m))
+			sb.WriteString(">")
+			openStack = append(openStack, m)
+		}
+		// Same depth but marker differs → close & reopen
+		// with the right marker (sibling list, not nested).
+		if len(openStack) > 0 && it.marker != "" && openStack[len(openStack)-1] != it.marker {
+			last := openStack[len(openStack)-1]
+			sb.WriteString("</")
+			sb.WriteString(listTagForMarker(last))
+			sb.WriteString(">")
+			openStack = openStack[:len(openStack)-1]
+			sb.WriteString("<")
+			sb.WriteString(listTagForMarker(it.marker))
+			sb.WriteString(">")
+			openStack = append(openStack, it.marker)
+		}
+	}
+
+	for idx, it := range items {
+		emitLiOpen(it)
+		sb.WriteString("<li>")
+		sb.WriteString(inlineOnly(it.body))
+
+		// If the NEXT item is a deeper-nested child, leave
+		// the <li> open so the child list nests inside it.
+		// Otherwise close the <li> here.
+		if idx == len(items)-1 {
+			// last item; we'll close all open lists
+			// after this iteration. Add a final </li>.
+			sb.WriteString("</li>")
+		} else {
+			next := items[idx+1]
+			if next.indent > it.indent {
+				// child list coming — keep <li> open
+				continue
+			}
+			sb.WriteString("</li>")
+		}
+	}
+	// Close any remaining open lists.
+	for len(openStack) > 0 {
+		sb.WriteString("</")
+		sb.WriteString(listTagForMarker(openStack[len(openStack)-1]))
+		sb.WriteString(">")
+		openStack = openStack[:len(openStack)-1]
+	}
+	return sb.String()
+}
+
+// listTagForMarker maps a wikidot list marker (`*` or `#`) to the
+// corresponding HTML tag (`ul` or `ol`). A default of `ul` is used
+// for the empty marker (defensive — the caller filters these out
+// before invoking the open/close helpers, but a stray empty marker
+// shouldn't break the output).
+func listTagForMarker(m string) string {
+	if m == "#" {
+		return "ol"
+	}
+	return "ul"
+}
+
+// renderDivBlocks handles `[[div class="..."]]` and
+// `[[div style="..."]]` blocks including arbitrary nesting. Regex
+// non-greedy matching can't pair nested brackets correctly — the
+// first `[[/div]]` always wins, leaving the rest as raw source.
+// We use a manual byte-level scan that counts open/close tokens
+// from each `[[div` until depth returns to zero.
+//
+// Recognised open tokens:
+//   - `[[div class="..."]]`
+//   - `[[div style="..."]]`
+//
+// Close token: `[[/div]]`. Anything that looks like
+// `[[div anything-else]]` is left alone (so future [[div class=…
+// without quotes, or [[div id=…]], doesn't trip this parser).
+func (p *wikidotParser) renderDivBlocks(source string) string {
+	var sb strings.Builder
+	i := 0
+	for i < len(source) {
+		// Find the next `[[div` opening. We restrict to the
+		// two forms we support so `[[divider]]` or other
+		// `[[div*]]` future syntax isn't accidentally
+		// swallowed.
+		idx := findNextDivOpen(source, i)
+		if idx < 0 {
+			sb.WriteString(source[i:])
+			break
+		}
+		// Append everything before the match verbatim.
+		sb.WriteString(source[i:idx])
+		// Parse the open tag.
+		kind, attrValue, contentStart, ok := parseDivOpen(source[idx:])
+		if !ok {
+			// Not a recognised form (shouldn't happen —
+			// findNextDivOpen only returns positions of
+			// recognised opens — but defensive). Skip one
+			// character to avoid an infinite loop.
+			sb.WriteString(source[idx : idx+1])
+			i = idx + 1
+			continue
+		}
+		// Walk forward from idx+contentStart, counting
+		// open/close tokens until depth returns to 0. Both
+		// contentStart and closeEnd/contentEnd are relative
+		// to `idx` (i.e. relative to the start of the open
+		// tag we just parsed).
+		absStart := idx + contentStart
+		closeEnd, contentEnd := walkDivBody(source, absStart)
+		if closeEnd < 0 {
+			// Unbalanced — leave the whole construct
+			// intact so the author can see the broken
+			// markup.
+			sb.WriteString(source[idx:absStart])
+			i = absStart
+			continue
+		}
+		// Recursively convert the inner content (so nested
+		// [[div …]] blocks, lists, code, etc. all get
+		// processed). contentEnd is the absolute index of
+		// the matching `[[/div]]` open-bracket; everything
+		// from absStart up to that point is the inner body.
+		// Use convertNoFootnote so a nested div block
+		// doesn't append a duplicate footnote list to the
+		// outer document.
+		inner := p.convertNoFootnote(source[absStart:contentEnd])
+		var out string
+		switch kind {
+		case "style":
+			if css := sanitizeCSSValue(attrValue); css != "" {
+				out = fmt.Sprintf(`<div style="%s">%s</div>`, css, inner)
+			} else {
+				out = inner
+			}
+		case "class":
+			if cls := sanitizeAnchorID(attrValue); cls != "" {
+				out = fmt.Sprintf(`<div class="%s">%s</div>`, cls, inner)
+			} else {
+				out = inner
+			}
+		}
+		sb.WriteString(p.storeBlock(out))
+		i = closeEnd
+	}
+	return sb.String()
+}
+
+// findNextDivOpen returns the index of the next `[[div class="`
+// or `[[div style="` open tag at or after `from`, or -1.
+func findNextDivOpen(source string, from int) int {
+	best := -1
+	for _, prefix := range []string{"[[div class=\"", "[[div style=\""} {
+		idx := strings.Index(source[from:], prefix)
+		if idx < 0 {
+			continue
+		}
+		abs := idx + from
+		if best < 0 || abs < best {
+			best = abs
+		}
+	}
+	return best
+}
+
+// parseDivOpen inspects a div open tag at the start of `s` and
+// returns:
+//   - kind: "class" or "style"
+//   - attrValue: the attribute value (the quoted string)
+//   - contentStart: index (relative to s == source[idx:]) of
+//     the first content character
+//   - ok: true iff a valid open tag was found
+func parseDivOpen(s string) (kind, attrValue string, contentStart int, ok bool) {
+	if strings.HasPrefix(s, "[[div class=\"") {
+		rest := s[len("[[div class=\""):]
+		end := strings.Index(rest, "\"]]")
+		if end < 0 {
+			return "", "", 0, false
+		}
+		attr := rest[:end]
+		return "class", attr, len("[[div class=\"") + end + 3, true
+	}
+	if strings.HasPrefix(s, "[[div style=\"") {
+		rest := s[len("[[div style=\""):]
+		end := strings.Index(rest, "\"]]")
+		if end < 0 {
+			return "", "", 0, false
+		}
+		attr := rest[:end]
+		return "style", attr, len("[[div style=\"") + end + 3, true
+	}
+	return "", "", 0, false
+}
+
+// walkDivBody returns (closeEnd, contentEnd) where contentEnd
+// is the index of the first character of the matching `[[/div]]`
+// and closeEnd is the index just past the matching close tag
+// (i.e. after `]]`). closeEnd == -1 indicates the open tag was
+// never closed — caller should leave the construct intact.
+func walkDivBody(source string, contentStart int) (closeEnd, contentEnd int) {
+	depth := 1
+	i := contentStart
+	for i < len(source) {
+		// Find the next interesting token.
+		nextOpen := findNextDivOpen(source, i)
+		nextClose := strings.Index(source[i:], "[[/div]]")
+		var nextTok int
+		var isClose bool
+		switch {
+		case nextOpen < 0 && nextClose < 0:
+			return -1, -1
+		case nextOpen < 0:
+			nextTok = i + nextClose
+			isClose = true
+		case nextClose < 0:
+			nextTok = nextOpen
+			isClose = false
+		case nextOpen < i+nextClose:
+			nextTok = nextOpen
+			isClose = false
+		default:
+			nextTok = i + nextClose
+			isClose = true
+		}
+		if isClose {
+			depth--
+			if depth == 0 {
+				return nextTok + len("[[/div]]"), nextTok
+			}
+			i = nextTok + len("[[/div]]")
+		} else {
+			depth++
+			// Skip past the open tag's attribute value.
+			_, _, after, ok := parseDivOpen(source[nextTok:])
+			if !ok {
+				// Malformed — give up so we don't
+				// loop forever.
+				return -1, -1
+			}
+			i = nextTok + after
+		}
+	}
+	return -1, -1
 }
 
 func wrapWikidotParagraphs(text string) string {
-	// Protect HTML blocks (pre, table, ul, ol, blockquote, div, details, summary)
-	blockIdx := 0
-	blockStore := make(map[string]string)
-	text = reWDHTMLBlock.ReplaceAllStringFunc(text, func(s string) string {
-		key := fmt.Sprintf("%%WRAP_BLOCK_%d%%", blockIdx)
-		blockIdx++
-		blockStore[key] = s
-		return key
-	})
+	// No local placeholder stash here — block-level HTML
+	// (pre/table/div/ul/ol/blockquote/details/summary) is
+	// already stashed via `p.storeBlock` in Phase 1 and
+	// restored in Phase 10. A previous version of this
+	// function ALSO stashed block HTML into a local
+	// `%%WRAP_BLOCK_N%%` map, but that was redundant AND
+	// actively wrong: the placeholders landed inside `<p>…</p>`
+	// wrappers (the wrap pass treated them as inline text),
+	// then the local restore expanded them back into the
+	// middle of the `<p>`, producing invalid
+	// `<p><div>…</div></p>` HTML. Trust the Phase 1 stash —
+	// by the time this function runs in Phase 11, the only
+	// block HTML still in the source is what came in via
+	// the placeholder system, and our block-boundary check
+	// below correctly skips those lines.
+
+	// `%%BLOCK_N%%` / `%%WRAP_BLOCK_N%%` markers are placeholders
+	// for block-level HTML that Phase 10 will restore. A line
+	// that contains one in the middle (e.g. `inline prefix
+	// %%BLOCK_5%% inline suffix`) needs to be split so the
+	// marker gets its own line; otherwise paragraph-wrap would
+	// emit `<p>… %%BLOCK_5%% …</p>` and the restored block
+	// ends up inside the <p>, producing invalid HTML. The
+	// regex `reBlockMarkerInLine` is declared at package level.
 
 	lines := strings.Split(text, "\n")
 	result := make([]string, 0, len(lines))
 	var buf []string
+	// blockInBuf detects whether a line in the buffer opens a
+	// block-level element. If so, the whole buffer is emitted
+	// verbatim (no <p> wrap) so we don't end up with invalid
+	// `<p><div>…</div></p>` or `<p><table>…</table></p>` HTML.
+	// Wikidot's block syntax ([[div …]], [[table …]], [[code]],
+	// etc.) usually goes through a Phase-1 stash and is restored
+	// as a placeholder, but a custom block written by the
+	// author — or a Phase-2 inline that emits a block — can
+	// sneak into the paragraph buffer.
+	blockInBuf := regexp.MustCompile(`<(?:div|table|pre|ul|ol|h[1-6]|hr|blockquote|details|summary)\b`)
 	flush := func() {
 		if len(buf) > 0 {
-			result = append(result, "<p>"+strings.Join(buf, "<br />\n")+"</p>")
+			joined := strings.Join(buf, "<br />\n")
+			if blockInBuf.MatchString(joined) {
+				// Don't wrap — emit the lines joined by
+				// a soft break so the resulting DOM
+				// matches the source layout.
+				result = append(result, joined)
+			} else {
+				result = append(result, "<p>"+joined+"</p>")
+			}
 			buf = nil
 		}
 	}
-	blockTagStart := regexp.MustCompile(`^<(h[1-6]|hr|li|p|img|blockquote|ul|ol|pre|table|div|details|summary)\b`)
+	// blockTagStart is a "this line opens or closes a block"
+	// detector. It's two regexes because the previous single
+	// regex `^</?(…)\b` was a category error: `<div` matches
+	// `<` then `d` — but the alternation expected `d` to be
+	// the literal first character of a tag in the list
+	// (`h[1-6]`, `hr`, `li`, …) and `d` isn't any of those, so
+	// the whole match silently failed. Splitting the open
+	// and close forms fixes the false-negative on `<div …>`
+	// and `<pre …>` lines.
+	blockOpenStart := regexp.MustCompile(`^<(h[1-6]|hr|li|p|img|blockquote|ul|ol|pre|table|div|details|summary)\b`)
+	blockCloseStart := regexp.MustCompile(`^</(h[1-6]|hr|li|p|img|blockquote|ul|ol|pre|table|div|details|summary)>`)
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
+		// If a placeholder marker is buried in the middle of a
+		// line (e.g. `inline prefix %%BLOCK_5%% inline suffix`),
+		// split the line around it: the prefix joins the
+		// paragraph buffer, the marker gets its own line (a
+		// block boundary), and the suffix starts a fresh
+		// paragraph buffer. Without this split the marker
+		// would land inside a <p> and the restored block
+		// would be wrapped in invalid `<p><div>…</div></p>`.
+		if m := reBlockMarkerInLine.FindStringSubmatch(line); m != nil && (m[1] != "" || m[3] != "") {
+			prefix := strings.TrimSpace(m[1])
+			suffix := strings.TrimSpace(m[3])
+			if prefix != "" {
+				buf = append(buf, prefix)
+			}
+			flush()
+			result = append(result, m[2])
+			if suffix != "" {
+				buf = append(buf, suffix)
+			}
+			continue
+		}
 		// Treat placeholder markers as block boundaries so a placeholder
 		// that resolves to e.g. `<span>...</span>` or `<table>...</table>`
-		// doesn't end up wrapped in a stray <p>.
-		if trimmed == "" || blockTagStart.MatchString(trimmed) ||
+		// doesn't end up wrapped in a stray <p>. We also treat any
+		// `[[__...]]` placeholder as a block boundary — those are the
+		// Phase-1p TOC markers that the post-wrap Phase 12 will expand
+		// into a real <div>. Without this check the TOC ends up
+		// wrapped in <p>, which produces `<p><div>…</div></p>` (the
+		// browser auto-closes the <p> at the <div>, leaving the TOC
+		// inside an orphan paragraph fragment).
+		if trimmed == "" || blockOpenStart.MatchString(trimmed) || blockCloseStart.MatchString(trimmed) ||
 			strings.HasPrefix(trimmed, "%%WRAP_BLOCK_") ||
-			strings.HasPrefix(trimmed, "%%BLOCK_") {
+			strings.HasPrefix(trimmed, "%%BLOCK_") ||
+			strings.HasPrefix(trimmed, "[[__") {
 			flush()
 			result = append(result, line)
 		} else {
@@ -812,9 +2033,9 @@ func wrapWikidotParagraphs(text string) string {
 	}
 	flush()
 
-	out := strings.Join(result, "\n")
-	for key, html := range blockStore {
-		out = strings.ReplaceAll(out, key, html)
-	}
-	return out
+	return strings.Join(result, "\n")
 }
+
+// avoid unused import warnings in build configs that strip the slog
+// reference; called from the renderers that surface module errors.
+var _ = slog.Default

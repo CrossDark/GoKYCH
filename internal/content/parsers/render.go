@@ -22,12 +22,22 @@ const (
 // Render converts raw source of the given type into safe HTML. articleID is
 // used only by the typst renderer to key its DB cache (see renderTypst).
 func Render(at ArticleType, articleID int, source string) template.HTML {
+	return RenderCtx(at, articleID, source, nil)
+}
+
+// RenderCtx is the side-channel-aware variant of Render. ctx may be nil
+// (in which case it behaves identically to Render). Only the wikidot
+// renderer currently consults ctx — `[[include]]`, `[[module]]`,
+// `%%var%%`, `[[toc]]`, and footnote interlink resolution all
+// short-circuit to raw source when there's no PageLookup, so passing
+// nil is safe for the static subset.
+func RenderCtx(at ArticleType, articleID int, source string, ctx *RenderContext) template.HTML {
 	var html string
 	switch at {
 	case TypeMarkdown:
 		html = RenderMarkdown(source)
 	case TypeWikidot:
-		html = RenderWikidot(source)
+		html = RenderWikidotCtx(ctx, source)
 	case TypeBBCode:
 		html = RenderBBCode(source)
 	case TypeHTML:
