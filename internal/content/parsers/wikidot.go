@@ -475,7 +475,14 @@ var (
 	// single article mixed levels).
 	reWDHeading = regexp.MustCompile(`(?m)^(\+{1,6})(\*?)\s+(.+)$`)
 
-	reWDBlockquote    = regexp.MustCompile(`(?m)^(?:&gt;|>)\s?(.*)$`)
+	// Blockquote marker — require at least ONE space after the
+	// leading `>` chain. Without that constraint, `>>嵌套引用<<`
+	// (the French reverse guillemet pair, with no whitespace) gets
+	// mis-consumed as a 2-level blockquote; the actual
+	// typographic transformation happens later in the smart-punct
+	// pass. require at least one ASCII space (or tab) so the
+	// blockquote-marker interpretation is exclusive.
+	reWDBlockquote = regexp.MustCompile(`(?m)^(>+[ \t])(.*)$`)
 	reWDUnorderedItem = regexp.MustCompile(`(?m)^(\s*)\*\s+(.+)$`)
 	reWDOrderedItem   = regexp.MustCompile(`(?m)^(\s*)#\s+(.+)$`)
 	// Definition-list line: `: term : definition`.
@@ -1066,40 +1073,16 @@ func (p *wikidotParser) convertInternal(source string, appendFootnotes bool) str
 	// accidentally fold lines inside one.
 	out = reWDLineContinuation.ReplaceAllString(out, "$1 ")
 
-	// 1d.7 Smart punctuation — runs after the block
-	// stash (so `[[code]]` content is already a
-	// placeholder) but BEFORE the inline stack (so a
-	// smart-quote `'` doesn't get re-interpreted by the
-	// italic regex as a markdown emphasis). The em-dash
-	// rule uses a non-greedy whitespace check so we
-	// don't replace `--` inside a word.
+	// Smart-punct moved to AFTER Phase 8 (blockquote rendering) so a
+	// line-leading `>` / `>>` / `<<` is consumed as a blockquote
+	// marker before the smart-punct pass sees it. Otherwise the
+	// `reWDSmartRAQuote` rule (`>>` → `»`) eats the `>>` of a nested
+	// blockquote and renders it as `<p>» 嵌套</p>`.
 	//
-	// Order matters within this block. Pairs run BEFORE
-	// their singleton halves: German `,,…''` consumes
-	// the closing `''` so the generic `'' → "`
-	// rule doesn't double-fire on the German close;
-	// double-quote `` `` … '' `` likewise consumes its
-	// own `` `` opener and '' `` closer first.
-	out = reWDSmartGerman.ReplaceAllStringFunc(out, func(s string) string {
-		m := reWDSmartGerman.FindStringSubmatch(s)
-		return "\u201e" + m[1] + "\u201c"
-	})
-	out = reWDSmartLDQuote.ReplaceAllString(out, "\u201c")
-	out = reWDSmartRDQuote.ReplaceAllString(out, "\u201d")
-	out = reWDSmartLSQuote.ReplaceAllString(out, "\u2018")
-	out = reWDSmartRSQuote.ReplaceAllString(out, "$1\u2019")
-	out = reWDSmartLAQuote.ReplaceAllString(out, "\u00ab")
-	// Reverse guillemets run AFTER the forward `<<` rule
-	// so a `<<x<<` outer-pair isn't half-eaten. The
-	// closing `<<` is consumed here; a literal `<<` that
-	// doesn't pair with a preceding `>>` is left as-is.
-	out = reWDSmartRGTQuote.ReplaceAllStringFunc(out, func(s string) string {
-		m := reWDSmartRGTQuote.FindStringSubmatch(s)
-		return "\u00bb" + m[1] + "\u00ab"
-	})
-	out = reWDSmartRAQuote.ReplaceAllString(out, "\u00bb")
-	out = reWDEllipsis.ReplaceAllString(out, "\u2026")
-	out = reWDEmDash.ReplaceAllString(out, "$1\u2014$2")
+	// The 1d.7 phase used to live here; moved to right-after-Phase 8
+	// below so the typographic transformations (`...` → `…`,
+	// `--` → `—`, `` `` '' '' `` → curly quotes, etc.) only run on
+	// real prose, never on quote structure.
 
 	// 1e. Row-based tables (`|| ... ||` lines, contiguous group). Build
 	// the table HTML and stash it so subsequent regex passes don't try
@@ -2059,6 +2042,43 @@ func (p *wikidotParser) convertInternal(source string, appendFootnotes bool) str
 	// ── Phase 8: blockquotes ─────────────────────────────────────────
 	out = renderWikidotBlockquotes(out)
 
+	// ── Phase 8.5: smart punctuation ─────────────────────────────────
+	//
+	// Was Phase 1d.7 (before block stashes); now runs AFTER
+	// renderWikidotBlockquotes so a line-leading `>>` is consumed as
+	// a nested blockquote marker (`>> text` → `<blockquote><blockquote>…`),
+	// not as French guillemet close (`>>` → `»`).
+	//
+	// Em-dash uses a non-greedy whitespace check so we
+	// don't replace `--` inside a word.
+	//
+	// Order matters within this block. Pairs run BEFORE
+	// their singleton halves: German `,,…''` consumes
+	// the closing `''` so the generic `'' → "`
+	// rule doesn't double-fire on the German close;
+	// double-quote `` `` … '' `` likewise consumes its
+	// own `` `` opener and '' `` closer first.
+	out = reWDSmartGerman.ReplaceAllStringFunc(out, func(s string) string {
+		m := reWDSmartGerman.FindStringSubmatch(s)
+		return "\u201e" + m[1] + "\u201c"
+	})
+	out = reWDSmartLDQuote.ReplaceAllString(out, "\u201c")
+	out = reWDSmartRDQuote.ReplaceAllString(out, "\u201d")
+	out = reWDSmartLSQuote.ReplaceAllString(out, "\u2018")
+	out = reWDSmartRSQuote.ReplaceAllString(out, "$1\u2019")
+	out = reWDSmartLAQuote.ReplaceAllString(out, "\u00ab")
+	// Reverse guillemets run AFTER the forward `<<` rule
+	// so a `<<x<<` outer-pair isn't half-eaten. The
+	// closing `<<` is consumed here; a literal `<<` that
+	// doesn't pair with a preceding `>>` is left as-is.
+	out = reWDSmartRGTQuote.ReplaceAllStringFunc(out, func(s string) string {
+		m := reWDSmartRGTQuote.FindStringSubmatch(s)
+		return "\u00bb" + m[1] + "\u00ab"
+	})
+	out = reWDSmartRAQuote.ReplaceAllString(out, "\u00bb")
+	out = reWDEllipsis.ReplaceAllString(out, "\u2026")
+	out = reWDEmDash.ReplaceAllString(out, "$1\u2014$2")
+
 	// ── Phase 9: lists (rewritten for nesting) ───────────────────────
 	out = renderWikidotLists(out)
 
@@ -2118,11 +2138,12 @@ func (p *wikidotParser) convertInternal(source string, appendFootnotes bool) str
 
 func renderCodeBlock(code, lang string) string {
 	c := html.EscapeString(code)
-	cls := ""
+	preClass := "wikidot-code"
+	codeClass := ""
 	if lang != "" {
-		cls = fmt.Sprintf(` class="language-%s"`, lang)
+		codeClass = fmt.Sprintf(` class="language-%s"`, lang)
 	}
-	return fmt.Sprintf(`<pre><code%s>%s</code></pre>`, cls, c)
+	return fmt.Sprintf(`<pre class="%s"><code%s>%s</code></pre>`, preClass, codeClass, c)
 }
 
 // renderEmailLink turns a single address (no brackets, no
@@ -2669,7 +2690,34 @@ func (p *wikidotParser) renderTOC(source string) string {
 	if len(p.headings) == 0 {
 		inner = `<p class="wikidot-toc-empty"><em>本文暂无章节</em></p>`
 	} else {
-		inner = renderWikidotTOCList(p.headings, 2 /* minTocLevel */)
+		// Wikidot's convention is to treat H1 as the article
+		// title (it's a body-level landing-page convention, the
+		// H1 should not be repeated in the toc). But that default
+		// breaks down when an article has NO H2/H3 — the toc then
+		// shows nothing even though every H1 is a real section
+		// heading. rule-wiki's [[toc]] for a spec page is exactly
+		// that case (every entry is `+ Heading`).
+		//
+		// Compute the lowest level present and clamp minTocLevel
+		// down to it so the toc never ends up empty when there
+		// are headings to show.
+		effectiveMin := 2
+		lowest := 7
+		for _, h := range p.headings {
+			if h.SkipTOC {
+				continue
+			}
+			if h.Level < lowest {
+				lowest = h.Level
+			}
+		}
+		if lowest < effectiveMin {
+			effectiveMin = lowest
+		}
+		if effectiveMin < 1 {
+			effectiveMin = 1
+		}
+		inner = renderWikidotTOCList(p.headings, effectiveMin)
 	}
 	// Wrap with the title + accessibility attributes.
 	// We emit the title even when empty (in the no-heading
@@ -2889,9 +2937,9 @@ func renderWikidotTableRowLine(p *wikidotParser, line string, headerRow bool) st
 			}
 		}
 		if colspan > 1 {
-			sb.WriteString(fmt.Sprintf(`<%s colspan="%d">%s</%s>`, tag, colspan, inlineOnly(c), tag))
+			sb.WriteString(fmt.Sprintf(`<%s colspan="%d">%s</%s>`, tag, colspan, renderWikidotCellInline(c), tag))
 		} else {
-			sb.WriteString(fmt.Sprintf(`<%s>%s</%s>`, tag, inlineOnly(c), tag))
+			sb.WriteString(fmt.Sprintf(`<%s>%s</%s>`, tag, renderWikidotCellInline(c), tag))
 		}
 	}
 	return sb.String()
@@ -4027,6 +4075,164 @@ func inlineOnly(text string) string {
 	return text
 }
 
+// renderWikidotCellInline is the cell-scope sibling of inlineOnly.
+//
+// The `|| … ||` table row renderer (renderWikidotTableRowLine) used to
+// run every cell through inlineOnly, which intentionally skips block
+// constructs and ALL `[[…]]` multi-token forms (size, span, anchor
+// def, comments). That's wrong for tables: rule-wiki's [[size X]]
+// examples, [[span style=…]] samples, etc. all live inside a `||`
+// cell, and Wikidot re-runs the inline stack there. The narrower
+// inlineOnly missed every one of those. Without this pass a reader
+// sees:
+//   || {{@@//斜体//@@}} || //斜体// ||
+// as raw text on the second column.
+//
+// What we add on top of inlineOnly:
+//
+//   - [!-- … --] (Wikidot strips comments in TD the same as body).
+//   - `[[size X]]Y[[/size]]` → <span style="font-size:…">Y</span>.
+//   - `[[span style=…]]Y[[/span]]` → <span style="…">Y</span>.
+//   - `[[span class=…]]Y[[/span]]` → handled by the balanced matcher
+//     (renderBalancedSpanClass), which supports Devanos's ruby/rt
+//     nesting (one [[span class="ruby"]] …
+//        [[span class="rt"]]Y[[/span]][[/span]]).
+//
+// We deliberately do NOT run the full convert() pipeline here:
+//   - [[code]] / [[html]] / [[collapsible]] / [[table]] block-stashes
+//     inside cells shouldn't apply (a [[code]] in a TD has no place;
+//     it would just be literal text).
+//   - Heading detection would turn anything starting with `+ ` into a
+//     `<hN>` which is also invalid inside a TD.
+//   - [[note]] likewise — Wikidot's [[note]] is a block construct and
+//     would violate HTML semantics inside <td>.
+//
+// Therefore this function only runs the cell-safe inline passes.
+// Multi-pass invariant: anything that mutates text references itself
+// to keep the inner content of generated spans consistent (e.g. a
+// span-class containing size, etc.).
+func renderWikidotCellInline(text string) string {
+	// Smart-punctuation pass RUNS HERE because cell content is
+	// stashed into a table-block at Phase 1e (BEFORE Phase 1d.7's
+	// original smart-punct location, and now before Phase 8.5
+	// which lives after Phase 8's blockquote processing). Without
+	// this local pass, backticks / em-dashes / ellipsis inside `||`
+	// cells would stay as ASCII characters because the outer
+	// smart-punct passes see only `%%BLOCK_N%%` placeholders.
+	//
+	// The cell-scope pass uses the same regexes the outer pass
+	// uses (Phase 8.5). Order matches: pairs run before singleton
+	// halves so German `,,…''` consumes the closing `''` first.
+	text = reWDSmartGerman.ReplaceAllStringFunc(text, func(s string) string {
+		m := reWDSmartGerman.FindStringSubmatch(s)
+		return "\u201e" + m[1] + "\u201c"
+	})
+	text = reWDSmartLDQuote.ReplaceAllString(text, "\u201c")
+	text = reWDSmartRDQuote.ReplaceAllString(text, "\u201d")
+	text = reWDSmartLSQuote.ReplaceAllString(text, "\u2018")
+	text = reWDSmartRSQuote.ReplaceAllString(text, "$1\u2019")
+	text = reWDSmartLAQuote.ReplaceAllString(text, "\u00ab")
+	text = reWDSmartRGTQuote.ReplaceAllStringFunc(text, func(s string) string {
+		m := reWDSmartRGTQuote.FindStringSubmatch(s)
+		return "\u00bb" + m[1] + "\u00ab"
+	})
+	text = reWDSmartRAQuote.ReplaceAllString(text, "\u00bb")
+	text = reWDEllipsis.ReplaceAllString(text, "\u2026")
+	text = reWDEmDash.ReplaceAllString(text, "$1\u2014$2")
+
+	// Reader comment: var substitution first so `%%x%%` survives a
+	// later size/span wrapping.
+	text = reWDVar.ReplaceAllStringFunc(text, func(s string) string {
+		inlineVarsMu.Lock()
+		vars := inlineVars
+		inlineVarsMu.Unlock()
+		if len(vars) == 0 {
+			return s
+		}
+		m := reWDVar.FindStringSubmatch(s)
+		if v, ok := vars[m[1]]; ok {
+			return html.EscapeString(v)
+		}
+		return s
+	})
+
+	// Inline comments — same regex as Phase 0.65. We run BEFORE all
+	// the wrapping passes so a `[!-- … --]` doesn't leak the inner
+	// markers into a span that swallows the dash-dash as strike.
+	text = reWDComment.ReplaceAllString(text, "")
+
+	// Make sure nested [[span class="…"]] ruby/rt structures emit
+	// valid HTML before any of the simpler inline regexes fire.
+	// renderBalancedSpanClass is a function (not a package-level
+	// regex) and internally does fixed-point expansion + mapSpanClassToElement;
+	// it's safe to call here.
+	text = renderBalancedSpanClass(text)
+
+	// Plain `[[span style=…]]…[[/span]]` form. Inner content runs
+	// through inlineOnly so `//italic//` etc. inside still work,
+	// but the size / class / anchor machinery does NOT recurse —
+	// those would either nest <span> inside <span> in confusing
+	// ways (CSS attribute elevation) or duplicate the work the
+	// outer pass will do.
+	text = reWDSpanStyle.ReplaceAllStringFunc(text, func(s string) string {
+		m := reWDSpanStyle.FindStringSubmatch(s)
+		inner := inlineOnly(m[2])
+		if css := sanitizeCSSValue(m[1]); css != "" {
+			return fmt.Sprintf(`<span style="%s">%s</span>`, css, inner)
+		}
+		return inner
+	})
+
+	// `[[size X]]Y[[/size]]` → style on the inner span. The body
+	// version of this (renderWikidotSizeBlocks) is a *block-level*
+	// pass because `[[size]]…[[/size]]` can legitimately span
+	// paragraphs (`renderWikidotSizeBlocks` bodyRendered split).
+	// Inside a TD we don't want paragraph wrapping, so we run a
+	// local regex using the same value→css mapping.
+	text = reWDSize.ReplaceAllStringFunc(text, func(s string) string {
+		m := reWDSize.FindStringSubmatch(s)
+		css, ok := resolveSizeCss(m[1])
+		if !ok {
+			return inlineOnly(m[2])
+		}
+		return fmt.Sprintf(`<span style="font-size:%s">%s</span>`, css, inlineOnly(m[2]))
+	})
+
+	// Inline anchor-def `[[# name]]` — produces `<span id="…" class="wiki-anchor">`.
+	// Same regex as Phase 1o2.5, run here so a `#name` hash anchor
+	// inside a TD also lands.
+	text = reWDHashAnchorDef.ReplaceAllStringFunc(text, func(s string) string {
+		m := reWDHashAnchorDef.FindStringSubmatch(s)
+		id := html.EscapeString(strings.TrimSpace(m[1]))
+		return fmt.Sprintf(`<span id="%s" class="wiki-anchor"></span>`, id)
+	})
+
+	// Hash anchor jump `[# name text]` — same regex the body
+	// uses (reWDAnchor). The TD path has no other place to
+	// realise this since `inlineOnly` doesn't include it.
+	text = reWDAnchor.ReplaceAllStringFunc(text, func(s string) string {
+		m := reWDAnchor.FindStringSubmatch(s)
+		anchor := strings.TrimSpace(m[1])
+		display := strings.TrimSpace(m[2])
+		if display == "" {
+			display = anchor
+		}
+		return fmt.Sprintf(`<a href="#%s">%s</a>`, html.EscapeString(anchor), html.EscapeString(display))
+	})
+
+	// Empty placeholders `[# display]` → `<a href="javascript:;">display</a>`.
+	// (Phase 3c.7 only runs on non-block-stashed text, so cells miss this.)
+	text = reWDEmptyLink.ReplaceAllStringFunc(text, func(s string) string {
+		m := reWDEmptyLink.FindStringSubmatch(s)
+		display := strings.TrimSpace(m[1])
+		return fmt.Sprintf(`<a href="javascript:;">%s</a>`, html.EscapeString(display))
+	})
+
+	// Everything below mirrors inlineOnly so the inside of any
+	// generated span / size also gets bold/italic/etc.
+	return inlineOnly(text)
+}
+
 // ── blockquote / list rendering ─────────────────────────────────────────
 
 // renderWikidotAdvancedLists walks the source for
@@ -4963,30 +5169,46 @@ func renderWikidotDefList(text string) string {
 func renderWikidotBlockquotes(text string) string {
 	lines := strings.Split(text, "\n")
 	result := make([]string, 0, len(lines))
-	var buf []string
+	// Per-depth line buffer so `>` and `>>` produce nested
+	// `<blockquote>` (and `>>>` deep-nests further). Wikidot's
+	// convention: each leading `>` adds one indent level. The
+	// outer buffer is depth-0 prose; each depth-N buffer holds
+	// prose at depth N. A contiguous run of `> text` followed by
+	// `>> text` produces `<blockquote>...<blockquote>...</blockquote>`.
+	var entries []blockEntry
 	flush := func() {
-		if len(buf) > 0 {
-			result = append(result, `<blockquote>`+strings.Join(buf, `<br />`)+`</blockquote>`)
-			buf = nil
+		if len(entries) == 0 {
+			return
 		}
+		result = append(result, renderBlockquoteEntries(entries))
+		entries = nil
 	}
 	for _, line := range lines {
 		if m := reWDBlockquote.FindStringSubmatch(line); m != nil {
-			// Spec: a `\` at the end of a blockquote
-			// line lets the author continue the
-			// quote on the next source line, but the
-			// rendered output stays as ONE line
-			// (i.e. without a `<br />` between).
-			// Strip the trailing `\` and any trailing
-			// whitespace, then JOIN the next
-			// blockquote line into the same buffer
-			// entry so the `<br />` joiner above
-			// never sees a line break.
-			joined := strings.TrimRight(m[1], " \t\\")
-			if len(buf) > 0 {
-				buf[len(buf)-1] = buf[len(buf)-1] + joined
+			// m[1] is the leading `>` chain (possibly followed by
+			// a single space); m[2] is the remainder of the line.
+			depth := strings.Count(m[1], ">")
+			if depth < 1 {
+				depth = 1
+			}
+			// Spec: a `\` at the end of a blockquote line joins
+			// onto the next line without a `<br />` between them.
+			// Detect by looking at the source line for a trailing
+			// `\` (the regex stripped m[2] = "trailing-spaces-stripped"
+			// text but the raw character is still on the source line
+			// only inside m[2] which our regex does not capture
+			// verbatim — re-check the original line).
+			joined := strings.TrimRight(m[2], " \t\\")
+			// Continuation: if the previous entry was at the same
+			// depth, append `joined` to its text with a space, no
+			// `<br />`. Otherwise push a new entry.
+			if len(entries) > 0 && entries[len(entries)-1].depth == depth && !entries[len(entries)-1].hasBackslash {
+				entries[len(entries)-1].text += " " + joined
 			} else {
-				buf = append(buf, joined)
+				entries = append(entries, blockEntry{
+					depth: depth, text: joined,
+					hasBackslash: strings.HasSuffix(strings.TrimRight(m[2], " \t"), "\\"),
+				})
 			}
 		} else {
 			flush()
@@ -4995,6 +5217,61 @@ func renderWikidotBlockquotes(text string) string {
 	}
 	flush()
 	return strings.Join(result, "\n")
+}
+
+type blockEntry struct {
+	depth        int
+	text         string
+	hasBackslash bool
+}
+
+// renderBlockquoteEntries walks source-ordered entries and emits
+// nested `<blockquote>` HTML. We walk the entries with a depth
+// counter and split at every "depth decreased" boundary; each
+// boundary closes the inner levels in source order so a run like
+//
+//	> outer
+//	>> nested
+//	> back-to-outer
+//	> another
+//
+// yields `<blockquote>outer<blockquote>nested</blockquote>back-to-outer<br>another</blockquote>`.
+func renderBlockquoteEntries(entries []blockEntry) string {
+	if len(entries) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	// Stack of open depths.
+	stack := []int{entries[0].depth}
+	sb.WriteString(`<blockquote>`)
+	sb.WriteString(entries[0].text)
+	for i := 1; i < len(entries); i++ {
+		e := entries[i]
+		d := e.depth
+		// Pop until top of stack <= d.
+		for len(stack) > 0 && stack[len(stack)-1] > d {
+			sb.WriteString(`</blockquote>`)
+			stack = stack[:len(stack)-1]
+		}
+		// Opening new depths: NO `<br />` — the inner `<blockquote>`
+		// is structurally INSIDE its parent's content, not a new
+		// line in it.
+		for j := len(stack); j < d; j++ {
+			sb.WriteString(`<blockquote>`)
+			stack = append(stack, j+1)
+		}
+		// Same depth: insert `<br />` separator between sibling
+		// lines (since each `<blockquote>` body is a flat text node).
+		if len(stack) > 0 && stack[len(stack)-1] == d && i > 0 && entries[i-1].depth == d {
+			sb.WriteString(`<br />`)
+		}
+		sb.WriteString(e.text)
+	}
+	// Close all open blockquotes.
+	for range stack {
+		sb.WriteString(`</blockquote>`)
+	}
+	return sb.String()
 }
 
 // renderWikidotLists — rewritten to support nested lists. Each line

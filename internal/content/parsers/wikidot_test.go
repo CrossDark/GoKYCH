@@ -173,6 +173,151 @@ func TestWikidotTableRowNoParagraphsInCells(t *testing.T) {
 	}
 }
 
+// TestWikidotTableCellInlineSize covers the rule-wiki spec table for
+// `[[size X]]` inside a `||` cell. Before the fix the row renderer
+// only ran each cell through inlineOnly, which intentionally skipped
+// every `[[…]]` multi-token form (size, span, anchor defs,
+// comments). Cell-scope rendering now handles these so that the
+// rule-wiki spec page renders identically to its reference.
+//
+// The "smaller" / "larger" CSS keywords are normalised to a
+// concrete rem value by resolveSizeCss so the assertion matches
+// either the keyword form (a previous equivalent rendering) or
+// the resolved rem value (current rendering).
+func TestWikidotTableCellInlineSize(t *testing.T) {
+	in := `|| you-type || you-see ||
+|| {{@@[[size smaller]]text@@}} || [[size smaller]]text[[/size]] ||`
+	out := RenderWikidot(in)
+	if !strings.Contains(out, `<span style="font-size:`) || !strings.Contains(out, `>text</span>`) {
+		t.Errorf(`expected <span style="font-size:…">text</span> in cell, got %q`, out)
+	}
+}
+
+// TestWikidotTableCellInlineSpanStyle covers `[[span style=…]]` and
+// `[[span class=…]]` inside a `||` cell. Before the fix these showed
+// up as raw text in the rendered second column of the rule-wiki spec
+// page's inline-formatting table.
+func TestWikidotTableCellInlineSpanStyle(t *testing.T) {
+	in := `|| {{@@[[span style="color:red"]]x@@}} || [[span style="color:red"]]x[[/span]] ||`
+	out := RenderWikidot(in)
+	if !strings.Contains(out, `<span style="color:red">x</span>`) {
+		t.Errorf(`expected <span style="color:red">x</span> in cell, got %q`, out)
+	}
+}
+
+// TestWikidotTableCellInlineSpanClassKeycap covers `[[span class=…]]`
+// inside a `||` cell. The class-based renderer has special-case
+// mapSpanClassToElement handling: `keycap` → `<kbd>` per HTML5
+// (Wikidot ext) — so we accept either the class form OR its
+// element mapping.
+func TestWikidotTableCellInlineSpanClassKeycap(t *testing.T) {
+	in := `|| {{@@[[span class="keycap"]]x@@}} || [[span class="keycap"]]x[[/span]] ||`
+	out := RenderWikidot(in)
+	if !strings.Contains(out, `class="keycap"`) && !strings.Contains(out, `<kbd>`) {
+		t.Errorf(`expected keycap class or <kbd> in cell, got %q`, out)
+	}
+}
+
+// TestWikidotTableCellCommentStripped covers [!-- … --] inside a
+// table cell (no `[[code]]` wrapper). Wikidot strips comments even
+// inside tables; the previous run-with-inlineOnly pass left the
+// raw `[!-- … --]` visible as `[!<s>…</s>]` in the rendered HTML.
+func TestWikidotTableCellCommentStripped(t *testing.T) {
+	in := `|| {{@@[!-- gone --]@@}} || [!-- gone --] ||`
+	out := RenderWikidot(in)
+	if strings.Contains(out, `[!--`) || strings.Contains(out, ` gone `) {
+		t.Errorf(`expected comment stripped in cell, got %q`, out)
+	}
+}
+
+// TestWikidotTableCellAnchorDef covers `[[# anchor-name]]` inside a
+// `||` cell. Before the fix, the anchor-def regex only ran during
+// the main convert pass; tables cell-rendered by inlineOnly so the
+// anchor span was missing.
+func TestWikidotTableCellAnchorDef(t *testing.T) {
+	in := `|| {{@@[[# in-cell]]@@}} || [[# in-cell]] ||`
+	out := RenderWikidot(in)
+	if !strings.Contains(out, `<span id="in-cell" class="wiki-anchor">`) {
+		t.Errorf(`expected anchor span in cell, got %q`, out)
+	}
+}
+
+// TestWikidotNestedBlockquote covers `>> text` inside a body —
+// expected to render as nested `<blockquote>` (one level deeper
+// than `> text`). Before the smart-punct reorder, the `>>` was
+// eaten by the reverse-guillemet rule (`>>` → `»`) and the line
+// came out as `<p>» text</p>`.
+func TestWikidotNestedBlockquote(t *testing.T) {
+	in := "> outer\n>> nested\n"
+	out := RenderWikidot(in)
+	if !strings.Contains(out, `<blockquote>outer`) {
+		t.Errorf(`expected outer blockquote to wrap "outer", got %q`, out)
+	}
+	if !strings.Contains(out, `<blockquote>nested</blockquote>`) {
+		t.Errorf(`expected nested blockquote for "nested", got %q`, out)
+	}
+	if strings.Contains(out, "»") {
+		t.Errorf(`expected no guillemet close, got %q`, out)
+	}
+}
+
+// TestWikidotReverseGuillemetsNoSpace — security against the
+// nested-blockquote regression. `>>嵌套引用<<` (no space between
+// `>>` and text) must be the French reverse-guillemet pair, not a
+// 2-level blockquote. Blockquote detection now requires
+// `>[ \t]` after the `>` chain.
+func TestWikidotReverseGuillemetsNoSpace(t *testing.T) {
+	out := RenderWikidot(`>>嵌套引用<<`)
+	if !strings.Contains(out, "\u00bb") {
+		t.Errorf(`expected right-guillemet opener, got %q`, out)
+	}
+	if !strings.Contains(out, "\u00ab") {
+		t.Errorf(`expected left-guillemet closer, got %q`, out)
+	}
+	if strings.Contains(out, `<blockquote>`) {
+		t.Errorf(`expected no blockquote, got %q`, out)
+	}
+}
+
+// TestWikidotTOCIncludesH1WhenOnlyHeadings covers the case where
+// an article has only H1 headings (no H2/H3 sub-structure). Wikidot
+// lowers the TOC floor to the lowest heading level so the TOC
+// doesn't silently drop every heading just because none are H2+.
+func TestWikidotTOCIncludesH1WhenOnlyHeadings(t *testing.T) {
+	in := `[[toc]]
+
++ A
++ B
++ C
+`
+	out := RenderWikidot(in)
+	if !strings.Contains(out, `class="wikidot-toc"`) {
+		t.Errorf(`expected wikidot-toc element, got %q`, out)
+	}
+	if !strings.Contains(out, `<span class="toc-text">A</span>`) ||
+		!strings.Contains(out, `<span class="toc-text">B</span>`) ||
+		!strings.Contains(out, `<span class="toc-text">C</span>`) {
+		t.Errorf(`expected H1 entries in TOC, got %q`, out)
+	}
+}
+
+// TestWikidotCodeBlockHasClass covers the `<pre class="wikidot-code">`
+// hook the stylesheet uses to scope wikidot code-block styling.
+// Before this fix the rendered output had no class on either
+// `<pre>` or `<code>`, so users couldn't theme wikidot code blocks
+// distinctly from markdown fenced blocks.
+func TestWikidotCodeBlockHasClass(t *testing.T) {
+	out := RenderWikidot(`[[code]]
+x
+[[/code]]`)
+	if !strings.Contains(out, `<pre class="wikidot-code">`) {
+		t.Errorf(`expected <pre class="wikidot-code">, got %q`, out)
+	}
+	if !strings.Contains(out, `<code>`) {
+		t.Errorf(`expected <code> wrapper, got %q`, out)
+	}
+}
+
 func TestWikidotMathBlock(t *testing.T) {
 	in := `[[math]]E = mc^2[[/math]]`
 	out := RenderWikidot(in)
