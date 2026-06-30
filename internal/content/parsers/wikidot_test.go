@@ -3076,3 +3076,50 @@ func TestWikidotFormNested(t *testing.T) {
 		t.Errorf("expected %d </form> closings, got %d in %q", want, got, out)
 	}
 }
+
+// TestWikidotBlockPlaceholdersFullyRestored is a regression test
+// for a bug where `%%BLOCK_N%%` placeholders leaked through to
+// the rendered output.
+//
+// Two compounding causes:
+//   1. Phase 1 (block storage) stashes the table line as a block
+//      BEFORE Phase 2 (inline `@@…@@` literal) has had a chance
+//      to substitute the inner literal. The result is a stored
+//      block whose HTML contains the inner literal's placeholder.
+//   2. Phase 10 (restore stored blocks) iterated `p.blocks` once.
+//      Go's map iteration order is random, so if the outer table
+//      block is restored before the inner literal block, the inner
+//      placeholder ends up inside an already-restored `<table>` and
+//      the next iteration of the map misses it.
+//
+// The fix: Phase 10 now runs multi-pass until a full sweep
+// produces no more substitutions. Also extends the same loop to
+// `p.headings[].Text` so heading text that contains anchors
+// (`[[# name]]` in `++ [[# name]]title`) doesn't leak into the
+// TOC builder (Phase 12 reads `h.Text`).
+//
+// This test reproduces both leak paths in one input.
+func TestWikidotBlockPlaceholdersFullyRestored(t *testing.T) {
+	in := `+ [[# headings]]标题
+
+||~ 你所打的 ||~ 你将看见 ||
+|| {{@@//斜体//@@}} || //斜体// ||
+
+[[toc]]
+`
+	out := RenderWikidot(in)
+	// No placeholder should survive in the output.
+	if strings.Contains(out, "%BLOCK_") {
+		t.Errorf("placeholder leaked into output: %q", out)
+	}
+	// The TOC entry for the heading should contain the heading
+	// text (`标题`), not the anchor placeholder or the raw anchor.
+	if !strings.Contains(out, ">标题<") {
+		t.Errorf("expected TOC entry to contain heading text, got %q", out)
+	}
+	// The table cell should contain the raw //斜体// inside <code>,
+	// not a %BLOCK_% placeholder.
+	if !strings.Contains(out, "<code>//斜体//</code>") {
+		t.Errorf("expected <code>//斜体//</code> in table cell, got %q", out)
+	}
+}

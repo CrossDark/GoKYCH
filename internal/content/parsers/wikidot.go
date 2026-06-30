@@ -1545,8 +1545,8 @@ func (p *wikidotParser) convertInternal(source string, appendFootnotes bool) str
 	// Run BEFORE the Phase-2 inline stack so the strikethrough
 	// regex (`--(.+?)--`) doesn't eat a 3-5 dash run and turn
 	// `---` / `----` into `<s>--</s>` / `<s>---</s>` instead of
-	// a horizontal rule. Wikidot's `---` (3+) and Markdown's
-	// `---` both denote a thematic break, so we accept 3+ here.
+	// an `<hr>`. The HR pass replaces the line with `<hr>` (block-
+	// level), so the inline pass can never see the dash run.
 	out = reWDHR.ReplaceAllString(out, `<hr>`)
 
 	// `[[divider]]` — themed HR equivalent to `----` but
@@ -2090,8 +2090,41 @@ func (p *wikidotParser) convertInternal(source string, appendFootnotes bool) str
 	out = renderWikidotLists(out)
 
 	// ── Phase 10: restore stored blocks ──────────────────────────────
-	for key, blk := range p.blocks {
-		out = strings.ReplaceAll(out, key, blk)
+	//
+	// Substituting only the live `out` string isn't enough: heading
+	// text captured in Phase 4 (`p.headings[].Text`) is a snapshot
+	// from BEFORE Phase 1's stash passes, so it still contains
+	// `%BLOCK_N%` placeholders for any `[[# name]]` (compact anchor)
+	// or `@@…@@` (literal) construct that lived inside the heading
+	// line. The TOC builder (Phase 12) re-reads `h.Text`, and a
+	// place-holdered TOC entry leaks straight through to the
+	// browser. Apply the same substitution to the captured headings
+	// here so the TOC sees the post-Phase-10 text.
+	//
+	// Multi-pass because Go map iteration order is random and a
+	// block's stored HTML can contain placeholders for other blocks
+	// (e.g. `{{@@…@@}}` in a table cell → outer table block stashes
+	// the row, inner `@@` block stashes the literal — replacing
+	// the table block first leaves the inner `@@` placeholder
+	// stranded inside the now-restored table HTML). Loop until a
+	// full pass over the map makes no more substitutions.
+	for {
+		changed := false
+		for key, blk := range p.blocks {
+			if strings.Contains(out, key) {
+				out = strings.ReplaceAll(out, key, blk)
+				changed = true
+			}
+			for i := range p.headings {
+				if strings.Contains(p.headings[i].Text, key) {
+					p.headings[i].Text = strings.ReplaceAll(p.headings[i].Text, key, blk)
+					changed = true
+				}
+			}
+		}
+		if !changed {
+			break
+		}
 	}
 
 	// ── Phase 11: paragraph wrapping ─────────────────────────────────
