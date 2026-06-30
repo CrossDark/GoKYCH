@@ -707,39 +707,106 @@ hr {
     padding: 0 1rem 0.75rem;
 }
 
-/* Float-TOC divs from `[[f<toc]]` / `[[f>toc]]`. The TOC body is the
- * same nested `<ul>` the regular `[[toc]]` produces; the float
- * positioning is opt-in per author. */
+/* Table of contents — `[[toc]]` / `[[f<toc]]` / `[[f>toc]]`.
+ *
+ * The HTML structure is a properly-nested `<ul>` produced by
+ * wikidot.go's renderWikidotTOCList (see the doc-comment on
+ * buildWikidotTOCTree for the rationale on using nested
+ * elements rather than CSS-only indentation). The CSS below
+ * styles the wrapper, the title, the per-entry link, and the
+ * level-based indent.
+ *
+ * CSS variable references fall back to the article-level theme
+ * tokens (`--code-bg`, `--border`, `--accent`, …) defined
+ * elsewhere in globals.css so the toc slots into dark mode
+ * automatically. */
 .content-body .wikidot-toc {
-    margin: 0.75rem 1.5rem;
-    padding: 0.5rem 0.75rem;
-    background: var(--code-bg);
-    border: 1px solid var(--border);
+    margin: 0.75rem 0 1.5rem;
+    padding: 0.875rem 1rem 0.875rem 1.25rem;
+    background: color-mix(in srgb, var(--accent) 4%, transparent);
+    border: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+    border-left: 3px solid var(--accent);
     border-radius: var(--radius);
-    max-width: 16rem;
+    max-width: 22rem;
 }
-.content-body .wikidot-toc-float-left {
-    float: left;
-    clear: left;
+.content-body .wikidot-toc-title {
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 0.5rem;
+    opacity: 0.85;
 }
-.content-body .wikidot-toc-float-right {
-    float: right;
-    clear: right;
-}
+/* The nested `<ul>` resets default list styling; bullets would
+ * compete with our `toc-li` markers. */
 .content-body .wikidot-toc ul {
     list-style: none;
     padding: 0;
     margin: 0;
 }
 .content-body .wikidot-toc li {
-    padding: 0.15rem 0;
+    padding: 0.2rem 0;
+    line-height: 1.5;
 }
 .content-body .wikidot-toc a {
+    color: var(--text);
+    text-decoration: none;
+    display: inline-block;
+    border-radius: 3px;
+    padding: 0 0.25rem;
+    margin: 0 -0.25rem;
+    transition: background-color 0.12s ease, color 0.12s ease;
+}
+/* The level class is on the link itself so we can size / colour
+ * based on heading depth without re-styling the <li>. */
+.content-body .wikidot-toc a.toc-link-h2 {
+    font-weight: 500;
+    color: var(--text);
+}
+.content-body .wikidot-toc a.toc-link-h3 {
+    color: color-mix(in srgb, var(--text) 80%, var(--accent));
+}
+.content-body .wikidot-toc a.toc-link-h4,
+.content-body .wikidot-toc a.toc-link-h5,
+.content-body .wikidot-toc a.toc-link-h6 {
+    color: color-mix(in srgb, var(--text) 70%, var(--accent));
+    font-size: 0.9em;
+}
+/* Indent nested levels — the `<ul>`-in-`<ul>` nesting gives
+ * each level its own visual step. */
+.content-body .wikidot-toc ul ul {
+    margin-left: 0.875rem;
+    border-left: 1px dashed color-mix(in srgb, var(--border) 70%, transparent);
+    padding-left: 0.625rem;
+}
+.content-body .wikidot-toc a:hover {
+    background-color: color-mix(in srgb, var(--accent) 14%, transparent);
     color: var(--accent);
     text-decoration: none;
 }
-.content-body .wikidot-toc a:hover {
-    text-decoration: underline;
+/* `:target` highlight when a heading anchor is the URL fragment
+ * — the user clicked (or `:target` applied via hash navigation)
+ * to the corresponding heading, the matching toc entry should
+ * pop. */
+.content-body .wikidot-toc a:target,
+.content-body .wikidot-toc a:focus-visible {
+    background-color: color-mix(in srgb, var(--accent) 18%, transparent);
+    color: var(--accent);
+    outline: none;
+}
+/* Float-TOC divs from `[[f<toc]]` / `[[f>toc]]`. The TOC body is
+ * the same nested `<ul>` the regular `[[toc]]` produces; the
+ * float positioning is opt-in per author. */
+.content-body .wikidot-toc-float-left {
+    float: left;
+    clear: left;
+    margin-right: 1.5rem;
+}
+.content-body .wikidot-toc-float-right {
+    float: right;
+    clear: right;
+    margin-left: 1.5rem;
 }
 
 /* Footnotes (`[N]` / `[[footnote]]…[[/footnote]]` /

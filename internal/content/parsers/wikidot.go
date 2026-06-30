@@ -462,6 +462,18 @@ var (
 	reWDH3_ = regexp.MustCompile(`(?m)^\+\+\+\s+(.+)$`)
 	reWDH2_ = regexp.MustCompile(`(?m)^\+\+\s+(.+)$`)
 	reWDH1_ = regexp.MustCompile(`(?m)^\+\s+(.+)$`)
+	// reWDHeading — single regex matching any wikidot heading
+	// line, including the `+*` SkipTOC variant. The captures
+	// are (1) plus-sign count, (2) optional `*` marker, (3)
+	// heading text. The level is `len(m[1])` so H1 = `+`,
+	// H6 = `++++++`. We keep the per-level regexes above for
+	// now (they're referenced by headingRegexFor below) but
+	// Phase 4 only uses reWDHeading so the order in which
+	// headings appear in `p.headings` matches source order
+	// (the previous level-by-level pipeline processed H6
+	// first then H5 … H1, reversing TOC order whenever a
+	// single article mixed levels).
+	reWDHeading = regexp.MustCompile(`(?m)^(\+{1,6})(\*?)\s+(.+)$`)
 
 	reWDBlockquote    = regexp.MustCompile(`(?m)^(?:&gt;|>)\s?(.*)$`)
 	reWDUnorderedItem = regexp.MustCompile(`(?m)^(\s*)\*\s+(.+)$`)
@@ -1879,41 +1891,8 @@ func (p *wikidotParser) convertInternal(source string, appendFootnotes bool) str
 	// [[toc]] can link to it. Authors who want a stable, named anchor
 	// can still use [[a name=…]] explicitly; the auto-ids are
 	// reserved for the toc-link target.
-	out = reWDH6Star.ReplaceAllStringFunc(out, func(s string) string {
-		return p.emitHeadingStar(6, s)
-	})
-	out = reWDH5Star.ReplaceAllStringFunc(out, func(s string) string {
-		return p.emitHeadingStar(5, s)
-	})
-	out = reWDH4Star.ReplaceAllStringFunc(out, func(s string) string {
-		return p.emitHeadingStar(4, s)
-	})
-	out = reWDH3Star.ReplaceAllStringFunc(out, func(s string) string {
-		return p.emitHeadingStar(3, s)
-	})
-	out = reWDH2Star.ReplaceAllStringFunc(out, func(s string) string {
-		return p.emitHeadingStar(2, s)
-	})
-	out = reWDH1Star.ReplaceAllStringFunc(out, func(s string) string {
-		return p.emitHeadingStar(1, s)
-	})
-	out = reWDH6_.ReplaceAllStringFunc(out, func(s string) string {
-		return p.emitHeading(6, s, false)
-	})
-	out = reWDH5_.ReplaceAllStringFunc(out, func(s string) string {
-		return p.emitHeading(5, s, false)
-	})
-	out = reWDH4_.ReplaceAllStringFunc(out, func(s string) string {
-		return p.emitHeading(4, s, false)
-	})
-	out = reWDH3_.ReplaceAllStringFunc(out, func(s string) string {
-		return p.emitHeading(3, s, false)
-	})
-	out = reWDH2_.ReplaceAllStringFunc(out, func(s string) string {
-		return p.emitHeading(2, s, false)
-	})
-	out = reWDH1_.ReplaceAllStringFunc(out, func(s string) string {
-		return p.emitHeading(1, s, false)
+	out = reWDHeading.ReplaceAllStringFunc(out, func(s string) string {
+		return p.emitHeadingUnified(s)
 	})
 
 	// ── Phase 5: horizontal rules ────────────────────────────────────
@@ -2171,6 +2150,45 @@ func renderEmailLink(addr string) string {
 		html.EscapeString(domain),
 		html.EscapeString(display),
 	)
+}
+
+// emitHeadingUnified is the single-regex successor to the
+// level-by-level `emitHeading` / `emitHeadingStar` pair. The
+// heading regex `reWDHeading` captures the plus-prefix as a
+// single token (1-6 `+`s, optionally followed by `*` for
+// SkipTOC), so the level is just `len(prefix)` and SkipTOC is
+// `prefix[len-1] == '*'`. Walking the source in a single
+// regex pass (rather than one pass per level) preserves the
+// source-order of headings in `p.headings`, which is what the
+// TOC builder and the `[[[page#h2-N]]]` / `[#name text]`
+// cross-reference helpers both assume.
+func (p *wikidotParser) emitHeadingUnified(match string) string {
+	m := reWDHeading.FindStringSubmatch(match)
+	if m == nil {
+		return match
+	}
+	pluses := m[1]
+	star := m[2] == "*"
+	level := len(pluses)
+	if level < 1 || level > 6 {
+		// Defensive — the regex anchor guarantees the
+		// length is 1-6, but if someone refactors that
+		// and forgets we don't want to misformat.
+		return match
+	}
+	text := strings.TrimSpace(m[3])
+	p.headingSeq++
+	id := fmt.Sprintf("h%d-%d", level, p.headingSeq)
+	if p.headings == nil {
+		p.headings = make([]headingEntry, 0, 16)
+	}
+	p.headings = append(p.headings, headingEntry{
+		Level:   level,
+		ID:      id,
+		Text:    text,
+		SkipTOC: star,
+	})
+	return fmt.Sprintf(`<h%d id="%s">%s</h%d>`, level, id, text, level)
 }
 
 // emitHeading converts a heading regex match into the corresponding
@@ -2611,13 +2629,33 @@ func parseIncludeAttrs(raw string) map[string]string {
 // `float:right` class so the surrounding text wraps around
 // the contents list.
 //
-// Implementation note: we emit a flat <ul> with a `toc-h3` class
-// on h3-level entries rather than a true <ul>-in-<ul> nesting.
-// The visual indentation is provided by CSS (`.wikidot-toc
-// .toc-h3 { padding-left: 1.5em; }`) which avoids a class of
-// bugs around keeping the parent <li> open across the whole
-// sibling range of h3 entries. The semantic loss is minor — a
-// heading list with indent is a common TOC pattern.
+// Structure: a real `<ul>`-in-`<ul>` nesting reflects heading
+// hierarchy (h2 outer, h3 nested inside its parent h2, …).
+// The previous implementation was a flat `<ul>` that
+// delegated indent to a CSS `.toc-h3 { padding-left: … }`
+// rule; nested HTML is more readable in devtools, copies
+// cleanly when users grab the markup for their own pages,
+// and survives user-style-stripping (some browsers / reader
+// modes drop CSS but keep element semantics). The CSS rule
+// was kept as a fallback for the `[[toc]]` no-block case so
+// the visual layout matches the old behaviour if a stylesheet
+// override is active.
+//
+// Output shape (sample):
+//
+//	<div class="wikidot-toc" role="navigation" aria-label="Table of contents">
+//	  <div class="wikidot-toc-title">Table of Contents</div>
+//	  <ul class="wikidot-toc-list">
+//	    <li class="toc-li toc-h2">
+//	      <a href="#h2-1" class="toc-link toc-link-h2"><span class="toc-text">H2-a</span></a>
+//	      <ul>
+//	        <li class="toc-li toc-h3">
+//	          <a href="#h3-1" class="toc-link toc-link-h3"><span class="toc-text">H3-a</span></a>
+//	        </li>
+//	      </ul>
+//	    </li>
+//	  </ul>
+//	</div>
 func (p *wikidotParser) renderTOC(source string) string {
 	if !strings.Contains(source, "[[__TOC__]]") &&
 		!strings.Contains(source, "[[__FTOC_LEFT__]]") &&
@@ -2631,28 +2669,123 @@ func (p *wikidotParser) renderTOC(source string) string {
 	if len(p.headings) == 0 {
 		inner = `<p class="wikidot-toc-empty"><em>本文暂无章节</em></p>`
 	} else {
-		var sb strings.Builder
-		sb.WriteString(`<ul>`)
-		for _, h := range p.headings {
-			if h.Level < 2 || h.Level > 3 {
-				continue
-			}
-			if h.SkipTOC {
-				continue
-			}
-			cls := ""
-			if h.Level == 3 {
-				cls = ` class="toc-h3"`
-			}
-			sb.WriteString(fmt.Sprintf(`<li%s><a href="#%s">%s</a></li>`, cls, h.ID, html.EscapeString(h.Text)))
-		}
-		sb.WriteString(`</ul>`)
-		inner = sb.String()
+		inner = renderWikidotTOCList(p.headings, 2 /* minTocLevel */)
 	}
-	source = strings.ReplaceAll(source, "[[__TOC__]]", `<div class="wikidot-toc">`+inner+`</div>`)
-	source = strings.ReplaceAll(source, "[[__FTOC_LEFT__]]", `<div class="wikidot-toc wikidot-toc-float-left">`+inner+`</div>`)
-	source = strings.ReplaceAll(source, "[[__FTOC_RIGHT__]]", `<div class="wikidot-toc wikidot-toc-float-right">`+inner+`</div>`)
+	// Wrap with the title + accessibility attributes.
+	// We emit the title even when empty (in the no-heading
+	// case the body's own "本文暂无章节" message serves the
+	// role); CSS hides the title if the toc is collapsed.
+	wrapped := `<div class="wikidot-toc" role="navigation" aria-label="Table of contents">` +
+		`<div class="wikidot-toc-title">Table of Contents</div>` +
+		inner +
+		`</div>`
+	source = strings.ReplaceAll(source, "[[__TOC__]]", wrapped)
+	source = strings.ReplaceAll(source, "[[__FTOC_LEFT__]]",
+		strings.Replace(wrapped, `class="wikidot-toc"`, `class="wikidot-toc wikidot-toc-float-left"`, 1))
+	source = strings.ReplaceAll(source, "[[__FTOC_RIGHT__]]",
+		strings.Replace(wrapped, `class="wikidot-toc"`, `class="wikidot-toc wikidot-toc-float-right"`, 1))
 	return source
+}
+
+// renderWikidotTOCList emits a nested `<ul>` reflecting the
+// heading-level hierarchy from `headings`. `minTocLevel` is the
+// lowest level included — Wikidot's default is H2 because H1 is
+// treated as the article title (h1 entries still get anchor
+// IDs and live in `headings`, they're just absent from the toc).
+//
+// The walker builds a parent→children tree first, then
+// serialises it. Building the tree is more readable than
+// tracking a depth counter inline because skipping a level
+// (e.g. `++ H2, ++++ H4`) just falls through to the next
+// ancestor on the stack without breaking the previous <ul>.
+//
+// Each <li> entry carries:
+//   - `class="toc-li toc-hN"` so CSS can style levels
+//     independently (font-size, indent, marker colour);
+//   - an `<a class="toc-link toc-link-hN">` so styling that
+//     targets the link alone (visited state, hover halo)
+//     has a stable hook;
+//   - `<span class="toc-text">…</span>` so the link text
+//     can be styled / measured / replaced by JS without
+//     touching the `<a>` element itself.
+//
+// `+*` headings (SkipTOC) are silently dropped; their
+// anchors still resolve for `[#name text]` cross-references.
+func renderWikidotTOCList(headings []headingEntry, minTocLevel int) string {
+	tree := buildWikidotTOCTree(headings, minTocLevel)
+	var sb strings.Builder
+	sb.WriteString(`<ul class="wikidot-toc-list">`)
+	sb.WriteString(renderTOCChildren(tree))
+	sb.WriteString(`</ul>`)
+	return sb.String()
+}
+
+// tocNode is the in-memory TOC tree. A nil slice of children
+// means a leaf; rendering for a leaf emits a self-contained
+// `<li>` without a nested `<ul>`.
+type tocNode struct {
+	heading  headingEntry
+	children []*tocNode
+}
+
+// buildWikidotTOCTree walks `headings` in source order and
+// attaches each non-skipped heading as a child of the most
+// recent ancestor at a SHALLOWER level. The walker maintains
+// a small stack of the currently-open path: when a heading
+// arrives at level L, the stack is popped until its top has
+// level < L (so the new entry's parent is the previous entry
+// at a strictly shallower level — never a sibling), and the
+// new node becomes a child of the popped-to ancestor.
+func buildWikidotTOCTree(headings []headingEntry, minTocLevel int) *tocNode {
+	if minTocLevel < 1 {
+		minTocLevel = 1
+	}
+	root := &tocNode{} // dummy; children are real toc entries.
+	stack := []*tocNode{root}
+	for _, h := range headings {
+		if h.SkipTOC {
+			continue
+		}
+		if h.Level < minTocLevel || h.Level > 6 {
+			continue
+		}
+		// Pop until top has level < h.Level (strictly
+		// shallower). Edge case: an H4 following an H2
+		// (without an H3 between) just attaches to the
+		// H2's children — no synthetic intermediate level.
+		for len(stack) > 1 && stack[len(stack)-1].heading.Level >= h.Level {
+			stack = stack[:len(stack)-1]
+		}
+		node := &tocNode{heading: h}
+		top := stack[len(stack)-1]
+		top.children = append(top.children, node)
+		stack = append(stack, node)
+	}
+	return root
+}
+
+// renderTOCChildren serialises the children of `node` into a
+// nested `<ul>`. The caller is responsible for wrapping this
+// in the outer `<ul class="wikidot-toc-list">` (or for a
+// recursion-level inner `<ul>`).
+func renderTOCChildren(node *tocNode) string {
+	var sb strings.Builder
+	for _, child := range node.children {
+		h := child.heading
+		sb.WriteString(`<li class="toc-li toc-h`)
+		sb.WriteString(strconv.Itoa(h.Level))
+		sb.WriteString(`">`)
+		sb.WriteString(fmt.Sprintf(
+			`<a href="#%s" class="toc-link toc-link-h%d"><span class="toc-text">%s</span></a>`,
+			h.ID, h.Level, html.EscapeString(h.Text)))
+		if len(child.children) > 0 {
+			sb.WriteString(`<ul>`)
+			sb.WriteString(renderTOCChildren(child))
+			sb.WriteString(`</ul>`)
+		}
+		sb.WriteString(`</li>`)
+	}
+	return sb.String()
 }
 
 // renderFootnoteList appends a `<ol class="footnotes">` block at
@@ -4461,11 +4594,44 @@ func renderWikidotSizeBlocks(source string) string {
 					body := source[openerEnd:closeAt]
 					bodyRendered := renderWikidotSizeBlocks(body)
 					if isValid {
-						sb.WriteString(`<span style="font-size:`)
-						sb.WriteString(cssAttr)
-						sb.WriteString(`">`)
-						sb.WriteString(bodyRendered)
-						sb.WriteString(`</span>`)
+						// Size across paragraph boundaries
+						// would produce a <span> that
+						// straddles the boundary — Phase 11
+						// (paragraph wrap) then wraps each
+						// chunk in its own <p> and the
+						// outer </span> ends up in the
+						// wrong paragraph. We close the
+						// span at every `\n\n` and reopen
+						// after, so each paragraph in the
+						// rendered HTML is individually
+						// wrapped in its own <span
+						// style="font-size:X">…</span>
+						// (Phase 11 still wraps each
+						// chunk in <p>, which then sits
+						// cleanly around the per-paragraph
+						// span).
+						if strings.Contains(bodyRendered, "\n\n") {
+							chunks := strings.Split(bodyRendered, "\n\n")
+							for k, chunk := range chunks {
+								if k > 0 {
+									sb.WriteString("\n\n")
+								}
+								if chunk == "" {
+									continue
+								}
+								sb.WriteString(`<span style="font-size:`)
+								sb.WriteString(cssAttr)
+								sb.WriteString(`">`)
+								sb.WriteString(chunk)
+								sb.WriteString(`</span>`)
+							}
+						} else {
+							sb.WriteString(`<span style="font-size:`)
+							sb.WriteString(cssAttr)
+							sb.WriteString(`">`)
+							sb.WriteString(bodyRendered)
+							sb.WriteString(`</span>`)
+						}
 					} else {
 						sb.WriteString(bodyRendered)
 					}

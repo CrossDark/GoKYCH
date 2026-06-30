@@ -395,11 +395,17 @@ func TestWikidotFootnoteUnresolvedRef(t *testing.T) {
 }
 
 func TestWikidotTOCReplacesMarker(t *testing.T) {
-	// The [[toc]] marker is replaced by a <ul> of the article's
-	// h2/h3 headings. Heading ids are assigned in render
-	// order — the first h3 in the source is "h3-1", then the
-	// first h2 is "h2-2", the second h2 is "h2-3", etc. (the
-	// h-prefixed sequence counter is global, not per-level).
+	// The [[toc]] marker is replaced by a nested <ul> reflecting
+	// the article's heading hierarchy in source order. Heading
+	// ids are assigned in render order — `++ Section A` first,
+	// then `+++ Sub A1` (h3), then `++ Section B`. The sequence
+	// counter is global, not per-level.
+	//
+	// Old behaviour processed headings level-by-level (h6 → h1),
+	// which reversed TOC order whenever a single article mixed
+	// levels; the unified single-pass `emitHeadingUnified` keeps
+	// headings in source order so the anchor ids match the
+	// visually-correct reading order.
 	in := `++ Section A
 text A
 +++ Sub A1
@@ -412,14 +418,19 @@ text A
 	if !strings.Contains(out, `class="wikidot-toc"`) {
 		t.Errorf("expected wikidot-toc div, got %q", out)
 	}
-	if !strings.Contains(out, `href="#h2-2"`) {
-		t.Errorf("expected link to h2-2 (Section A), got %q", out)
+	if !strings.Contains(out, `href="#h2-1"`) {
+		t.Errorf("expected link to h2-1 (Section A), got %q", out)
 	}
-	if !strings.Contains(out, `href="#h3-1"`) {
-		t.Errorf("expected link to h3-1 (Sub A1), got %q", out)
+	if !strings.Contains(out, `href="#h3-2"`) {
+		t.Errorf("expected link to h3-2 (Sub A1), got %q", out)
 	}
 	if !strings.Contains(out, `href="#h2-3"`) {
 		t.Errorf("expected link to h2-3 (Section B), got %q", out)
+	}
+	// Source order in toc: Section A before Sub A1 (the H3
+	// entry is nested inside the H2 entry, not listed before).
+	if !strings.Contains(out, `<a href="#h2-1" class="toc-link toc-link-h2"><span class="toc-text">Section A</span></a>`) {
+		t.Errorf("expected Section A toc-link in source order, got %q", out)
 	}
 }
 
@@ -770,27 +781,37 @@ func TestWikidotCenterLeftLinePrefix(t *testing.T) {
 }
 
 func TestWikidotHeadingStarSkipsTOC(t *testing.T) {
-	// `+* Heading` emits a heading with a stable anchor
-	// id (so cross-references still work) but excludes
-	// the entry from the rendered TOC list. We use
-	// `++` (h2) throughout so the heading actually
-	// makes it into the toc-builder's level filter.
+	// `++* 隐藏标题` (`+*` SkipTOC variant) emits a heading with
+	// a stable anchor id (so cross-references still work) but
+	// excludes the entry from the rendered TOC list. We use
+	// `++` (h2) throughout so the heading makes it past the
+	// toc-builder's level filter (h1 is article title by
+	// convention).
+	//
+	// Source-order id assignment with the unified Phase 4:
+	//   `++ 正常标题`     → h2-1
+	//   `++* 隐藏标题`    → h2-2  (rendered with id, dropped from toc)
+	//   `++ 第二个标题`   → h2-3
 	in := `++ 正常标题
 ++* 隐藏标题
 ++ 第二个标题
 [[toc]]`
 	out := RenderWikidot(in)
 	// The skipped heading still gets an id and renders.
-	if !strings.Contains(out, `id="h2-1"`) {
+	if !strings.Contains(out, `id="h2-2"`) {
 		t.Errorf("expected skipped heading to still have an id, got %q", out)
 	}
 	if !strings.Contains(out, "隐藏标题") {
 		t.Errorf("expected skipped heading text rendered, got %q", out)
 	}
 	// The TOC should NOT include the skipped heading.
-	tocMatch := regexp.MustCompile(`<div class="wikidot-toc".*?</div>`).FindString(out)
+	// Use the new <ul class="wikidot-toc-list">…</ul> block
+	// (the wrapper div now contains the title + a nested div,
+	// so a regex matching `wikidot-toc.*?</div>` would terminate
+	// at the inner </div> instead of the outer one).
+	tocMatch := regexp.MustCompile(`<ul class="wikidot-toc-list".*?</ul>`).FindString(out)
 	if tocMatch == "" {
-		t.Fatalf("expected wikidot-toc div, got %q", out)
+		t.Fatalf("expected wikidot-toc-list ul, got %q", out)
 	}
 	if strings.Contains(tocMatch, "隐藏标题") {
 		t.Errorf("expected skipped heading NOT in toc, got %q", tocMatch)
@@ -1046,9 +1067,9 @@ func TestWikidotDefinitionList(t *testing.T) {
 // `[[f>toc]]` floated forms render an inline
 // `<div class="wikidot-toc-float-left/right">` wrapping
 // the same TOC HTML the plain `[[toc]]` emits. The TOC
-// itself is a `<ul>` of `<li><a href="#…">` items; the
-// `wikidot-toc` class lives on the wrapper `<div>`, not
-// the inner `<ul>`.
+// itself is a `<ul class="wikidot-toc-list">` of
+// `<li><a href="#…">` items; the `wikidot-toc` class
+// lives on the wrapper `<div>`, not the inner `<ul>`.
 func TestWikidotFloatTOC(t *testing.T) {
 	in := `++ 一级标题
 [[f<toc]]
@@ -1062,11 +1083,14 @@ func TestWikidotFloatTOC(t *testing.T) {
 	if !strings.Contains(outL, `wikidot-toc-float-right`) {
 		t.Errorf("expected float-right class, got %q", outL)
 	}
-	if !strings.Contains(outL, `<ul>`) {
-		t.Errorf("expected <ul> inside float wrapper, got %q", outL)
+	if !strings.Contains(outL, `<ul class="wikidot-toc-list">`) {
+		t.Errorf("expected <ul class=\"wikidot-toc-list\"> inside float wrapper, got %q", outL)
 	}
-	if !strings.Contains(outL, `<a href="#h2-1">`) {
-		t.Errorf("expected heading anchor link, got %q", outL)
+	if !strings.Contains(outL, `href="#h2-1"`) {
+		t.Errorf("expected first heading anchor link (#h2-1), got %q", outL)
+	}
+	if !strings.Contains(outL, `href="#h2-2"`) {
+		t.Errorf("expected second heading anchor link (#h2-2), got %q", outL)
 	}
 }
 
@@ -3386,5 +3410,270 @@ func TestWikidotInlineColorHexShape(t *testing.T) {
 				t.Errorf("\n got: %q\nwant: %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestWikidotHeadingSourceOrder guards the unified Phase-4
+// heading regex (`reWDHeading`) against the older
+// level-by-level pipeline that processed H6 → … → H1 — which
+// reversed the `p.headings` order whenever a single article
+// mixed levels, e.g. `++ Section / +++ Sub / ++ Next` would
+// have been recorded as `Sub / Section / Next` and the [[toc]]
+// would have ended up listing `Sub` before `Section` despite
+// source order being Section-then-Sub.
+//
+// Source-order id assignment also matches the visible reading
+// order, which is what cross-references (`[[[page#h2-3]]]`,
+// `[#name text]`) implicitly rely on.
+func TestWikidotHeadingSourceOrder(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want []string // expected h{id-N} strings in render order
+	}{
+		{
+			"mixed H2/H3 source order preserved",
+			"++ H2-a\n+++ H3-a\n++ H2-b\n+++ H3-b",
+			[]string{"h2-1", "h3-2", "h2-3", "h3-4"},
+		},
+		{
+			"H1 then H2",
+			"+ H1\n++ H2",
+			[]string{"h1-1", "h2-2"},
+		},
+		{
+			"all same level",
+			"++ A\n++ B\n++ C",
+			[]string{"h2-1", "h2-2", "h2-3"},
+		},
+		{
+			"deep heading levels",
+			"+ H1\n++++ H4\n++ H2",
+			[]string{"h1-1", "h4-2", "h2-3"},
+		},
+		{
+			"+* SkipTOC still gets an id",
+			"++* hidden\n++ visible",
+			[]string{"h2-1", "h2-2"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out := RenderWikidot(tc.in)
+			// Re-derive the heading-ids in render order.
+			re := regexp.MustCompile(`id="(h\d+-\d+)"`)
+			got := re.FindAllStringSubmatch(out, -1)
+			gotIDs := make([]string, 0, len(got))
+			for _, m := range got {
+				gotIDs = append(gotIDs, m[1])
+			}
+			if len(gotIDs) != len(tc.want) {
+				t.Fatalf("expected %d headings (%v), got %d (%v)\nOUT: %q",
+					len(tc.want), tc.want, len(gotIDs), gotIDs, out)
+			}
+			for i := range gotIDs {
+				if gotIDs[i] != tc.want[i] {
+					t.Errorf("heading[%d]: got %q, want %q\nOUT: %q",
+						i, gotIDs[i], tc.want[i], out)
+				}
+			}
+		})
+	}
+}
+
+// TestWikidotTOCSourceOrder pins the toc emission order to
+// source order (and to the same per-level id sequence as the
+// heading IDs above). Before the Phase-4 unification the toc
+// showed H3 entries before H2 entries whenever a single
+// article mixed levels — the unified regex fixes both the
+// heading id assignment and the toc.
+func TestWikidotTOCSourceOrder(t *testing.T) {
+	out := RenderWikidot("++ H2-a\n+++ H3-a\n++ H2-b\n+++ H3-b\n[[toc]]")
+
+	// H2-a appears before H3-a in the toc-anchor sequence
+	// (the source order).
+	h2aIdx := strings.Index(out, `href="#h2-1"`)
+	h3aIdx := strings.Index(out, `href="#h3-2"`)
+	h2bIdx := strings.Index(out, `href="#h2-3"`)
+	h3bIdx := strings.Index(out, `href="#h3-4"`)
+
+	if h2aIdx < 0 || h3aIdx < 0 || h2bIdx < 0 || h3bIdx < 0 {
+		t.Fatalf("missing anchors in toc: h2a=%d h3a=%d h2b=%d h3b=%d\nOUT: %q",
+			h2aIdx, h3aIdx, h2bIdx, h3bIdx, out)
+	}
+	if !(h2aIdx < h3aIdx && h3aIdx < h2bIdx && h2bIdx < h3bIdx) {
+		t.Errorf("toc anchor order wrong: want h2a<h3a<h2b<h3b, got positions h2a=%d h3a=%d h2b=%d h3b=%d\nOUT: %q",
+			h2aIdx, h3aIdx, h2bIdx, h3bIdx, out)
+	}
+}
+
+// TestWikidotTOCNestedStructure pins the new truly-nested
+// `<ul>`-in-`<ul>` toc emission. The old implementation was
+// a flat `<ul>` that delegated indent to a CSS rule
+// `.toc-h3 { padding-left: … }`, which broke copy-as-markup
+// flows and reader-mode stripping. The nested structure
+// carries the hierarchy in element semantics, so the toc
+// stays correct without CSS (and matches user-style-stripping
+// expectations).
+func TestWikidotTOCNestedStructure(t *testing.T) {
+	out := RenderWikidot("++ H2-a\n+++ H3-a\n++ H2-b\n[[toc]]")
+
+	// (a) wrapper / title / a11y attrs and static shape.
+	wantStatic := []string{
+		`class="wikidot-toc"`,
+		`role="navigation"`,
+		`aria-label="Table of contents"`,
+		`class="wikidot-toc-title"`,
+		`>Table of Contents<`,
+		`class="wikidot-toc-list"`,
+	}
+	for _, w := range wantStatic {
+		if !strings.Contains(out, w) {
+			t.Errorf("missing %q in toc\nOUT: %q", w, out)
+		}
+	}
+
+	// (b) per-entry classes for stability hooks.
+	wantClasses := []string{
+		`class="toc-li toc-h2"`,
+		`class="toc-li toc-h3"`,
+		`class="toc-link toc-link-h2"`,
+		`class="toc-link toc-link-h3"`,
+		`class="toc-text"`,
+	}
+	for _, w := range wantClasses {
+		if !strings.Contains(out, w) {
+			t.Errorf("missing %q in toc\nOUT: %q", w, out)
+		}
+	}
+
+	// (c) nesting check: a H3 anchor (`href="#h3-2"`) must
+	// appear INSIDE the H2-a <li>, i.e. between the H2-a anchor
+	// (`href="#h2-1"`) and the H2-b anchor (`href="#h2-3"`).
+	// We use the anchor id which is unique; the surrounding
+	// `<li>` tags are repeated so substring matching isn't
+	// a reliable order signal alone.
+	h2aIdx := strings.Index(out, `href="#h2-1"`)
+	h3aIdx := strings.Index(out, `href="#h3-2"`)
+	h2bIdx := strings.Index(out, `href="#h2-3"`)
+	if h2aIdx < 0 || h3aIdx < 0 || h2bIdx < 0 {
+		t.Fatalf("missing anchor references in toc\nOUT: %q", out)
+	}
+	if !(h2aIdx < h3aIdx && h3aIdx < h2bIdx) {
+		t.Errorf("H3 anchor (#h3-2) must come after H2-a (#h2-1) and before H2-b (#h2-3) in toc source order, got h2a=%d h3a=%d h2b=%d",
+			h2aIdx, h3aIdx, h2bIdx)
+	}
+
+	// (d) deeper structural check: between H2-a's anchor and
+	// the closing of its <li>, a nested <ul> opens. We look
+	// for `<ul>` (the plain opening tag without class, which
+	// only the inner nested list uses) appearing between the
+	// H2-a anchor and the H2-b <li>.
+	between := out[h2aIdx:h2bIdx]
+	if !strings.Contains(between, `<ul>`) {
+		t.Errorf("expected a nested <ul> between H2-a and H2-b\nbetween:\n%s\n\nOUT: %q", between, out)
+	}
+}
+
+// TestWikidotTOCEmptyNoHeadings pins the no-headings case:
+// when an article has `[[toc]]` but no H2/H3 headings yet,
+// the toc renders a polite Chinese-language placeholder
+// ("本文暂无章节") instead of an empty <ul>.
+func TestWikidotTOCEmptyNoHeadings(t *testing.T) {
+	out := RenderWikidot("正文段落。\n\n[[toc]]\n更多正文。")
+	if !strings.Contains(out, `class="wikidot-toc"`) {
+		t.Errorf("expected wrapper, got %q", out)
+	}
+	if !strings.Contains(out, `class="wikidot-toc-empty"`) {
+		t.Errorf("expected empty-state class, got %q", out)
+	}
+	if !strings.Contains(out, "本文暂无章节") {
+		t.Errorf("expected Chinese empty message, got %q", out)
+	}
+}
+
+// TestWikidotSizeAcrossParagraphs guards the multi-paragraph
+// size block fix. The previous implementation wrapped the body
+// in a single `<span style="font-size:X">…</span>`, which Phase
+// 11 (paragraph wrap) then split across multiple `<p>` tags,
+// leaving a `<p><span ...>para1</p>\n<p>para2</span></p>`
+// shape that didn't apply the style to para2 (the closing
+// `</span>` was stranded inside the second paragraph and
+// served no purpose after browser DOM auto-fixup).
+//
+// The fix splits the body on `\n\n` BEFORE wrapping, so each
+// paragraph gets its own complete `<span style="font-size:X">…</span>`
+// that Phase 11 then wraps in `<p>`. Each paragraph inherits
+// the size style.
+func TestWikidotSizeAcrossParagraphs(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			"single paragraph (unchanged from single-block case)",
+			"[[size larger]]para1[[/size]]",
+			`<p><span style="font-size:2.5rem">para1</span></p>`,
+		},
+		{
+			"two paragraphs each get their own span",
+			"[[size large]]para1\n\npara2[[/size]]",
+			`<p><span style="font-size:1.25rem">para1</span></p>
+
+<p><span style="font-size:1.25rem">para2</span></p>`,
+		},
+		{
+			"three paragraphs",
+			"[[size 80%]]one\n\ntwo\n\nthree[[/size]]",
+			`<p><span style="font-size:80%">one</span></p>
+
+<p><span style="font-size:80%">two</span></p>
+
+<p><span style="font-size:80%">three</span></p>`,
+		},
+		{
+			"unit-form also spans paragraphs",
+			"[[size 0.8em]]A\n\nB[[/size]]",
+			`<p><span style="font-size:0.8em">A</span></p>
+
+<p><span style="font-size:0.8em">B</span></p>`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := RenderWikidot(tc.in)
+			if got != tc.want {
+				t.Errorf("\n got: %q\nwant: %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestWikidotSizeNestedAcrossPara guards that nested size
+// blocks across the outer paragraph break still emit the
+// outer `<span style="font-size:X">…</span>` wrapper around
+// each paragraph. The inner [[size smaller]] is processed
+// recursively inside renderWikidotSizeBlocks and stays a
+// single-element inline span (since it sits wholly inside
+// one paragraph); the outer wrapper is what's split across
+// the `\n\n` boundaries.
+func TestWikidotSizeNestedAcrossPara(t *testing.T) {
+	in := "[[size larger]]outer1\n\n[[size smaller]]inner[[/size]]\n\nouter2[[/size]]"
+	out := RenderWikidot(in)
+	// Each rendered paragraph (after Phase 11 wraps in <p>)
+	// should be inside an outer <span style=font-size:2.5rem>.
+	// The middle paragraph contains the inner 0.75rem span
+	// nested inside that 2.5rem span — that's correct CSS
+	// inheritance (font-size multiplies), not a bug.
+	wantSnippets := []string{
+		`<p><span style="font-size:2.5rem">outer1</span></p>`,
+		`<span style="font-size:0.75rem">inner</span>`,
+		`<p><span style="font-size:2.5rem">outer2</span></p>`,
+	}
+	for _, w := range wantSnippets {
+		if !strings.Contains(out, w) {
+			t.Errorf("missing %q in output\nOUT: %q", w, out)
+		}
 	}
 }
