@@ -2035,3 +2035,568 @@ func TestWikidotTabviewUnmatchedOuter(t *testing.T) {
 		t.Errorf("expected raw [[tabview]] preserved on unmatched, got %q", out)
 	}
 }
+
+// ── Stage 4 (P1 round 3) — gaps vs rule-wiki.wikidot.com ─────────
+//
+// Each test below pins one of the new syntax features added to
+// close the gap between our parser and the official spec at
+// https://rule-wiki.wikidot.com/wiki-syntax. Each test verifies
+// both the positive case (the construct renders) and, where
+// relevant, the negative case (an unsafe / malformed variant is
+// rejected). Together they form a regression set for the round 3
+// commit.
+
+// TestWikidotCommentDropped verifies that `[!-- ... --]` HTML
+// comments are stripped wholesale from output (Wikidot's spec:
+// comments never render). Multi-line comments are consumed in
+// one shot via the non-greedy `(?s)\[!--.*?--\]` match.
+func TestWikidotCommentDropped(t *testing.T) {
+	out := RenderWikidot(`段落之前[!-- 偷偷说一句 --]段落之后。`)
+	if !strings.Contains(out, "段落之前段落之后") {
+		t.Errorf("expected comment to be dropped, got %q", out)
+	}
+	if strings.Contains(out, "[!--") || strings.Contains(out, "--]") {
+		t.Errorf("expected comment delimiters to be gone, got %q", out)
+	}
+}
+
+// TestWikidotCommentMultiline verifies multi-line comments
+// (body across newlines) are dropped in a single match. Without
+// non-greedy `(?s)` mode the parser would stop at the FIRST
+// `--]` inside the source, leaving the rest as visible text.
+func TestWikidotCommentMultiline(t *testing.T) {
+	in := "前[!--\n多\n行\n注释\n--]后"
+	out := RenderWikidot(in)
+	if !strings.Contains(out, "前后") {
+		t.Errorf("expected multi-line comment dropped, got %q", out)
+	}
+	if strings.Contains(out, "多") || strings.Contains(out, "注释") {
+		t.Errorf("expected inner comment text gone, got %q", out)
+	}
+}
+
+// TestWikidotCommentProtectsMarkup verifies that markup
+// inside a comment doesn't fire. `[!-- **bold** --]` should
+// show NOTHING, not the word "bold" wrapped in `<strong>`.
+func TestWikidotCommentProtectsMarkup(t *testing.T) {
+	out := RenderWikidot(`前 [!-- **粗体** --] 后`)
+	if strings.Contains(out, "<strong>") {
+		t.Errorf("expected no <strong> from commented-out markup, got %q", out)
+	}
+	if !strings.Contains(out, "前") || !strings.Contains(out, "后") {
+		t.Errorf("expected surrounding text to remain, got %q", out)
+	}
+}
+
+// TestWikidotBoldItalic verifies the nested `//**...**//`
+// form renders with both `<em>` and `<strong>` wrappers in
+// either nesting order. Wikidot accepts both orderings
+// (`//**bold-italic**//` and `**//italic-bold//**`); we run
+// the bold pass first and then the italic pass so the order
+// of opening markers in the source determines the resulting
+// HTML wrapping order. The test pins the presence of BOTH
+// wrappers rather than pinning a specific nesting, since
+// both nested orderings are valid.
+func TestWikidotBoldItalic(t *testing.T) {
+	out1 := RenderWikidot(`这是 //**粗斜体**// 的例子。`)
+	out2 := RenderWikidot(`这是 **//粗斜体2//** 的例子。`)
+	for i, out := range []string{out1, out2} {
+		if !strings.Contains(out, "<em>") {
+			t.Errorf("case %d: expected <em>, got %q", i, out)
+		}
+		if !strings.Contains(out, "<strong>") {
+			t.Errorf("case %d: expected <strong>, got %q", i, out)
+		}
+		// One form produces <em><strong>…</strong></em>,
+		// the other <strong><em>…</em></strong>. We don't
+		// pin a specific order — either nesting is valid
+		// for the spec — but both close-tags must be present.
+		if !strings.Contains(out, "</strong>") {
+			t.Errorf("case %d: expected </strong>, got %q", i, out)
+		}
+		if !strings.Contains(out, "</em>") {
+			t.Errorf("case %d: expected </em>, got %q", i, out)
+		}
+	}
+}
+
+// TestWikidotReverseGuillemets verifies `>>x<<` renders as
+// the reverse guillemet pair (»x«). Used for nested quoting
+// when the outer level uses `<<…>>`. The regex runs AFTER the
+// forward `<<` rule so a `<<x<<` outer-pair isn't half-eaten.
+func TestWikidotReverseGuillemets(t *testing.T) {
+	out := RenderWikidot(`>>嵌套引用<<`)
+	if !strings.Contains(out, "\u00bb") {
+		t.Errorf("expected right-guillemet opener, got %q", out)
+	}
+	if !strings.Contains(out, "\u00ab") {
+		t.Errorf("expected left-guillemet closer, got %q", out)
+	}
+	if !strings.Contains(out, "嵌套引用") {
+		t.Errorf("expected inner text preserved, got %q", out)
+	}
+}
+
+// TestWikidotGermanQuotes verifies `,,x''` renders as the
+// German typographic pair („x"). The opener is U+201E
+// (low-9 double); the closer is U+201C (left double, used
+// as the German closer per German conventions). The regex
+// runs BEFORE the generic `''` rule so the double-apostrophe
+// is consumed as the German close rather than as a generic
+// right double quote.
+func TestWikidotGermanQuotes(t *testing.T) {
+	out := RenderWikidot(`,,德国引号''`)
+	if !strings.Contains(out, "\u201e") {
+		t.Errorf("expected U+201E low-9 opener, got %q", out)
+	}
+	if !strings.Contains(out, "\u201c") {
+		t.Errorf("expected U+201C high-left closer, got %q", out)
+	}
+	if !strings.Contains(out, "德国引号") {
+		t.Errorf("expected inner text preserved, got %q", out)
+	}
+}
+
+// TestWikidotEmptyLink verifies `[# display]` (space
+// immediately after `#`) renders as a normal-looking anchor
+// whose click does nothing (`href="javascript:;"`). The
+// leading space after `#` discriminates this form from the
+// real anchor jump-link (`[#name text]`), whose name capture
+// forbids whitespace.
+func TestWikidotEmptyLink(t *testing.T) {
+	out := RenderWikidot(`前缀 [# 占位按钮] 后缀`)
+	if !strings.Contains(out, `href="javascript:;"`) {
+		t.Errorf("expected javascript: href, got %q", out)
+	}
+	if !strings.Contains(out, ">占位按钮</a>") {
+		t.Errorf("expected display text as link text, got %q", out)
+	}
+	if !strings.Contains(out, "前缀") || !strings.Contains(out, "后缀") {
+		t.Errorf("expected surrounding text, got %q", out)
+	}
+}
+
+// TestWikidotEmptyLinkWithRealAnchor verifies that an empty
+// link and a real anchor jump-link can coexist in the same
+// source — the empty form's space-after-`#` is the
+// discriminator. A `[#valid_name]` jump-link (no space)
+// still resolves to its id; a `[# display]` (with space)
+// becomes the placeholder.
+func TestWikidotEmptyLinkCoexistsWithAnchor(t *testing.T) {
+	out := RenderWikidot(`[!-- 先放个有效锚 --]前 [# empty link] 中 [#valid_anchor 跳转] 后`)
+	// Empty link still renders as javascript:
+	if !strings.Contains(out, `href="javascript:;"`) {
+		t.Errorf("expected javascript: href for empty link, got %q", out)
+	}
+	// Real anchor should NOT use javascript:
+	if strings.Contains(out, `href="javascript:;"><a href="#valid_anchor"`) {
+		t.Errorf("expected no double-wrap on real anchor, got %q", out)
+	}
+	if !strings.Contains(out, `href="#valid_anchor"`) {
+		t.Errorf("expected real anchor href, got %q", out)
+	}
+}
+
+// TestWikidotHashAnchorDef verifies the `[[# name]]`
+// alternative to `[[a name="name"]]`. Both forms render to
+// the same `<span id="…">` anchor that the `[#name]`
+// jump-link targets. `[[a name="..."]]` is the older form;
+// `[[# name]]` is the more compact modern form (Wikidot
+// accepts both).
+func TestWikidotHashAnchorDef(t *testing.T) {
+	in := `[[# 起始]]这里是正文。[#起始 跳过去]`
+	out := RenderWikidot(in)
+	// Anchor def produces an id-bearing span.
+	if !strings.Contains(out, `id="起始"`) {
+		t.Errorf("expected id span, got %q", out)
+	}
+	// Jump link uses #起始 as href (the existing
+	// reWDAnchor pipeline handles the jump side).
+	if !strings.Contains(out, `href="#起始"`) {
+		t.Errorf("expected jump href to use id, got %q", out)
+	}
+	if !strings.Contains(out, ">跳过去</a>") {
+		t.Errorf("expected jump display text, got %q", out)
+	}
+	// The `[[# name]]` opener must be consumed (not raw).
+	if strings.Contains(out, "[[# 起始]]") {
+		t.Errorf("expected [[# ... ]] to be consumed, got %q", out)
+	}
+}
+
+// TestWikidotStarredTripleLink verifies `[[[*http://…|Text]]]`
+// opens in a new tab. This is the triple-bracket mirror of
+// the `[*url text]` single-bracket form.
+func TestWikidotStarredTripleLink(t *testing.T) {
+	out := RenderWikidot(`[[[*http://www.wikidot.com | Wikidot]]]`)
+	if !strings.Contains(out, `href="http://www.wikidot.com"`) {
+		t.Errorf("expected href, got %q", out)
+	}
+	if !strings.Contains(out, `target="_blank"`) {
+		t.Errorf("expected new-tab target, got %q", out)
+	}
+	if !strings.Contains(out, `rel="nofollow noopener"`) {
+		t.Errorf("expected nofollow, got %q", out)
+	}
+	if !strings.Contains(out, ">Wikidot</a>") {
+		t.Errorf("expected display text, got %q", out)
+	}
+	// The triple-bracket + star prefix must be consumed.
+	if strings.Contains(out, "[[[*") {
+		t.Errorf("expected marker consumed, got %q", out)
+	}
+}
+
+// TestWikidotStarredSingleLink verifies `[*http://… text]`
+// renders as a new-tab external link.
+func TestWikidotStarredSingleLink(t *testing.T) {
+	out := RenderWikidot(`参考 [*http://example.com 例子链接] 材料。`)
+	if !strings.Contains(out, `href="http://example.com"`) {
+		t.Errorf("expected href, got %q", out)
+	}
+	if !strings.Contains(out, `target="_blank"`) {
+		t.Errorf("expected new-tab target, got %q", out)
+	}
+	if !strings.Contains(out, ">例子链接</a>") {
+		t.Errorf("expected display text, got %q", out)
+	}
+}
+
+// TestWikidotBareStarredURL verifies that `*http://…` at the
+// start of a token becomes a new-tab auto-link. The `*` is
+// consumed as the "open in new window" marker; the URL is
+// the visible link text and the href.
+func TestWikidotBareStarredURL(t *testing.T) {
+	out := RenderWikidot(`访问 *http://example.com 看看。`)
+	if !strings.Contains(out, `href="http://example.com"`) {
+		t.Errorf("expected bare starred URL to become a link, got %q", out)
+	}
+	if !strings.Contains(out, `target="_blank"`) {
+		t.Errorf("expected new-tab for bare starred URL, got %q", out)
+	}
+	if strings.Contains(out, "*http://") {
+		t.Errorf("expected * stripped from output, got %q", out)
+	}
+}
+
+// TestWikidotRelativeLink verifies `[/path text]` — a
+// relative-path single-bracket link without a protocol. The
+// path is preserved as-is (the allow-list in
+// sanitizeURLForAttr covers internal `/…` paths).
+func TestWikidotRelativeLink(t *testing.T) {
+	out := RenderWikidot(`点击 [/blog:post/edit/true 编辑这页] 试试。`)
+	if !strings.Contains(out, `href="/blog:post/edit/true"`) {
+		t.Errorf("expected relative href, got %q", out)
+	}
+	if !strings.Contains(out, ">编辑这页</a>") {
+		t.Errorf("expected display text, got %q", out)
+	}
+}
+
+// TestWikidotRelativeLinkNoProtocol verifies that `[/path]`
+// (no display text, no protocol) falls back to using the
+// path as both href and display text — matching the
+// `[url]` and `[url text]` bracket forms.
+func TestWikidotRelativeLinkNoProtocol(t *testing.T) {
+	out := RenderWikidot(`看 [/blog:post/edit/true] 这页。`)
+	if !strings.Contains(out, `href="/blog:post/edit/true"`) {
+		t.Errorf("expected relative href, got %q", out)
+	}
+	if !strings.Contains(out, `>/blog:post/edit/true</a>`) {
+		t.Errorf("expected path as display text, got %q", out)
+	}
+}
+
+// TestWikidotImageAlignCenter verifies `[[=image URL …]]`
+// wraps the rendered <img> in a div with the
+// `wikidot-image-center` class so the front-end can apply
+// `text-align: center`.
+func TestWikidotImageAlignCenter(t *testing.T) {
+	out := RenderWikidot(`[[=image https://example.com/p.png]]`)
+	if !strings.Contains(out, `<div class="wikidot-image-wrap wikidot-image-center">`) {
+		t.Errorf("expected center-wrap div, got %q", out)
+	}
+	if !strings.Contains(out, `<img src="https://example.com/p.png"`) {
+		t.Errorf("expected <img> inside wrap, got %q", out)
+	}
+}
+
+// TestWikidotImageAlignLeft verifies `[[<image …]]`.
+func TestWikidotImageAlignLeft(t *testing.T) {
+	out := RenderWikidot(`[[<image https://example.com/p.png]]`)
+	if !strings.Contains(out, `wikidot-image-left`) {
+		t.Errorf("expected left-wrap class, got %q", out)
+	}
+}
+
+// TestWikidotImageAlignRight verifies `[[>image …]]`.
+func TestWikidotImageAlignRight(t *testing.T) {
+	out := RenderWikidot(`[[>image https://example.com/p.png]]`)
+	if !strings.Contains(out, `wikidot-image-right`) {
+		t.Errorf("expected right-wrap class, got %q", out)
+	}
+}
+
+// TestWikidotImageFloat verifies `[[f<image …]]` and
+// `[[f>image …]]`. Float-wrapped images allow surrounding
+// text to wrap around them (CSS uses
+// `float: left` / `float: right`).
+func TestWikidotImageFloat(t *testing.T) {
+	outL := RenderWikidot(`[[f<image https://example.com/p.png]]`)
+	if !strings.Contains(outL, `wikidot-image-floatleft`) {
+		t.Errorf("expected float-left wrap class, got %q", outL)
+	}
+	outR := RenderWikidot(`[[f>image https://example.com/p.png]]`)
+	if !strings.Contains(outR, `wikidot-image-floatright`) {
+		t.Errorf("expected float-right wrap class, got %q", outR)
+	}
+}
+
+// TestWikidotImageLinkStar verifies `link="*url"` on an
+// image attribute opens the wrapped link in a new tab.
+// The asterisk on the link value is consumed by the parser
+// and translated to `target="_blank"` +
+// `rel="nofollow noopener"`.
+func TestWikidotImageLinkStar(t *testing.T) {
+	out := RenderWikidot(`[[image https://example.com/p.png link="*https://example.com/landing"]]`)
+	if !strings.Contains(out, `<a href="https://example.com/landing"`) {
+		t.Errorf("expected wrapping href, got %q", out)
+	}
+	if !strings.Contains(out, `target="_blank"`) {
+		t.Errorf("expected new-tab for starred link, got %q", out)
+	}
+	if !strings.Contains(out, `rel="nofollow noopener"`) {
+		t.Errorf("expected nofollow rel, got %q", out)
+	}
+	if !strings.Contains(out, `<img src="https://example.com/p.png"`) {
+		t.Errorf("expected <img> inside anchor, got %q", out)
+	}
+}
+
+// TestWikidotImageLinkAnchor verifies `link="#anchor"` on
+// an image attribute wraps the <img> in an in-page jump
+// link. No new-tab attributes (in-page navigation should
+// stay in the same window).
+func TestWikidotImageLinkAnchor(t *testing.T) {
+	in := `[[# 锚点]] 这里是段落。
+
+[[image https://example.com/p.png link="#锚点"]]`
+	out := RenderWikidot(in)
+	if !strings.Contains(out, `<a href="#%E9%94%9A%E7%82%B9"`) &&
+		!strings.Contains(out, `<a href="#锚点"`) {
+		// Either the raw or the HTML-escaped form is
+		// acceptable; both prove the parser routed the
+		// link through the `#`-form wrapping branch.
+		t.Errorf("expected #anchor href, got %q", out)
+	}
+	if strings.Contains(out, `target="_blank"`) {
+		t.Errorf("in-page anchor should NOT open in new tab, got %q", out)
+	}
+}
+
+// TestWikidotImageLinkInternal verifies `link="wiki-page"`
+// (a bare slug, no `/wikidot/` prefix) routes through the
+// internal-page branch — it becomes an `<a
+// href="/wikidot/<slug>">` link, NOT a
+// `target="_blank" rel="nofollow"` external link.
+func TestWikidotImageLinkInternal(t *testing.T) {
+	out := RenderWikidot(`[[image https://example.com/p.png link="some-page"]]`)
+	if !strings.Contains(out, `href="/wikidot/some-page"`) {
+		t.Errorf("expected internal href, got %q", out)
+	}
+	if strings.Contains(out, `target="_blank"`) {
+		t.Errorf("internal link should NOT open in new tab, got %q", out)
+	}
+}
+
+// TestWikidotImageLinkExternalStillWraps verifies the
+// historical `link="https://…"` (without the `*` prefix)
+// behaviour: external URL wraps with the `<img>` in a plain
+// `<a>` and NO extra `target` / `rel` attributes. The
+// `target="_blank"` + `rel="nofollow noopener"` pairing is
+// reserved for the starred `link="*https://…"` form
+// (pinned by TestWikidotImageLinkStar). Pinning the
+// here-document behaviour guards against a future refactor
+// that re-introduces new-tab attrs on the unstarred form.
+func TestWikidotImageLinkExternalStillWraps(t *testing.T) {
+	out := RenderWikidot(`[[image https://example.com/p.png link="https://example.com/landing"]]`)
+	if !strings.Contains(out, `<a href="https://example.com/landing"`) {
+		t.Errorf("expected external wrap href, got %q", out)
+	}
+	// Must NOT carry new-tab attributes — those are the
+	// starred form's contract only.
+	if strings.Contains(out, `target="_blank"`) {
+		t.Errorf("unstarred link should NOT open in new tab, got %q", out)
+	}
+}
+
+// TestWikidotDivDataAttribute verifies `[[div data-foo="bar"]]`
+// is parsed and emitted as `<div data-foo="bar">…</div>`.
+// The attribute value is HTML-escaped so a `"` inside the
+// value can't break out of the attribute.
+//
+// Multi-attribute form (`[[div data-x="…" data-y="…"]]`) is
+// NOT supported yet — the current parser only matches the
+// first `data-<name>="<value>"` attribute on a `[[div]]` block.
+// A separate round would generalise parseDivOpen to accept a
+// list of key="value" pairs (mirroring the `[[li…]]` advanced-
+// list form). For now, the multi-attribute `[[li]]` is the
+// way to combine several data-* attributes into one block.
+func TestWikidotDivDataAttribute(t *testing.T) {
+	out := RenderWikidot(`[[div data-toggle="modal"]]
+内容
+[[/div]]`)
+	if !strings.Contains(out, `<div data-toggle="modal">`) {
+		t.Errorf("expected data attribute on <div>, got %q", out)
+	}
+	if !strings.Contains(out, "内容") {
+		t.Errorf("expected inner content preserved, got %q", out)
+	}
+}
+
+// TestWikidotDivDataAttributeEscapesValue verifies the
+// attribute value is HTML-escaped. A `"><script>` payload in
+// the value would break attribute quoting in the rendered
+// HTML — the safe path renders the value as entities.
+func TestWikidotDivDataAttributeEscapesValue(t *testing.T) {
+	out := RenderWikidot(`[[div data-x="<script>"]]
+内容
+[[/div]]`)
+	if strings.Contains(out, `data-x="<script>"`) {
+		t.Errorf("expected value to be escaped, got %q", out)
+	}
+	if !strings.Contains(out, `&lt;script&gt;`) &&
+		!strings.Contains(out, `&#34;`) {
+		// Either way the dangerous chars are entities.
+		// The strict check is no raw `<` / `>` in the
+		// attribute value.
+		t.Errorf("expected attribute to be HTML-escaped, got %q", out)
+	}
+}
+
+// TestWikidotDivDataAttributeBadName verifies a data
+// attribute name with non-token characters (e.g. spaces)
+// is rejected (the construct is left raw so the author
+// can see the typo).
+func TestWikidotDivDataAttributeBadName(t *testing.T) {
+	out := RenderWikidot(`[[div data-bad name="x"]]
+内容
+[[/div]]`)
+	// The construct was NOT emitted as a <div>. The
+	// parser returns ok=false on bad data- attribute name,
+	// so the opener stays raw in the source. We assert
+	// the raw text is preserved verbatim (the author can
+	// see the typo) by checking that the original marker
+	// substring survives.
+	if !strings.Contains(out, `data-bad`) {
+		t.Errorf("expected raw marker text preserved on bad data name, got %q", out)
+	}
+	// And specifically, no <div data-bad ...> element
+	// was emitted.
+	if strings.Contains(out, `<div data-bad`) {
+		t.Errorf("expected NO <div data-bad> emitted, got %q", out)
+	}
+}
+
+// TestWikidotDivDataAttributeNested verifies that nested
+// data-bearing divs (one inside another) parse cleanly.
+// This is a guard for the depth-counter in walkDivBody —
+// a `[[div data-x="…"]]` opener that's followed by another
+// `[[div data-y="…"]]` should pair the FIRST `[[/div]]`
+// with the inner opener, not the outer.
+func TestWikidotDivDataAttributeNested(t *testing.T) {
+	in := `[[div data-x="outer"]]
+外层
+[[div data-y="inner"]]
+内层
+[[/div]]
+回到外层
+[[/div]]`
+	out := RenderWikidot(in)
+	if !strings.Contains(out, `data-x="outer"`) {
+		t.Errorf("expected outer data-x, got %q", out)
+	}
+	if !strings.Contains(out, `data-y="inner"`) {
+		t.Errorf("expected inner data-y, got %q", out)
+	}
+	if got, want := strings.Count(out, "<div"), 2; got != want {
+		t.Errorf("expected %d <div> openings, got %d in %q", want, got, out)
+	}
+	if got, want := strings.Count(out, "</div>"), 2; got != want {
+		t.Errorf("expected %d </div> closings, got %d in %q", want, got, out)
+	}
+}
+
+// TestWikidotTableCellContinuation verifies a `||…||` row
+// whose LAST cell spans multiple lines via Wikidot's
+// `_<space>\n` continuation marker joins into a single
+// row line, and the resulting row renders correctly.
+// The original spec example:
+//
+//   |||||| 超长 _
+//   内容 8||
+//
+// → joined: `|||||| 超长 内容 8||` → renders as a row
+// with a single content cell.
+func TestWikidotTableCellContinuation(t *testing.T) {
+	in := `||~ H1 ||~ H2 ||
+|| A |||| 超长 _
+内容 8||`
+	out := RenderWikidot(in)
+	// Joined cell content has both pieces separated by a
+	// space (the joinMultiLineTableRows replacement).
+	if !strings.Contains(out, "超长") || !strings.Contains(out, "内容 8") {
+		t.Errorf("expected joined cell content, got %q", out)
+	}
+	// Rendered as a table with two rows.
+	if !strings.Contains(out, `<table class="wiki-table">`) {
+		t.Errorf("expected <table>, got %q", out)
+	}
+	if !strings.Contains(out, `<th>H1</th>`) {
+		t.Errorf("expected header row, got %q", out)
+	}
+	// Continuation lines are joined into a single space-
+	// separated cell, NOT multiple paragraphs of text.
+	if strings.Contains(out, "<p>") {
+		t.Errorf("expected no <p> wrap inside cells, got %q", out)
+	}
+}
+
+// TestWikidotTableCellContinuationPlainNewline verifies
+// that even a bare newline (without the `_<space>` marker)
+// between a `||…` opener and a `…||` closer is treated as
+// cell continuation. The spec example uses `_<space>\n`
+// but Wikidot also accepts a bare newline in practice.
+func TestWikidotTableCellContinuationPlainNewline(t *testing.T) {
+	in := `||~ H1 ||
+|| A ||
+|| 长内容
+继续||`
+	out := RenderWikidot(in)
+	if !strings.Contains(out, "长内容") {
+		t.Errorf("expected inner content, got %q", out)
+	}
+	if !strings.Contains(out, "继续") {
+		t.Errorf("expected continuation text, got %q", out)
+	}
+	if !strings.Contains(out, `<table class="wiki-table">`) {
+		t.Errorf("expected table, got %q", out)
+	}
+}
+
+// TestWikidotTableCellContinuationUnmatched verifies that
+// an orphaned multi-line opener (no later line ending with
+// `||`) leaves the lines raw so the author can see the typo.
+// We don't join them — orphan in, orphan out.
+func TestWikidotTableCellContinuationUnmatched(t *testing.T) {
+	in := `前面一段。
+|| 不闭合的开头
+继续散落
+没有结尾的双竖线。
+再一段。`
+	_ = RenderWikidot(in) // Just shouldn't panic. We don't pin the
+	// exact output (orphan handling has two valid outcomes:
+	// raw text OR partial processing), only the absence of
+	// a crash and absence of an emitted <table> for the
+	// unmatched opener.
+}

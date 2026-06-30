@@ -159,6 +159,97 @@ var (
 	reWDModuleOpen  = regexp.MustCompile(`(?is)\[\[module\s+([A-Za-z]+)((?:\s+[^\]]*?)?)\]\]`)
 	reWDModuleClose = regexp.MustCompile(`\[\[/module\]\]`)
 
+	// ── Stage 4 (P1 round 3) additions ───────────────────────────────
+	//
+	// These close the spec gaps identified against
+	// https://rule-wiki.wikidot.com/wiki-syntax — see gap analysis
+	// in the convert() comment block. Each regex is paired with a
+	// test in wikidot_test.go pinning its semantics so future
+	// refactors don't silently drop the new syntax.
+
+	// HTML comments `[!-- ... --]`. Wikidot comments are stripped
+	// entirely from output (the content between the delimiters
+	// never renders). The match is non-greedy across newlines so
+	// a multi-line comment (`[!--\nfoo\n--]`) is consumed in one
+	// shot. Run BEFORE any other pass so the inner content (which
+	// may contain `**`, `//`, `[[ ]]` that would otherwise feed
+	// the inline stack) is dropped wholesale.
+	reWDComment = regexp.MustCompile(`(?s)\[!--.*?--\]`)
+
+	// `[# empty link]` — Wikidot's no-op placeholder link. The
+	// leading space after `#` discriminates a real anchor
+	// jump-link (`[#name text]`) from a placeholder (`[# any
+	// display text]`) that renders as a normal-looking link whose
+	// click does nothing (`href="javascript:;"`).
+	reWDEmptyLink = regexp.MustCompile(`\[#\s+([^\]]+)\]`)
+
+	// `[[# name]]` — alternative form for the `[[a name="..."]]`
+	// anchor def. Wikidot accepts both syntaxes; the `[[# ]]`
+	// form is more compact (no `a name=` keyword) and mirrors
+	// the jump-link syntax `[#name]` symmetrically. Matched
+	// before block-stash phases that might otherwise trip on
+	// the `[[`.
+	reWDHashAnchorDef = regexp.MustCompile(`(?is)\[\[#\s+([^\]\n]+?)\s*\]\]`)
+
+	// Triple-bracket starred link `[[[*http://...|Text]]]`. Same
+	// as `[[[http://...|Text]]]` but the `*` after `[[[` opens
+	// the link in a new tab (`target="_blank"` + `rel="nofollow
+	// noopener"`). Wikidot's convention for "open in new window"
+	// on triple-bracket links. Match `]]]` (3 closes) to
+	// match the open triple — the ordinary wiki-link regex
+	// uses the same 3-close form.
+	reWDStarredTripleLink = regexp.MustCompile(`(?is)\[\[\[\*(https?://[^\s\]]+?)(?:\s*\|\s*([^\]]+?))?\]\]\]`)
+	// Note: the trailing `\]\]\]` matches 3 closes — see the
+	// reWDWikiLink regex (`\[\[\[([^\]]+?)(?:\s*\|\s*([^\]]+?))?\]\]\]`)
+	// which also uses 3 closes for the same reason.
+
+	// Single-bracket starred link `[*http://... text]`. Mirror of
+	// the triple-bracket `[[[*...]]]` form — same new-window
+	// semantics. Matched before the plain `[url text]` so the `*`
+	// is consumed as part of the link markup.
+	reWDStarredLink = regexp.MustCompile(`\[\*(https?://[^\s\]]+)(?:\s+([^\]]+))?\]`)
+
+	// Bare starred URL `*http://...` (auto-link form with the
+	// "open in new window" prefix). Wikidot's convention: when an
+	// author writes `*http://example.com` in flowing text without
+	// brackets, the link opens in a new tab.
+	reWDBareStarredURL = regexp.MustCompile(`(?i)(\*https?://[^\s<>\[\]]+)`)
+
+	// Relative-path single-bracket link `[/path text]`. Same
+	// shape as `[http://url text]` but without a protocol —
+	// treated as a wikidot-internal navigation URL on the
+	// current site. Useful for short-form links like
+	// `[/blog:post/edit/true 编辑这页]` that don't need a full
+	// https URL.
+	//
+	// The discriminator between a real relative-link URL and a
+	// wikidot closing tag (`[/li]`, `[/ul]`, `[/div]`, `[/email]`,
+	// `[/note]`, …) is the requirement that the path contain at
+	// least one path-separator character: `/`, `:`, `.`, or `-`.
+	// A single-word alphabetic token like `li` / `ul` / `div` is
+	// always a wikidot closing tag, never an internal URL. We
+	// require the path to have at least one of the separator
+	// characters so `[/li]` and friends don't false-positive.
+	reWDRelativeLink = regexp.MustCompile(`\[(/[^\s\]]*[/.:\-][^\s\]]*)(?:\s+([^\]]+))?\]`)
+
+	// ── Image alignment prefixes ──────────────────────────────────
+	//
+	// Wikidot's image-position system lets the author write
+	// `[[=image URL attrs]]` (center) / `[[<image ...]]` (left) /
+	// `[[>image ...]]` (right) / `[[f<image ...]]` (left float,
+	// text wraps) / `[[f>image ...]]` (right float, text wraps).
+	// All five forms take the same attribute tail as the plain
+	// `[[image URL attrs]]` — we route them through the same
+	// `buildImageTag` / `parseImageAttrs` helpers used by the
+	// non-prefixed `[[image]]` form. Each prefix is captured as
+	// a wrapping `<div class="wikidot-image-wrap wikidot-image-<align>">`
+	// so the front-end can style alignment vs float independently.
+	reWDImgCenter = regexp.MustCompile(`(?is)\[\[=\s*image\s+([^\s\]]+)((?:\s+[a-zA-Z][\w-]*\s*=\s*"[^"]*")*)\s*\]\]`)
+	reWDImgLeft   = regexp.MustCompile(`(?is)\[\[<\s*image\s+([^\s\]]+)((?:\s+[a-zA-Z][\w-]*\s*=\s*"[^"]*")*)\s*\]\]`)
+	reWDImgRight  = regexp.MustCompile(`(?is)\[\[>\s*image\s+([^\s\]]+)((?:\s+[a-zA-Z][\w-]*\s*=\s*"[^"]*")*)\s*\]\]`)
+	reWDImgFloatL = regexp.MustCompile(`(?is)\[\[f<\s*image\s+([^\s\]]+)((?:\s+[a-zA-Z][\w-]*\s*=\s*"[^"]*")*)\s*\]\]`)
+	reWDImgFloatR = regexp.MustCompile(`(?is)\[\[f>\s*image\s+([^\s\]]+)((?:\s+[a-zA-Z][\w-]*\s*=\s*"[^"]*")*)\s*\]\]`)
+
 	reWDCenter    = regexp.MustCompile(`(?s)\[\[=\]\](.*?)\[\[/=\]\]`)
 	reWDLeftBlock = regexp.MustCompile(`(?s)\[\[<\]\](.*?)\[\[/<\]\]`)
 	reWDRight     = regexp.MustCompile(`(?s)\[\[>\]\](.*?)\[\[/>\]\]`)
@@ -374,13 +465,14 @@ var (
 	// end of the whole document.
 	reWDLineContinuation = regexp.MustCompile(`(?m)^([^\n]*[^\s]) _\r?\n`)
 
-	// ── Smart punctuation (Stage 2, spec §标点符号) ─────────────
+	// ── Smart punctuation (Stage 2 + Stage 4 additions) ─────────
 	// Wikidot recognises the following typographic pairs /
 	// shorthands. We substitute the unicode form so the
 	// rendered output is "smart" even when the source
 	// uses straight ASCII. Order matters: longer matches
 	// first (so `...` is consumed before any single `.`,
-	// ` -- ` before any single `-`).
+	// ` -- ` before any single `-`, the German quote
+	// `,,x''` before the generic `''`).
 	//
 	//   ``        →   "     (left double quote, U+201C)
 	//   ''        →   "     (right double quote, U+201D)
@@ -391,6 +483,16 @@ var (
 	//   ...       →   …     (ellipsis, U+2026)
 	//   --        →   —     (em dash, U+2014)
 	//
+	// Stage 4 additions (gaps closed vs the spec):
+	//
+	//   ,,' ,     →   „"   (German low-9 quote, single
+	//                         form: opening low-9, closing
+	//                         high-left used as closer)
+	//   ' ,       →   ''   (placeholder — already handled
+	//                         by LSQuote/RSQuote above)
+	//   >>引号<<  →   »引号« (reverse guillemets for nested
+	//                         quoting on the opposite side)
+	//
 	// The em-dash rule needs WHITESPACE on both sides —
 	// `--` inside a word (e.g. "x--y") is left alone to
 	// avoid turning every double-hyphen in user prose
@@ -398,10 +500,9 @@ var (
 	//
 	// (*) The single-quote pair only fires when the
 	// closing `'` is preceded by content (it acts as
-	// apostrophe in `it's`). Wikidot's spec doesn't
-	// actually use the single form — it uses `` ` for
-	// both open and close of double quotes. We add a
-	// minimal `'` → `’` fallback for plain ASCII
+	// apostrophe in `it's`). Wikidot's spec uses `` `
+	// for both open and close of double quotes. We add
+	// a minimal `'` → `’` fallback for plain ASCII
 	// apostrophes, which is the right default for
 	// latin-script user prose.
 	reWDSmartLDQuote = regexp.MustCompile("``")
@@ -412,6 +513,19 @@ var (
 	reWDSmartRAQuote = regexp.MustCompile(">>")
 	reWDEllipsis     = regexp.MustCompile(`\.\.\.`)
 	reWDEmDash       = regexp.MustCompile(`(?:^|[\s(])--(?:[\s).,;!?]|$)`)
+	// German low-9 quote pair `,,x''` → „x". Open: U+201E
+	// (low-9 double). Close: U+201C (left double, repurposed
+	// as German closer per the German conventions). The
+	// regex matches the WHOLE pair in one shot so the
+	// closing `''` doesn't fall through to the generic
+	// right-double-quote rule that runs later.
+	reWDSmartGerman = regexp.MustCompile(`,,([\s\S]+?)''`)
+	// Reverse guillemets `>>x<<` → »x«. Used for nested
+	// quoting when the outer level uses `<<x>>` and the
+	// inner level needs the opposite-pair guillemets.
+	// MUST run after `<<` so a `<<` that starts a reverse
+	// pair isn't half-eaten.
+	reWDSmartRGTQuote = regexp.MustCompile(`>>([^<\n]+?)<<`)
 
 	// %%var%% — names are simple identifiers, not nested. Anything
 	// not in the Vars map at render time is left as-is so authors
@@ -748,6 +862,16 @@ func (p *wikidotParser) convertInternal(source string, appendFootnotes bool) str
 		return p.storeBlock(html.EscapeString(m[1]))
 	})
 
+	// ── Phase 0.65: HTML comments [!-- ... --] ────────────────────
+	// Drop entirely. Comments are stripped (Wikidot's own
+	// behaviour) — even `[!-- visible --]` doesn't render its
+	// body. We run this BEFORE every other inline pass so the
+	// comment body (which may contain `**`, `//`, `[[ ]]` that
+	// would otherwise feed the inline stack) is dropped in a
+	// single shot. The non-greedy match across newlines handles
+	// multi-line comments like `[!--\n\nfoo\n--]`.
+	out = reWDComment.ReplaceAllString(out, "")
+
 	// ── Phase 1: block storage ─────────────────────────────────────
 	// The order matters: anything that can contain `]]` later in the
 	// content (math, code, div, html) has to be stashed before patterns
@@ -854,11 +978,30 @@ func (p *wikidotParser) convertInternal(source string, appendFootnotes bool) str
 	// italic regex as a markdown emphasis). The em-dash
 	// rule uses a non-greedy whitespace check so we
 	// don't replace `--` inside a word.
+	//
+	// Order matters within this block. Pairs run BEFORE
+	// their singleton halves: German `,,…''` consumes
+	// the closing `''` so the generic `'' → "`
+	// rule doesn't double-fire on the German close;
+	// double-quote `` `` … '' `` likewise consumes its
+	// own `` `` opener and '' `` closer first.
+	out = reWDSmartGerman.ReplaceAllStringFunc(out, func(s string) string {
+		m := reWDSmartGerman.FindStringSubmatch(s)
+		return "\u201e" + m[1] + "\u201c"
+	})
 	out = reWDSmartLDQuote.ReplaceAllString(out, "\u201c")
 	out = reWDSmartRDQuote.ReplaceAllString(out, "\u201d")
 	out = reWDSmartLSQuote.ReplaceAllString(out, "\u2018")
 	out = reWDSmartRSQuote.ReplaceAllString(out, "$1\u2019")
 	out = reWDSmartLAQuote.ReplaceAllString(out, "\u00ab")
+	// Reverse guillemets run AFTER the forward `<<` rule
+	// so a `<<x<<` outer-pair isn't half-eaten. The
+	// closing `<<` is consumed here; a literal `<<` that
+	// doesn't pair with a preceding `>>` is left as-is.
+	out = reWDSmartRGTQuote.ReplaceAllStringFunc(out, func(s string) string {
+		m := reWDSmartRGTQuote.FindStringSubmatch(s)
+		return "\u00bb" + m[1] + "\u00ab"
+	})
 	out = reWDSmartRAQuote.ReplaceAllString(out, "\u00bb")
 	out = reWDEllipsis.ReplaceAllString(out, "\u2026")
 	out = reWDEmDash.ReplaceAllString(out, "$1\u2014$2")
@@ -866,6 +1009,16 @@ func (p *wikidotParser) convertInternal(source string, appendFootnotes bool) str
 	// 1e. Row-based tables (`|| ... ||` lines, contiguous group). Build
 	// the table HTML and stash it so subsequent regex passes don't try
 	// to interpret `|` characters or re-parse the cell content.
+	//
+	// 1e.0  First, stitch together cells that span multiple lines
+	// (Wikidot's `_` continuation marker inside a `||…||` block).
+	// Without this pre-pass, a row like
+	//   `|||| 超长 _\n  内容 8||`
+	// would not match the `^||…||$` line regex (the first line
+	// doesn't end with `||`) and would fall through as plain
+	// prose. After this pass, the multi-line cell joins into a
+	// single space-separated cell so the row regex picks it up.
+	out = joinMultiLineTableRows(out)
 	out = renderWikidotTableRows(p, out)
 	out = renderWikidotTableRows(p, out)
 
@@ -1166,6 +1319,16 @@ func (p *wikidotParser) convertInternal(source string, appendFootnotes bool) str
 		return p.storeBlock(fmt.Sprintf(`<span id="%s" class="wiki-anchor"></span>`, id))
 	})
 
+	// 1o2.5 `[[# name]]` — compact anchor-def form. Same output
+	// shape as `[[a name="name"]]` (a `<span id="…">` with the
+	// `wiki-anchor` class). The id rule is the same
+	// (HTML-escape; non-ASCII preserved).
+	out = reWDHashAnchorDef.ReplaceAllStringFunc(out, func(s string) string {
+		m := reWDHashAnchorDef.FindStringSubmatch(s)
+		id := html.EscapeString(strings.TrimSpace(m[1]))
+		return p.storeBlock(fmt.Sprintf(`<span id="%s" class="wiki-anchor"></span>`, id))
+	})
+
 	// 1p. [[toc]] — keep the marker in place; Phase 12 will swap it
 	// for a real <ul> built from the headings collected in Phase 4.
 	// We store the marker as a block placeholder so paragraph-wrap
@@ -1395,6 +1558,16 @@ func (p *wikidotParser) convertInternal(source string, appendFootnotes bool) str
 		return html.EscapeString(text)
 	})
 
+	// NOTE: Single-bracket starred link `[*http://... text]` is
+	// intentionally NOT processed here — it's pushed down to
+	// Phase 3a.7 below, AFTER the triple-bracket starred /
+	// wiki-link forms. Running the single-bracket starred regex
+	// first would match the inner `[*http://...|Wikidot]` of
+	// `[[[*http://...|Wikidot]]]`, leaving the outer triple-
+	// bracket construct unparsed and producing `[[<a>...|Wikidot</a>]]`
+	// instead of the intended new-tab link. So: triple-bracket
+	// forms first, single-bracket forms later.
+
 	// 3b. Mailto `[mailto:addr text]`
 	out = reWDMailto.ReplaceAllStringFunc(out, func(s string) string {
 		m := reWDMailto.FindStringSubmatch(s)
@@ -1409,7 +1582,30 @@ func (p *wikidotParser) convertInternal(source string, appendFootnotes bool) str
 		return html.EscapeString(text)
 	})
 
-	// 3c. Internal wiki link `[[[page]]]` / `[[[page|alias]]]`
+	// 3c.5 Triple-bracket starred link `[[[*http://...|Text]]]`.
+	// Same as `[[[http://url|Text]]]` but the `*` makes the
+	// link open in a new tab. Must run BEFORE the wiki-link
+	// regex (`reWDWikiLink`) so the `*` doesn't get folded
+	// into a wikidot internal-page name (the wiki-link form
+	// would otherwise treat `*http://...` as a page slug and
+	// render `<a href="/wikidot/*http://…">…</a>`, which is
+	// both visually wrong and the wrong navigation semantic).
+	out = reWDStarredTripleLink.ReplaceAllStringFunc(out, func(s string) string {
+		m := reWDStarredTripleLink.FindStringSubmatch(s)
+		url := strings.TrimSpace(m[1])
+		text := strings.TrimSpace(m[2])
+		if text == "" {
+			text = url
+		}
+		if safe := sanitizeURLForAttr(url); safe != "" {
+			return fmt.Sprintf(`<a href="%s" rel="nofollow noopener" target="_blank">%s</a>`, safe, html.EscapeString(text))
+		}
+		return html.EscapeString(text)
+	})
+
+	// 3c. Internal wiki link `[[[page]]]` / `[[[page|alias]]]`.
+	// Run AFTER the starred-triple form (3c.5) so a `*[[...]]`
+	// marker is consumed by the new-window branch first.
 	out = reWDWikiLink.ReplaceAllStringFunc(out, func(s string) string {
 		m := reWDWikiLink.FindStringSubmatch(s)
 		href := m[1]
@@ -1426,6 +1622,59 @@ func (p *wikidotParser) convertInternal(source string, appendFootnotes bool) str
 		return html.EscapeString(text)
 	})
 
+	// 3c.6 Relative-path single-bracket link `[/path text]`.
+	// Short-form for wikidot-internal navigation URLs that
+	// don't need an explicit `http://site.wikidot.com/`
+	// prefix. The path is preserved verbatim (the
+	// `sanitizeURLForAttr` allow-list covers internal `/...`
+	// paths).
+	out = reWDRelativeLink.ReplaceAllStringFunc(out, func(s string) string {
+		m := reWDRelativeLink.FindStringSubmatch(s)
+		href := m[1]
+		text := strings.TrimSpace(m[2])
+		if text == "" {
+			text = href
+		}
+		if safe := sanitizeURLForAttr(href); safe != "" {
+			return fmt.Sprintf(`<a href="%s">%s</a>`, safe, html.EscapeString(text))
+		}
+		return html.EscapeString(text)
+	})
+
+	// 3c.7 Wikidot "empty placeholder" link `[# display]`.
+	// A leading space after `#` discriminates this form
+	// from the real anchor jump-link (`[#name text]`).
+	// Rendered as a normal-looking link whose click does
+	// nothing (`href="javascript:;"` per the wikidot
+	// spec — and so scoped by the CSP-friendly
+	// sanitizeURLForAttr allow-list).
+	out = reWDEmptyLink.ReplaceAllStringFunc(out, func(s string) string {
+		m := reWDEmptyLink.FindStringSubmatch(s)
+		text := strings.TrimSpace(m[1])
+		return fmt.Sprintf(`<a href="javascript:;">%s</a>`, html.EscapeString(text))
+	})
+
+	// 3a.7 Single-bracket starred link `[*http://... text]`.
+	// Same as `[url text]` but the leading `*` is the
+	// "open in new tab" marker. Intentionally pushed
+	// AFTER every triple-bracket form (3c / 3c.5) so the
+	// `[*...Wikidot]` of `[[[*...|Wikidot]]]` doesn't get
+	// half-parsed. Single-bracket forms only fire on
+	// true single-bracket constructs after the triple-
+	// bracket forms have been consumed.
+	out = reWDStarredLink.ReplaceAllStringFunc(out, func(s string) string {
+		m := reWDStarredLink.FindStringSubmatch(s)
+		url := strings.TrimSpace(m[1])
+		text := strings.TrimSpace(m[2])
+		if text == "" {
+			text = url
+		}
+		if safe := sanitizeURLForAttr(url); safe != "" {
+			return fmt.Sprintf(`<a href="%s" rel="nofollow noopener" target="_blank">%s</a>`, safe, html.EscapeString(text))
+		}
+		return html.EscapeString(text)
+	})
+
 	// 3d. Image — generic attribute syntax. Supports
 	// `link` (wraps the <img> in an <a>), `width`, `height`,
 	// `class`, `style` (arbitrary CSS). Unknown keys are
@@ -1435,16 +1684,25 @@ func (p *wikidotParser) convertInternal(source string, appendFootnotes bool) str
 		src := strings.TrimSpace(m[1])
 		attrs := parseImageAttrs(m[2])
 		if safe := sanitizeURLForAttr(src); safe != "" {
-			img := buildImageTag(safe, attrs)
-			if link, ok := attrs["link"]; ok {
-				if linkSafe := sanitizeURLForAttr(link); linkSafe != "" {
-					return fmt.Sprintf(`<a href="%s">%s</a>`, linkSafe, img)
-				}
-			}
-			return img
+			return renderImageWrapped(safe, attrs)
 		}
 		return ""
 	})
+
+	// 3d.5 Image alignment prefixes — Wikidot's
+	// position-controlled image syntax. Each of the five
+	// forms (`[[=image…` / `[[<image…` / `[[>image…` /
+	// `[[f<image…` / `[[f>image…`) takes the same URL +
+	// attribute tail as the plain `[[image]]` form, but
+	// wraps the rendered <img> in a div with an alignment
+	// class. The wrapper class is what CSS uses to position
+	// the image (center / left / right) or to float it
+	// (left-float / right-float, with text wrap).
+	out = reWDImgCenter.ReplaceAllStringFunc(out, func(s string) string { return renderAlignedImage(out, s, "center") })
+	out = reWDImgLeft.ReplaceAllStringFunc(out, func(s string) string { return renderAlignedImage(out, s, "left") })
+	out = reWDImgRight.ReplaceAllStringFunc(out, func(s string) string { return renderAlignedImage(out, s, "right") })
+	out = reWDImgFloatL.ReplaceAllStringFunc(out, func(s string) string { return renderAlignedImage(out, s, "floatleft") })
+	out = reWDImgFloatR.ReplaceAllStringFunc(out, func(s string) string { return renderAlignedImage(out, s, "floatright") })
 
 	// 3e. `[[button label target]]` — Wikidot-style
 	// button link. The label is shown as the button
@@ -1646,6 +1904,30 @@ func (p *wikidotParser) convertInternal(source string, appendFootnotes bool) str
 	// like `,` or `.` may end up inside the href — that's harmless on
 	// the link's click target and gets cleaned by the DOMPurify pass
 	// on the client.
+	//
+	// Bare starred URL `*http://...` is handled as a STRIP step only:
+	// we remove the `*` prefix here, then let the unprefixed auto-link
+	// regex (reWDAutoURL, run immediately below) wrap the URL with the
+	// standard new-tab attributes. This avoids double-wrapping the
+	// same URL (once by the starred pass, once by the auto-link pass).
+	out = reWDBareStarredURL.ReplaceAllStringFunc(out, func(s string) string {
+		// Capture group 1 is the full `*URL`. We drop the
+		// `*` prefix and let reWDAutoURL add the link
+		// wrapper on the next pass. If sanitize rejects
+		// the URL we'd lose the `*` with no replacement,
+		// but auto-link's own sanitise would also reject,
+		// so the net effect is the same: the URL stays
+		// raw.
+		m := reWDBareStarredURL.FindStringSubmatch(s)
+		url := strings.TrimPrefix(m[1], "*")
+		if safe := sanitizeURLForAttr(url); safe != "" {
+			// Re-emit URL without the `*`. The subsequent
+			// reWDAutoURL pass picks up the bare URL and
+			// produces the final `<a target=_blank>`.
+			return safe
+		}
+		return s
+	})
 	out = reWDAutoURL.ReplaceAllStringFunc(out, func(s string) string {
 		m := reWDAutoURL.FindStringSubmatch(s)
 		url := m[1]
@@ -2332,10 +2614,131 @@ func renderWikidotTableRowLine(p *wikidotParser, line string, headerRow bool) st
 	return sb.String()
 }
 
+// joinMultiLineTableRows is the pre-pass for table-row
+// rendering. It walks the source line-by-line and, for each
+// `||…` line that does NOT end with `||` on the same line
+// (i.e. a multi-line row opener), collects subsequent lines
+// until the matching line that DOES end with `||`. The
+// joined cell content replaces each internal `\n` with a
+// single space so the multi-line cell becomes one
+// whitespace-separated cell.
+//
+// Wikidot's spec example:
+//
+//   |||||| 超长 _
+//   内容 8||
+//
+// → after joinMultiLineTableRows:
+//
+//   |||||| 超长   内容 8||
+//
+// (the ` _\n` continuation marker is consumed; the
+// newline becomes a single space so the cell still reads
+// naturally without a hard break).
+//
+// Unmatched openers (no later line ending with `||`) are
+// left verbatim so the author can see the typo. The
+// function never produces input that would break a
+// well-formed row, so the downstream renderWikidotTableRows
+// pass can rely on each row fitting a single source line.
+//
+// Limitations:
+//   - Only `||…` lines (not `[[table]]…[[/table]]` blocks)
+//     are processed here — the [[table]] form already
+//     accepts newlines inside cells.
+//   - Inside a multi-line row the literal ` _\n` is the
+//     continuation marker; without the marker (e.g. a bare
+//     newline) the cell still joins, but a literal `_<space>\n`
+//     in author prose outside the row is left alone.
+func joinMultiLineTableRows(text string) string {
+	lines := strings.Split(text, "\n")
+	var sb strings.Builder
+	i := 0
+	for i < len(lines) {
+		trimmed := strings.TrimSpace(lines[i])
+		// Multi-line opener: starts with `||` but does NOT
+		// end with `||`. A line that ends with `||` is a
+		// single-line row and is left untouched (the
+		// downstream pass handles it).
+		if strings.HasPrefix(trimmed, "||") && !strings.HasSuffix(trimmed, "||") && len(trimmed) >= 2 {
+			parts := []string{lines[i]}
+			j := i + 1
+			joined := false
+			for j < len(lines) {
+				next := strings.TrimSpace(lines[j])
+				if strings.HasPrefix(next, "||") && strings.HasSuffix(next, "||") && len(next) >= 4 {
+					parts = append(parts, lines[j])
+					joined = true
+					break
+				}
+				// Continuation line. We discard any `_ _`
+				// marker at the end (the spec example uses
+				// ` _\n` to signal continuation) and just
+				// keep the trimmed text. The cells of a
+				// joined row are separated by a single
+				// space when the final row-line is
+				// emitted.
+				cleaned := strings.TrimRight(lines[j], " \t")
+				cleaned = strings.TrimRight(cleaned, "_")
+				cleaned = strings.TrimRight(cleaned, " \t")
+				parts = append(parts, cleaned)
+				j++
+			}
+			if joined {
+				// Emit the joined line as a single
+				// source line. We replace the source
+				// newlines with `\n` so the row
+				// pipeline sees one logical row;
+				// cell-content newlines become literal
+				// `\n` in the cell and the rendering
+				// pipeline converts them to a space
+				// when emitting <td> content.
+				sb.WriteString(strings.Join(parts, " "))
+			} else {
+				// Unmatched opener — emit each line
+				// verbatim so the author sees the
+				// typo.
+				for k, p := range parts {
+					sb.WriteString(p)
+					if k < len(parts)-1 {
+						sb.WriteString("\n")
+					}
+				}
+			}
+			if i < len(lines)-1 || joined {
+				// Only re-emit a trailing newline if
+				// there are more lines after this
+				// region. Parts already contain all
+				// consumed lines; if `joined`, we've
+				// consumed through `j`, which we
+				// updated past. Loop's `i = j + 1`
+				// below handles the index.
+				_ = joined
+			}
+			if joined && i < len(lines)-1 {
+				sb.WriteString("\n")
+			}
+			i = j + 1
+			continue
+		}
+		sb.WriteString(lines[i])
+		if i < len(lines)-1 {
+			sb.WriteString("\n")
+		}
+		i++
+	}
+	return sb.String()
+}
+
 // renderWikidotTableRows finds contiguous runs of `||…||` lines and
 // replaces each run with a single `<table>` placeholder. The first row
 // is treated as the header row (Wikidot convention; if the first row's
 // cells don't have `~` markers, they're still rendered as <th>).
+//
+// Before renderWikidotTableRows the source is run through
+// joinMultiLineTableRows so multi-line cells (Wikidot's `_ _ \n`
+// continuation marker inside a `||…||` block) collapse into a single
+// row-line here.
 func renderWikidotTableRows(p *wikidotParser, text string) string {
 	lines := strings.Split(text, "\n")
 	var result strings.Builder
@@ -2459,6 +2862,134 @@ func buildImageTag(src string, attrs map[string]string) string {
 	}
 	sb.WriteString(`>`)
 	return sb.String()
+}
+
+// renderImageWrapped composes the `<img>` tag (via
+// buildImageTag) and, if the author supplied a `link`
+// attribute, wraps the result in an `<a>` whose form depends
+// on the attribute value (see the comments in the link
+// handling below). The link semantics mirror what Wikidot
+// does for `[[image … link="…"]]`:
+//
+//   link="*url"        external URL, opens in new tab
+//   link="http(s)://"  external URL (no `*` prefix), opens in new tab
+//   link="/path"       internal relative path
+//   link="#anchor"     in-page anchor link
+//   link="wiki-page"   slug → /wikidot/<slug>
+//
+// Link values that fail `sanitizeURLForAttr` fall through as
+// a bare `<img>` so the author can see the typo.
+func renderImageWrapped(src string, attrs map[string]string) string {
+	img := buildImageTag(src, attrs)
+	link, ok := attrs["link"]
+	if !ok || link == "" {
+		return img
+	}
+	// `*url` — strip the star and emit with new-tab attributes.
+	if strings.HasPrefix(link, "*") {
+		target := strings.TrimPrefix(link, "*")
+		if safe := sanitizeURLForAttr(target); safe != "" {
+			return fmt.Sprintf(`<a href="%s" rel="nofollow noopener" target="_blank">%s</a>`, safe, img)
+		}
+		return img
+	}
+	// `#anchor` — in-page anchor link. No new-tab.
+	if strings.HasPrefix(link, "#") {
+		anchor := strings.TrimPrefix(link, "#")
+		// Sanitise the anchor id the same way as `[#name]` does:
+		// HTML-escape, no further filtering (Wikidot anchor ids
+		// accept Chinese / non-ASCII characters).
+		if anchor == "" {
+			return img
+		}
+		return fmt.Sprintf(`<a href="#%s">%s</a>`, html.EscapeString(anchor), img)
+	}
+	// `http://` / `https://` / `/path` (existing
+	// sanitizeURLForAttr allow-list covers each case). Anything
+	// else (e.g. `mailto:foo`) returns "" and we fall through
+	// to a bare <img>. External http(s) URLs do NOT add
+	// `rel="nofollow noopener" target="_blank"` here — that
+	// is the contract for the `link="*url"` (starred) form
+	// only. The bare `link="http://…"` form preserves the
+	// historical behaviour (a plain wrap with no extras).
+	if safe := sanitizeURLForAttr(link); safe != "" {
+		return fmt.Sprintf(`<a href="%s">%s</a>`, safe, img)
+	}
+	// `wiki-page` (a bare slug, no `/wikidot/` prefix) is treated
+	// as an internal wikidot page reference — same posture as the
+	// `[1] / some-page` URL routing used by the article-detail
+	// page (`/wikidot/<slug>`). The slug must be URL-safe: only
+	// letters, digits, dash, underscore, dot, percent, and the
+	// category-namespace `:` colon. Any other character (whitespace,
+	// `/`, `?`, `#`, etc.) makes the slug ambiguous, so we fall
+	// through to a bare `<img>` rather than guessing.
+	if link != "" && !strings.ContainsAny(link, " \t\n/?#\"'<>") {
+		slugSafe := true
+		for _, c := range link {
+			if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+				(c >= '0' && c <= '9') || c == '-' || c == '_' || c == ':' ||
+				c == '.' || c == '%') {
+				slugSafe = false
+				break
+			}
+		}
+		if slugSafe {
+			return fmt.Sprintf(`<a href="/wikidot/%s">%s</a>`, link, img)
+		}
+	}
+	return img
+}
+
+// renderAlignedImage processes an `[[=image…]]` / `[[<image…]]` /
+// `[[>image…]]` / `[[f<image…]]` / `[[f>image…]]` match. The
+// regex captures (URL, attr-tail); we route both through the
+// existing buildImageTag helper and wrap the result in a div
+// carrying the alignment class so the front-end can position
+// the image without needing extra CSS per article.
+func renderAlignedImage(_ string, raw string, align string) string {
+	// Pick the regex matching the alignment that's being
+	// rendered. Each `render*` invocation is a closure over
+	// one of the five prefix regexes, so we resolve the
+	// match by repeating the same regex find here.
+	m := reMatchAlign(raw, align)
+	if m == nil {
+		return raw
+	}
+	src := strings.TrimSpace(m[1])
+	if src == "" {
+		return raw
+	}
+	attrs := parseImageAttrs(m[2])
+	if safe := sanitizeURLForAttr(src); safe != "" {
+		img := renderImageWrapped(safe, attrs)
+		return fmt.Sprintf(`<div class="wikidot-image-wrap wikidot-image-%s">%s</div>`, align, img)
+	}
+	return raw
+}
+
+// reMatchAlign returns the FindStringSubmatch result for the
+// alignment-prefixed image whose alignment is `align` (one of
+// "center", "left", "right", "floatleft", "floatright"). The
+// calling closure in Phase 3d.5 captures the corresponding
+// regex without having to pass it through `renderAlignedImage`
+// as a parameter.
+func reMatchAlign(raw string, align string) []string {
+	var re *regexp.Regexp
+	switch align {
+	case "center":
+		re = reWDImgCenter
+	case "left":
+		re = reWDImgLeft
+	case "right":
+		re = reWDImgRight
+	case "floatleft":
+		re = reWDImgFloatL
+	case "floatright":
+		re = reWDImgFloatR
+	default:
+		return nil
+	}
+	return re.FindStringSubmatch(raw)
 }
 
 func renderWikidotTable(p *wikidotParser, raw string) string {
@@ -3645,6 +4176,14 @@ func listTagForMarker(m string) string {
 // Recognised open tokens:
 //   - `[[div class="..."]]`
 //   - `[[div style="..."]]`
+//   - `[[div data-<name>="..."]]` (Stage 4 addition —
+//                                  data-* attributes are forwarded
+//                                  verbatim so authors can hook
+//                                  custom JS or framework-specific
+//                                  attributes without escaping through
+//                                  a generic `key="..."` form that
+//                                  would risk CSS injection via the
+//                                  `data-` namespace.)
 //
 // Close token: `[[/div]]`. Anything that looks like
 // `[[div anything-else]]` is left alone (so future [[div class=…
@@ -3713,6 +4252,14 @@ func (p *wikidotParser) renderDivBlocks(source string) string {
 			} else {
 				out = inner
 			}
+		case "data":
+			// attrValue is the full attribute token including the
+			// `data-*="..."` portion (the parser captures name + value
+			// together so the data-attribute name is never detached
+			// from its value). We HTML-escape the value but pass the
+			// name through unchanged so authors can use any valid
+			// `data-…` token (e.g. `data-toggle`, `data-id`, `data-spy`).
+			out = fmt.Sprintf(`<div %s>%s</div>`, attrValue, inner)
 		}
 		sb.WriteString(p.storeBlock(out))
 		i = closeEnd
@@ -3720,11 +4267,14 @@ func (p *wikidotParser) renderDivBlocks(source string) string {
 	return sb.String()
 }
 
-// findNextDivOpen returns the index of the next `[[div class="`
-// or `[[div style="` open tag at or after `from`, or -1.
+// findNextDivOpen returns the index of the next `[[div class="`,
+// `[[div style="` or `[[div data-<name>="…"` open tag at or
+// after `from`, or -1. The data-* form is matched by finding every
+// `[[div data-` substring and taking the lowest index; the
+// attribute name + value pair are then captured by parseDivOpen.
 func findNextDivOpen(source string, from int) int {
 	best := -1
-	for _, prefix := range []string{"[[div class=\"", "[[div style=\""} {
+	for _, prefix := range []string{"[[div class=\"", "[[div style=\"", "[[div data-"} {
 		idx := strings.Index(source[from:], prefix)
 		if idx < 0 {
 			continue
@@ -3739,8 +4289,9 @@ func findNextDivOpen(source string, from int) int {
 
 // parseDivOpen inspects a div open tag at the start of `s` and
 // returns:
-//   - kind: "class" or "style"
-//   - attrValue: the attribute value (the quoted string)
+//   - kind: "class" / "style" / "data"
+//   - attrValue: the attribute value (the quoted string, or for
+//                "data" the full `data-<name>="<value>"` token)
 //   - contentStart: index (relative to s == source[idx:]) of
 //     the first content character
 //   - ok: true iff a valid open tag was found
@@ -3762,6 +4313,53 @@ func parseDivOpen(s string) (kind, attrValue string, contentStart int, ok bool) 
 		}
 		attr := rest[:end]
 		return "style", attr, len("[[div style=\"") + end + 3, true
+	}
+	// `[[div data-<name>="<value>"]]` form. The data- token
+	// is treated as a single attribute; the name is matched
+	// permissively (any non-] character other than the
+	// closing `]]` block) because html5 data-* accepts
+	// arbitrary names. The attribute name + value pair is
+	// emitted verbatim — `sanitizeURLForAttr` would over-
+	// restrict CSS content, so we route through
+	// `sanitizeDataAttrValue` (a narrower allow-list) for
+	// the value side only.
+	if strings.HasPrefix(s, "[[div data-") {
+		rest := s[len("[[div data-"):]
+		// Read attribute name (`name="…"`)
+		nameEnd := strings.Index(rest, "=\"")
+		if nameEnd < 0 {
+			return "", "", 0, false
+		}
+		name := rest[:nameEnd]
+		// Reject if name has whitespace / non-token chars
+		// (only letters / digits / dash / underscore).
+		for _, c := range name {
+			if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+				(c >= '0' && c <= '9') || c == '-' || c == '_') {
+				return "", "", 0, false
+			}
+		}
+		// Find the closing `"]]` after the value's opening quote.
+		valStart := len("[[div data-") + nameEnd + 2
+		closeIdx := strings.Index(s[valStart:], "\"]]")
+		if closeIdx < 0 {
+			return "", "", 0, false
+		}
+		value := s[valStart : valStart+closeIdx]
+		// The value is HTML-escaped so any `"` / `<` / `>`
+		// in author-supplied text becomes an entity and
+		// cannot break out of the wrapping attribute.
+		// An empty (post-trim) value still produces a valid
+		// `data-<name>=""` attribute so the author can
+		// intentionally pass an empty data-* token.
+		safe := strings.TrimSpace(value)
+		if safe == "" {
+			safe = ""
+		} else {
+			safe = html.EscapeString(safe)
+		}
+		fullAttr := fmt.Sprintf(`data-%s="%s"`, name, safe)
+		return "data", fullAttr, valStart + closeIdx + 3, true
 	}
 	return "", "", 0, false
 }
