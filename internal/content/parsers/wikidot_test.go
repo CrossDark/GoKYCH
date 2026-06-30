@@ -3123,3 +3123,268 @@ func TestWikidotBlockPlaceholdersFullyRestored(t *testing.T) {
 		t.Errorf("expected <code>//斜体//</code> in table cell, got %q", out)
 	}
 }
+
+// TestWikidotSpanClassKeycap checks that the special class
+// `keycap` maps to the HTML5 `<kbd>` element instead of a
+// generic `<span class="keycap">`. Wikidot's rule-wiki syntax
+// guide (rule-wiki.wikidot.com/wiki-syntax, §"行内格式" /
+// "Devanos 提供添加的独特格式") defines the keycap class as the
+// keyboard-key render target.
+func TestWikidotSpanClassKeycap(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			"single keycap",
+			"Press [[span class=\"keycap\"]]Ctrl[[/span]]",
+			`<p>Press <kbd>Ctrl</kbd></p>`,
+		},
+		{
+			"two keycaps with separator",
+			"[[span class=\"keycap\"]]Ctrl[[/span]] + [[span class=\"keycap\"]]C[[/span]]",
+			`<p><kbd>Ctrl</kbd> + <kbd>C</kbd></p>`,
+		},
+		{
+			"keycap between text",
+			"a [[span class=\"keycap\"]]Enter[[/span]] b",
+			`<p>a <kbd>Enter</kbd> b</p>`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := RenderWikidot(tc.in)
+			if got != tc.want {
+				t.Errorf("\n got: %q\nwant: %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestWikidotSpanClassRuby checks the `<ruby>` / `<rt>` / `<rb>`
+// HTML5 elements that the special span classes `ruby`, `rt`,
+// `rb` map to. The old single-pass regex (pre-balancer) emitted a
+// generic `<span class="ruby">…</span>` with the inner rt/[[span
+// constructs leaking through verbatim; this test pins the
+// balanced-matcher output to the HTML5 ruby-elements form.
+func TestWikidotSpanClassRuby(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			"ruby with rt",
+			"[[span class=\"ruby\"]]拼音[[span class=\"rt\"]]pīnyīn[[/span]][[/span]]",
+			`<p><ruby>拼音<rt>pīnyīn</rt></ruby></p>`,
+		},
+		{
+			"ruby with rb + rt",
+			"[[span class=\"ruby\"]]漢字[[span class=\"rb\"]]漢 字[[/span]][[span class=\"rt\"]]かんじ[[/span]][[/span]]",
+			`<p><ruby>漢字<rb>漢 字</rb><rt>かんじ</rt></ruby></p>`,
+		},
+		{
+			"ruby without nested rt",
+			"[[span class=\"ruby\"]]only base[[/span]]",
+			`<p><ruby>only base</ruby></p>`,
+		},
+		{
+			"triple-nested ruby/rb/rt",
+			"[[span class=\"ruby\"]]A[[span class=\"rb\"]]B[[span class=\"rt\"]]C[[/span]][[/span]][[/span]]",
+			`<p><ruby>A<rb>B<rt>C</rt></rb></ruby></p>`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := RenderWikidot(tc.in)
+			if got != tc.want {
+				t.Errorf("\n got: %q\nwant: %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestWikidotSpanClassMultiToken checks that whitespace-separated
+// class lists (e.g. `class="foo bar"`) survive intact. The
+// previous implementation routed the class through
+// `sanitizeAnchorID`, which only accepts single-token `[A-Za-z0-9_-]+`
+// strings — multi-class inputs dropped the wrapper entirely.
+// Now we tokenise + validate per-token so multi-class works.
+func TestWikidotSpanClassMultiToken(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			"two valid tokens",
+			"[[span class=\"foo bar\"]]text[[/span]]",
+			`<p><span class="foo bar">text</span></p>`,
+		},
+		{
+			"three valid tokens",
+			"[[span class=\"a b c\"]]text[[/span]]",
+			`<p><span class="a b c">text</span></p>`,
+		},
+		{
+			"multi class with nested span",
+			"[[span class=\"foo bar\"]]text [[span class=\"em\"]]z[[/span]][[/span]]",
+			`<p><span class="foo bar">text <span class="em">z</span></span></p>`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := RenderWikidot(tc.in)
+			if got != tc.want {
+				t.Errorf("\n got: %q\nwant: %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestWikidotSpanClassSecurity checks the security-relevant
+// cases: any token in a multi-class list failing the
+// `[A-Za-z0-9_-]+` rule drops the wrapper entirely (rather than
+// partially emitting a class attr with an attacker-controlled
+// token). Same for empty / whitespace-only / quote-bearing
+// classes. The constant-time-style "all or nothing" policy keeps
+// the input as plain text in the rendered page so the author can
+// see the typo.
+func TestWikidotSpanClassSecurity(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			"empty class",
+			"[[span class=\"\"]]text[[/span]]",
+			`<p>text</p>`,
+		},
+		{
+			"whitespace only class",
+			"[[span class=\"   \"]]text[[/span]]",
+			`<p>text</p>`,
+		},
+		{
+			"token with quote (rejected)",
+			`[[span class="foo'bar"]]text[[/span]]`,
+			`<p>text</p>`,
+		},
+		{
+			"token with attribute injection (rejected)",
+			`[[span class="foo onclick=bad"]]text[[/span]]`,
+			`<p>text</p>`,
+		},
+		{
+			"valid + invalid mixed (whole wrapper dropped)",
+			`[[span class="foo onclick=bad bar"]]text[[/span]]`,
+			`<p>text</p>`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := RenderWikidot(tc.in)
+			if got != tc.want {
+				t.Errorf("\n got: %q\nwant: %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestWikidotInlineColorBareHex checks the bare-hex form
+// `##44FF88|text##` (no leading `#`) used by the rule-wiki
+// wikidot-syntax spec. The previous regex required `#[0-9A-Fa-f]`
+// with the `#` so a bare hex like `##44FF88|` failed the
+// alternation and rendered the construct verbatim. The fix
+// adds a third alternation `[0-9A-Fa-f]{3,8}` that captures
+// bare hex; the handler prepends `#` so CSS parses the value
+// correctly.
+func TestWikidotInlineColorBareHex(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			"6-digit bare hex",
+			"##44FF88|自定义色码##",
+			`<p><span style="color:#44FF88">自定义色码</span></p>`,
+		},
+		{
+			"3-digit bare hex",
+			"##f00|short hex##",
+			`<p><span style="color:#f00">short hex</span></p>`,
+		},
+		{
+			"4-digit bare hex (rgba)",
+			"##FA3C|text##",
+			`<p><span style="color:#FA3C">text</span></p>`,
+		},
+		{
+			"8-digit bare hex (rgba)",
+			"##44FF88BB|text##",
+			`<p><span style="color:#44FF88BB">text</span></p>`,
+		},
+		{
+			"bare hex with mixed case",
+			"##aBcDeF|text##",
+			`<p><span style="color:#aBcDeF">text</span></p>`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := RenderWikidot(tc.in)
+			if got != tc.want {
+				t.Errorf("\n got: %q\nwant: %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestWikidotInlineColorHexShape checks the hex-length validation:
+// 3, 4, 6, or 8 digits after the `#`. Anything else falls
+// through to dropping the wrapper (matching the unknown-name
+// behaviour).
+func TestWikidotInlineColorHexShape(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			"5-digit bare hex (drop)",
+			"##12345|text##",
+			`<p>text</p>`,
+		},
+		{
+			"7-digit bare hex (drop)",
+			"##1234567|text##",
+			`<p>text</p>`,
+		},
+		{
+			"named blue (still works)",
+			"##blue|text##",
+			`<p><span style="color:#3498db">text</span></p>`,
+		},
+		{
+			"unknown name (drop)",
+			"##notacolor|text##",
+			`<p>text</p>`,
+		},
+		{
+			"named with leading hash still works",
+			"##44FF88|text##",
+			`<p><span style="color:#44FF88">text</span></p>`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := RenderWikidot(tc.in)
+			if got != tc.want {
+				t.Errorf("\n got: %q\nwant: %q", got, tc.want)
+			}
+		})
+	}
+}

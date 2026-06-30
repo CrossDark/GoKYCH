@@ -414,7 +414,23 @@ var (
 	// Must run before the bold/italic passes — `**` and `##` are
 	// syntactically unrelated, but processing colour early keeps the
 	// pipeline simple.
-	reWDInlineColor = regexp.MustCompile(`##([A-Za-z]+|#[0-9A-Fa-f]{3,8})\|([^#]+)##`)
+	// Inline colour in the Wikidot "##color|text##" form (no brackets).
+	// The colour is one of three shapes (see applyWikidotInlineColor):
+	//   - a CSS-named token starting with a letter (e.g. "blue",
+	//     "lightblue", "dark-red");
+	//   - hex with leading `#` (3-8 digits, e.g. "#44FF88", "#fa3");
+	//   - hex WITHOUT leading `#` (3-8 digits, e.g. "44FF88") — the
+	//     bare-hex form used by the rule-wiki wikidot-syntax spec.
+	//
+	// The named alternative is anchored to `[A-Za-z]` so a hex like
+	// "44FF88" doesn't accidentally fall through the name path
+	// (where it wouldn't match anything in colorNames anyway, but
+	// the bare-hex probe below needs the unambiguous split).
+	//
+	// Must run before the bold/italic passes — `**` and `##` are
+	// syntactically unrelated, but processing colour early keeps the
+	// pipeline simple.
+	reWDInlineColor = regexp.MustCompile(`##([A-Za-z][\w-]*|#[0-9A-Fa-f]{3,8}|[0-9A-Fa-f]{3,8})\|([^#]+?)##`)
 
 	// Phase 3 links — external [url text] and mailto [mailto:addr text].
 	// Wikidot's internal link form `[[[page|alias]]]` is below.
@@ -1210,14 +1226,15 @@ func (p *wikidotParser) convertInternal(source string, appendFootnotes bool) str
 	// 1k. [[span class=…]] / [[span style=…]] — inline only, no block
 	// patterns or paragraph wrapping (span is inline; nesting <p> inside
 	// it is invalid HTML).
-	out = reWDSpanClass.ReplaceAllStringFunc(out, func(s string) string {
-		m := reWDSpanClass.FindStringSubmatch(s)
-		inner := inlineOnly(m[2])
-		if cls := sanitizeAnchorID(m[1]); cls != "" {
-			return fmt.Sprintf(`<span class="%s">%s</span>`, cls, inner)
-		}
-		return inner
-	})
+	//
+	// The class-form uses a balanced matcher (renderBalancedSpanClass
+	// below) so nested `[[span class="ruby"]]...[[span class="rt"]]...
+	// [[/span]][[/span]]` constructs produce valid HTML5 `<ruby>` /
+	// `<rt>` elements, instead of the previous single-regex pass that
+	// emitted generic `<span class="ruby">` with the inner rt/text
+	// leak through verbatim. See renderBalancedSpanClass for the
+	// fixed-point loop strategy.
+	out = renderBalancedSpanClass(out)
 	out = reWDSpanStyle.ReplaceAllStringFunc(out, func(s string) string {
 		m := reWDSpanStyle.FindStringSubmatch(s)
 		inner := inlineOnly(m[2])
@@ -1601,33 +1618,10 @@ func (p *wikidotParser) convertInternal(source string, appendFootnotes bool) str
 	// we reach this point, so no inline handling is
 	// required here.)
 
-	// 2b. Inline colour `##colorname|text##` or `##hex|text##`
-	out = reWDInlineColor.ReplaceAllStringFunc(out, func(s string) string {
-		m := reWDInlineColor.FindStringSubmatch(s)
-		name := strings.TrimSpace(m[1])
-		text := m[2]
-		// Named colour: look up in the colourNames table for
-		// canonical CSS values. We don't fall back to raw CSS
-		// values here so `##greyish|...##` doesn't silently
-		// render as `style="color:greyish"`.
-		// Hex colour: pass through sanitizeCSSValue which
-		// validates the value is exactly `#RRGGBB[AA]`-shaped
-		// and contains no metacharacters. Unknown / invalid
-		// colours drop the wrapper and return the inner text
-		// (matching the existing `##<badname>|...##` →
-		// `...` behaviour).
-		if strings.HasPrefix(name, "#") {
-			if css := sanitizeCSSValue(name); css != "" {
-				return fmt.Sprintf(`<span style="color:%s">%s</span>`, css, html.EscapeString(text))
-			}
-			return text
-		}
-		css, ok := colorNames[strings.ToLower(name)]
-		if !ok {
-			return text
-		}
-		return fmt.Sprintf(`<span style="color:%s">%s</span>`, css, html.EscapeString(text))
-	})
+	// 2b. Inline colour `##colorname|text##` or `##hex|text##` (the
+	// bare-hex form `##44FF88|text##` from the rule-wiki spec is also
+	// accepted — see applyWikidotInlineColor).
+	out = reWDInlineColor.ReplaceAllStringFunc(out, applyWikidotInlineColor)
 
 	// 2c. The standard formatting stack.
 	out = reWDBold.ReplaceAllString(out, `<strong>$1</strong>`)
@@ -3846,22 +3840,7 @@ func inlineOnly(text string) string {
 	text = reWDSuperscript.ReplaceAllString(text, `<sup>$1</sup>`)
 	text = reWDSubscript.ReplaceAllString(text, `<sub>$1</sub>`)
 	text = reWDInlineCode.ReplaceAllString(text, `<code>$1</code>`)
-	text = reWDInlineColor.ReplaceAllStringFunc(text, func(s string) string {
-		m := reWDInlineColor.FindStringSubmatch(s)
-		name := strings.TrimSpace(m[1])
-		text := m[2]
-		if strings.HasPrefix(name, "#") {
-			if css := sanitizeCSSValue(name); css != "" {
-				return fmt.Sprintf(`<span style="color:%s">%s</span>`, css, html.EscapeString(text))
-			}
-			return text
-		}
-		css, ok := colorNames[strings.ToLower(name)]
-		if !ok {
-			return text
-		}
-		return fmt.Sprintf(`<span style="color:%s">%s</span>`, css, html.EscapeString(text))
-	})
+	text = reWDInlineColor.ReplaceAllStringFunc(text, applyWikidotInlineColor)
 	// Inline footnote refs in list items / table cells.
 	text = reWDFootnoteRef.ReplaceAllStringFunc(text, func(s string) string {
 		m := reWDFootnoteRef.FindStringSubmatch(s)
@@ -5472,3 +5451,187 @@ func wrapWikidotParagraphs(text string) string {
 // avoid unused import warnings in build configs that strip the slog
 // reference; called from the renderers that surface module errors.
 var _ = slog.Default
+
+// ── Balanced `[[span class=...]]` replacement ────────────────────────
+//
+// Wikidot's span-class construct supports several semantic classes
+// (ruby/rt/rb/keycap) that map to HTML5 elements, plus arbitrary
+// class names that map to a generic `<span class>`. The grammar is
+// balanced: a `[[span class="ruby"]]...[[/span]]` may contain a
+// nested `[[span class="rt"]]...[[/span]]` whose close pairs with
+// the *inner* `[[/span]]`.
+//
+// We can't match the deep balanced form with a single regex (Go's
+// RE2 doesn't support recursion), but we can rely on a fixed-point
+// strategy: match each *innermost* span (whose inner contains no
+// `[[`) on every pass, map it to its target element, and loop until
+// no change. Because each pass shrinks the source, the loop always
+// terminates — and because the inner is empty-of-`[[`, the matched
+// construct is provably innermost.
+//
+// reWDInnermostSpanClass captures one `[[span class="X"]]INNER[[/span]]`
+// where INNER has no `[` — so the regex always picks the deepest
+// match first. See renderBalancedSpanClass below for the loop.
+var reWDInnermostSpanClass = regexp.MustCompile(`(?is)\[\[span class="([^"]*)"\]\]([^[]*?)\[\[/span\]\]`)
+
+// renderBalancedSpanClass replaces balanced
+// `[[span class="X"]]...[[/span]]` constructs in `s` with their
+// HTML5 equivalents. See the doc-comment above the regex
+// declaration for the loop strategy.
+//
+// Mapping:
+//   - `class="keycap"`         → `<kbd>…</kbd>`
+//   - `class="ruby"`           → `<ruby>…</ruby>`
+//   - `class="rt"`             → `<rt>…</rt>`     (used nested inside ruby)
+//   - `class="rb"`             → `<rb>…</rb>`     (used nested inside ruby)
+//   - `class="foo bar"`        → `<span class="foo bar">…</span>`
+//     (multi-class; each token must be `[A-Za-z0-9_-]+`)
+//   - any class with an invalid token → wrapper dropped, inner kept verbatim
+//   - empty class                       → wrapper dropped, inner kept verbatim
+//
+// This is the substitution function used by Phase 1k. We replaced
+// the previous single-pass regex with this loop so the nested
+// ruby/rt/rb case produces valid `<ruby>` HTML — the old code
+// would emit a generic `<span class="ruby">…</span>` with the inner
+// rt construct still inside the source text.
+func renderBalancedSpanClass(s string) string {
+	if !strings.Contains(s, `[[span class="`) {
+		return s
+	}
+	prev := ""
+	for prev != s {
+		prev = s
+		s = reWDInnermostSpanClass.ReplaceAllStringFunc(s, func(full string) string {
+			m := reWDInnermostSpanClass.FindStringSubmatch(full)
+			return mapSpanClassToElement(m[1], m[2])
+		})
+	}
+	return s
+}
+
+// mapSpanClassToElement translates one balanced [[span class="X"]]pair[[/span]]
+// to its HTML5 equivalent (or a generic `<span class>` for non-special
+// classes). The HTML-escape for the inner content is the caller's job
+// when the inner has user-controlled text; this helper preserves text
+// verbatim so any pre-existing HTML (from a previous pass of the loop)
+// survives the wrapping.
+func mapSpanClassToElement(cls, inner string) string {
+	switch strings.ToLower(strings.TrimSpace(cls)) {
+	case "keycap":
+		return `<kbd>` + inner + `</kbd>`
+	case "ruby":
+		return `<ruby>` + inner + `</ruby>`
+	case "rt":
+		return `<rt>` + inner + `</rt>`
+	case "rb":
+		return `<rb>` + inner + `</rb>`
+	case "":
+		return inner
+	}
+	// Generic class — sanitise each whitespace-separated token.
+	// Any invalid token drops the wrapper entirely so a hostile
+	// `class="x onclick=…"` can't inject attributes: a partially-
+	// accepted multi-class would still be a footgun if the bad
+	// token happened to be a valid HTML attribute name.
+	parts := strings.Fields(cls)
+	cleaned := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" || !isValidClassName(p) {
+			return inner
+		}
+		cleaned = append(cleaned, p)
+	}
+	if len(cleaned) == 0 {
+		return inner
+	}
+	return `<span class="` + strings.Join(cleaned, " ") + `">` + inner + `</span>`
+}
+
+// isValidClassName returns true iff s consists only of
+// [A-Za-z0-9_-]+ (i.e. a single CSS class identifier, no spaces,
+// no escapes). The intent matches the previous
+// `sanitizeAnchorID` rule but applied per-token so multi-class
+// `class="foo bar"` strings survive the round-trip.
+func isValidClassName(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		ok := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || r == '_' || r == '-'
+		if !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// applyWikidotInlineColor is the substitution function for
+// reWDInlineColor. It's shared between the main Phase 2 inline
+// pass (line ~1605) and the recursive inlineOnly() helper that
+// other phases call back into for list items / table cells /
+// span-class inner content — the two sites need to make the
+// same decision about which colour form the user wrote.
+//
+// Recognised forms (matches `##<color>|<text>##`):
+//   - `##<name>|text##`          — `name` is looked up in
+//     the `colorNames` table; unknown names drop the wrapper.
+//   - `##<#rgb>|text##`          — explicit hex with `#`.
+//   - `##<rgb>|text##`           — bare hex without `#`, the form
+//     the rule-wiki wikidot-syntax spec uses (e.g. `##44FF88|`).
+//     We prepend `#` so CSS parses it correctly. Length must be
+//     3/4/6/8 hex digits (CSS hex shorthand + rgba).
+//
+// Any non-conforming input drops the wrapper and emits the inner
+// text verbatim — same fallback as a malformed class.
+func applyWikidotInlineColor(s string) string {
+	m := reWDInlineColor.FindStringSubmatch(s)
+	if m == nil {
+		return s
+	}
+	name := strings.TrimSpace(m[1])
+	text := m[2]
+
+	// Hex (with or without `#`).
+	hex := name
+	if !strings.HasPrefix(hex, "#") && isPureHex(hex) {
+		hex = "#" + hex
+	}
+	if strings.HasPrefix(hex, "#") {
+		if css := sanitizeCSSValue(hex); css != "" {
+			// CSS hex is 3, 4, 6, or 8 digits after the `#`.
+			n := len(css) - 1
+			if n == 3 || n == 4 || n == 6 || n == 8 {
+				return fmt.Sprintf(`<span style="color:%s">%s</span>`, css, html.EscapeString(text))
+			}
+		}
+		return text
+	}
+
+	// Named colour.
+	if css, ok := colorNames[strings.ToLower(name)]; ok {
+		return fmt.Sprintf(`<span style="color:%s">%s</span>`, css, html.EscapeString(text))
+	}
+	return text
+}
+
+// isPureHex reports true iff s is non-empty and contains only
+// `[0-9A-Fa-f]`. Used by the inline-color handler to decide
+// whether a colour value is a bare hex literal (the spec form)
+// vs a CSS-named token.
+func isPureHex(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= '0' && r <= '9':
+		case r >= 'a' && r <= 'f':
+		case r >= 'A' && r <= 'F':
+		default:
+			return false
+		}
+	}
+	return true
+}
