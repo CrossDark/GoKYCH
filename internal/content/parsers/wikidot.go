@@ -5,6 +5,7 @@ import (
 	"html"
 	"log/slog"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -231,6 +232,72 @@ var (
 	// require the path to have at least one of the separator
 	// characters so `[/li]` and friends don't false-positive.
 	reWDRelativeLink = regexp.MustCompile(`\[(/[^\s\]]*[/.:\-][^\s\]]*)(?:\s+([^\]]+))?\]`)
+
+	// ── Stage 5 (P2 round 4) — gallery + form widgets ─────────────
+	//
+	// Closes the next round of gaps vs the wikidot syntax spec.
+	// Each regex here pairs with a test in wikidot_test.go.
+
+	// `[[gallery]]` … `[[/gallery]]` block — Wikidot's image-gallery
+	// form. The body is line-delimited; each line is either `URL`
+	// (just the URL) or `URL | caption` (URL + optional caption).
+	// The form takes no attributes. Nested `[[image …]]` constructs
+	// inside a gallery block are NOT accepted — Wikidot's gallery
+	// form is intentionally the simple `URL [| caption]`-per-line
+	// layout, and supporting the heavier `[[image …]]` inside the
+	// gallery would mean nesting the Phase-1 stash passes (which the
+	// gallery block is already running past).
+	reWDGallery = regexp.MustCompile(`(?is)\[\[gallery\]\](.*?)\[\[/gallery\]\]`)
+
+	// Form widgets — each construct accepts an arbitrary attribute
+	// tail `key="value" key="value" …` shared with `[[image]]`. The
+	// shared `reWDImageAttr` regex (the same one image uses) is
+	// reused at parse time so authors learn one attribute syntax.
+	//
+	// `[[form attrs]]` opener — paired with `[[/form]]` close.
+	// `[[input attrs]]` single-tag — auto-closes (no inner content).
+	// `[[textarea attrs]]` opener — paired with `[[/textarea]]`.
+	// `[[button attrs]]` single-tag — `label="…"` attribute is
+	//                               rendered as the button's inner
+	//                               text (HTML <button> uses inner
+	//                               text, not a label attr).
+	// `[[checkbox attrs]]` — `checked` attribute (no value) renders
+	//                       as the bare HTML attribute when present.
+	// `[[radio attrs]]` — single-tag `<input type="radio">`.
+	// `[[select attrs]]` opener — paired with `[[/select]]` close.
+	// `[[option attrs]]` opener — paired with `[[/option]]` close;
+	//                          the inner text is the option's label.
+	reWDFormOpen       = regexp.MustCompile(`(?is)\[\[form((?:\s+[a-zA-Z][\w-]*(\s*=\s*"[^"]*")?)*)\s*\]\]`)
+	reWDFormClose      = regexp.MustCompile(`\[\[/form\]\]`)
+	reWDInput          = regexp.MustCompile(`(?is)\[\[input((?:\s+[a-zA-Z][\w-]*(\s*=\s*"[^"]*")?)*)\s*\]\]`)
+	reWDTextareaOpen   = regexp.MustCompile(`(?is)\[\[textarea((?:\s+[a-zA-Z][\w-]*(\s*=\s*"[^"]*")?)*)\s*\]\]`)
+	reWDTextareaClose  = regexp.MustCompile(`\[\[/textarea\]\]`)
+	// NOTE: `reWDButton` (the legacy wikidot button used at line
+	// ~487 for `[[button Label|target]]`) keeps that name. Our
+	// form-widget button — `[[button attrs]]` with arbitrary
+	// attributes but no `|` separator — is named `reWDFormButton`
+	// so the two syntaxes stay distinct: a `[[button label|…]]`
+	// passes the legacy regex, a `[[button type="…" …]]` passes
+	// this one. The order in which the two are tried determines
+	// which one wins.
+	reWDFormButton     = regexp.MustCompile(`(?is)\[\[button((?:\s+[a-zA-Z][\w-]*(\s*=\s*"[^"]*")?)*)\s*\]\]`)
+	reWDCheckbox       = regexp.MustCompile(`(?is)\[\[checkbox((?:\s+[a-zA-Z][\w-]*(\s*=\s*"[^"]*")?)*)\s*\]\]`)
+	reWDRadio          = regexp.MustCompile(`(?is)\[\[radio((?:\s+[a-zA-Z][\w-]*(\s*=\s*"[^"]*")?)*)\s*\]\]`)
+	reWDSelectOpen     = regexp.MustCompile(`(?is)\[\[select((?:\s+[a-zA-Z][\w-]*(\s*=\s*"[^"]*")?)*)\s*\]\]`)
+	reWDSelectClose    = regexp.MustCompile(`\[\[/select\]\]`)
+	reWDOptionOpen     = regexp.MustCompile(`(?is)\[\[option((?:\s+[a-zA-Z][\w-]*(\s*=\s*"[^"]*")?)*)\s*\]\]`)
+	reWDOptionClose    = regexp.MustCompile(`\[\[/option\]\]`)
+
+	// `reWDSizeValue` validates the non-keyword numeric form of
+	// a `[[size …]]` value. Matches `N`, `Npx`, `Nem`, `N%` with
+	// optional fractional part (e.g. `0.8em`, `18.75px`, `50%`).
+	// Anything else — including bogus CSS keywords like
+	// `[[size giant]]`, `[[size huger]]`, `[[size red]]` — fails
+	// this whitelist, so the size span degrades to plain text
+	// rather than producing `style="font-size:giant"` (which
+	// browsers silently ignore but would-be readers can't see
+	// as a typo).
+	reWDSizeValue = regexp.MustCompile(`^\s*\d+(\.\d+)?(px|em|%)?\s*$`)
 
 	// ── Image alignment prefixes ──────────────────────────────────
 	//
@@ -1028,6 +1095,71 @@ func (p *wikidotParser) convertInternal(source string, appendFootnotes bool) str
 		return p.storeBlock(renderWikidotTable(p, m[1]))
 	})
 
+	// 1f.5 [[gallery]]...[[/gallery]] image-gallery block. Each
+	// body line is either a bare URL (`https://…/img.jpg`) or
+	// `URL | caption` (URL pipe space caption). Lines are
+	// individually sanitised through sanitizeURLForAttr; an
+	// unsafe line is dropped (the comment author can't easily
+	// crash the page with a malformed URL, and the rendered
+	// gallery doesn't change shape when one line is dropped).
+	//
+	// Output wraps each image in a `<figure>` with an optional
+	// `<figcaption>`; the outer `<div class="wikidot-gallery">`
+	// is the grid hook the front-end uses to lay the figures
+	// out as a thumbnail grid.
+	out = reWDGallery.ReplaceAllStringFunc(out, func(s string) string {
+		m := reWDGallery.FindStringSubmatch(s)
+		body := m[1]
+		var sb strings.Builder
+		sb.WriteString(`<div class="wikidot-gallery">`)
+		for _, line := range strings.Split(body, "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			// Split on the FIRST `|` so captions that
+			// contain a pipe are preserved as-is — only
+			// one caption pipe is supported (the second
+			// pipe, if any, becomes part of the caption).
+			parts := strings.SplitN(line, "|", 2)
+			url := strings.TrimSpace(parts[0])
+			caption := ""
+			if len(parts) == 2 {
+				caption = strings.TrimSpace(parts[1])
+			}
+			safe := sanitizeURLForAttr(url)
+			if safe == "" {
+				continue
+			}
+			alt := html.EscapeString(caption)
+			if caption != "" {
+				sb.WriteString(fmt.Sprintf(
+					`<figure><img src="%s" alt="%s" loading="lazy"><figcaption>%s</figcaption></figure>`,
+					safe, alt, alt,
+				))
+			} else {
+				sb.WriteString(fmt.Sprintf(
+					`<figure><img src="%s" alt="" loading="lazy"></figure>`,
+					safe,
+				))
+			}
+		}
+		sb.WriteString(`</div>`)
+		return p.storeBlock(sb.String())
+	})
+
+	// 1f.6 [[form ...]]…[[/form]] — paired form block. The
+	// inner body is run through inlineOnly (so links /
+	// wikidot-inline-formatting survive) AND through the
+	// form-widget substitution pass that turns [[input
+	// …]] / [[textarea …]]content[[/textarea]] / [[button
+	// …]] / [[checkbox …]] / [[radio …]] / [[select…]] /
+	// [[option…]]label[[/option]] into the corresponding
+	// HTML form controls. We use the depth-counting scanner
+	// so a nested [[form]] inside (rare but legal) is
+	// balanced correctly.
+	out = renderWikidotFormBlocks(out)
+
 	// 1g. [[include SLUG | key=val | …]] — recursive page embed.
 	// Resolved here, before div/float/span, so an include that
 	// wraps block-level wikidot syntax in its target page is
@@ -1096,16 +1228,7 @@ func (p *wikidotParser) convertInternal(source string, appendFootnotes bool) str
 	})
 
 	// 1l. [[size]] / [[color]]
-	out = reWDSize.ReplaceAllStringFunc(out, func(s string) string {
-		m := reWDSize.FindStringSubmatch(s)
-		css := m[1]
-		if v, ok := sizeMap[strings.ToLower(css)]; ok {
-			css = v
-		} else if css = sanitizeCSSValue(css); css == "" {
-			return inlineOnly(m[2])
-		}
-		return fmt.Sprintf(`<span style="font-size:%s">%s</span>`, css, inlineOnly(m[2]))
-	})
+	out = renderWikidotSizeBlocks(out)
 	out = reWDColor.ReplaceAllStringFunc(out, func(s string) string {
 		m := reWDColor.FindStringSubmatch(s)
 		css := m[1]
@@ -2992,6 +3115,618 @@ func reMatchAlign(raw string, align string) []string {
 	return re.FindStringSubmatch(raw)
 }
 
+// renderWikidotFormBlocks handles the paired `[[form …]]…[[/form]]`
+// block (Phase 1f.6). The block opener is `[[form attrs]]` and
+// the close is `[[/form]]`; a depth counter balances nested
+// `[[form]]` forms so an inner opener doesn't trip the outer
+// closure early.
+//
+// Inner form widgets (`[[input …]]`, `[[textarea …]]…[[/textarea]]`,
+// `[[button …]]`, `[[checkbox …]]`, `[[radio …]]`,
+// `[[select …]]…[[/select]]`, `[[option …]]…[[/option]]`)
+// are substituted by `substituteFormWidgets` into the
+// corresponding HTML form controls. The text OUTSIDE the
+// widget tags (the prose, the labels, the hints) is run
+// through `inlineOnly` so wikidot inline formatting
+// (`**bold****, `//italic//``, `[link]`) survives, but
+// block-level constructs inside a form block don't fire
+// (a stray `[[div …]]` inside a form would be left raw as
+// the author intended; we don't recursively render the
+// form body through the full pipeline because the form
+// is a strict container).
+//
+// Implementation: byte-level walk from each opener. At
+// each step we look for the literal `[[form` (with a
+// non-name-char after to avoid `[[formula]]`) or
+// `[[/form]]` and update the depth counter. When the
+// depth returns to 0 we have the matching close.
+func renderWikidotFormBlocks(source string) string {
+	const openTok = "[[form"
+	const closeTok = "[[/form]]"
+	var sb strings.Builder
+	i := 0
+	for i < len(source) {
+		// Find next opener. We require `[[form` followed by either
+		// whitespace + attrs, OR `]]` directly (the bare-form
+		// form), OR by the closing `]]`. The substring match is
+		// restricted to the literal `[[form` so `[[formula]]`
+		// (false-positive) doesn't trip us.
+		openerStart := indexOfFormOpener(source, i)
+		if openerStart < 0 {
+			sb.WriteString(source[i:])
+			return sb.String()
+		}
+		// Emit everything before the opener verbatim.
+		sb.WriteString(source[i:openerStart])
+		// Find the close `]]` of the opener tag itself.
+		closeIdx := strings.Index(source[openerStart:], "]]")
+		if closeIdx < 0 {
+			// Unbalanced opener with no `]]` — leave verbatim.
+			sb.WriteString(source[openerStart:])
+			return sb.String()
+		}
+		openerEnd := openerStart + closeIdx + 2
+		openerTag := source[openerStart:openerEnd]
+		// Byte-level depth-counted walk for the matching close.
+		// Walk from `openerStart` (NOT `openerEnd`) so that the
+		// walk encounters the opener we just found. Start
+		// `depth` at 0; the opener we re-encounter sets depth=1.
+		// A close that brings depth back to 0 is the matching
+		// close for the outer opener — anything between the
+		// openerEnd and that close is the form body.
+		j := openerStart
+		depth := 0
+		for j < len(source) {
+			// Check for next opener at the current position:
+			// require `[[form` followed by a non-name char.
+			if isAtFormOpener(source, j) {
+				// Find this opener's own `]]` to know the full token
+				// length.
+				cl := strings.Index(source[j:], "]]")
+				if cl < 0 {
+					// Defensive — opener found but no close.
+					sb.WriteString(source[openerStart:])
+					return sb.String()
+				}
+				depth++
+				j = j + cl + 2
+				continue
+			}
+			// Check for next close `[[/form]]`.
+			if strings.HasPrefix(source[j:], closeTok) {
+				depth--
+				closeEnd := j + len(closeTok)
+				if depth == 0 {
+					body := source[openerEnd:j]
+					inner := substituteFormWidgets(body)
+					sb.WriteString(`<form`)
+					// Pull the attribute tail out of the opener tag.
+					sb.WriteString(extractFormAttrs(openerTag))
+					sb.WriteString(`>`)
+					sb.WriteString(inner)
+					sb.WriteString(`</form>`)
+					i = closeEnd
+					goto nextBlock
+				}
+				j = closeEnd
+				continue
+			}
+			j++
+		}
+		// EOF without a matching close — leave the opener raw.
+		sb.WriteString(source[openerStart:])
+		return sb.String()
+	nextBlock:
+	}
+	return sb.String()
+}
+
+// isAtFormOpener reports whether `source` at-or-after `i`
+// starts with a valid `[[form` opener token (i.e. `[[form`
+// followed by whitespace, which means at least one
+// attribute is being defined). Bare `[[form]]` (no
+// attributes, just the bare form) is intentionally NOT
+// recognised as a form opener — authors who write a bare
+// `[[form]]` token mid-text (in a heading, a sentence,
+// etc.) get the literal text preserved, not a phantom
+// form block. The form block construct always carries at
+// least one attribute pair in wikidot's spec, so
+// requiring whitespace after `[[form` is consistent
+// with the documented convention.
+func isAtFormOpener(source string, i int) bool {
+	// `[[form` is exactly 6 chars; we need at least one
+	// more char after to discriminate `[[form` from
+	// `[[formula]]`. The byte right after the opener is
+	// at offset `i + 6`.
+	if i+6 >= len(source) {
+		return false
+	}
+	if !strings.HasPrefix(source[i:], "[[form") {
+		return false
+	}
+	after := i + 6
+	// Require a whitespace char (space, tab, newline,
+	// CR). Other chars (`]`, `=`, `>`, `/`) would be
+	// ambiguous with a wiki-link opener (`[[form|alias]]`,
+	// for example — though we don't currently support
+	// the pipe alias form on form either, but rejecting
+	// these keeps the token boundary strict).
+	switch source[after] {
+	case ' ', '\t', '\n', '\r':
+		return true
+	}
+	return false
+}
+
+// indexOfFormOpener returns the byte position of the next
+// `[[form` literal that is followed by either whitespace,
+// `=`, `>`, or `]]` (so `[[formula` or `[[formation]]` are
+// not mistaken for a form opener). We check the byte right
+// after `[[form` to disambiguate.
+func indexOfFormOpener(source string, from int) int {
+	const tok = "[[form"
+	idx := from
+	for idx < len(source) {
+		j := strings.Index(source[idx:], tok)
+		if j < 0 {
+			return -1
+		}
+		at := idx + j
+		after := at + len(tok)
+		if after >= len(source) {
+			return -1
+		}
+		// The next char must be whitespace — bare `[[form]]`
+		// (no attrs) is intentionally NOT a form opener; an
+		// author who writes a literal `[[form]]` token in
+		// a heading or sentence keeps the literal text
+		// visible. This matches `isAtFormOpener`.
+		switch source[after] {
+		case ' ', '\t', '\n', '\r':
+			return at
+		}
+		idx = at + 1
+	}
+	return -1
+}
+
+// extractFormAttrs pulls the attribute tail out of `[[form …]]`
+// and returns it as a string ready to splice into the `<form>`
+// tag (e.g. ` method="post" action="/api/submit"`). The
+// opening `[[form` and trailing `]]` are dropped. Empty string
+// when the author wrote a bare `[[form]]` with no attributes.
+//
+// We sanity-check each `key="value"` pair through
+// `sanitizeAnchorID` (key) and HTML escape (value) so the
+// resulting `<form>` tag is safe to drop in. Unknown keys are
+// passed through (CSS-style attributes with custom names are
+// the author's choice; the CSP front-end enforces policy on
+// the runtime side).
+func extractFormAttrs(opener string) string {
+	// opener is `[form …]`. Strip the opener/closer.
+	const openTok = "[[form"
+	const closeTok = "]]"
+	if !strings.HasPrefix(opener, openTok) {
+		return ""
+	}
+	rest := opener[len(openTok):]
+	if !strings.HasSuffix(rest, closeTok) {
+		return ""
+	}
+	rest = rest[:len(rest)-len(closeTok)]
+	rest = strings.TrimSpace(rest)
+	if rest == "" {
+		return ""
+	}
+	// Validate each `key="value"`. We re-use reWDImageAttr
+	// (it's the standard `key="value"` regex the wikidot
+	// parser uses everywhere). Anything not matching the
+	// regex pair is dropped (the author sees only what they
+	// wrote, minus the bad pair, since we replace-on-match).
+	var out []string
+	for _, m := range reWDImageAttr.FindAllStringSubmatch(rest, -1) {
+		key := sanitizeAnchorID(m[1])
+		val := html.EscapeString(m[2])
+		if key == "" || val == "" {
+			continue
+		}
+		out = append(out, fmt.Sprintf(` %s="%s"`, key, val))
+	}
+	return strings.Join(out, "")
+}
+
+// substituteFormWidgets walks a `[[form …]]…[[/form]]` body
+// and replaces each form-widget construct (input / textarea /
+// button / checkbox / radio / select / option) with the
+// matching HTML form element. Prose between widgets is run
+// through `inlineOnly` so wikidot inline formatting survives.
+//
+// Nested `[[form …]]…[[/form]]` blocks (an inner form inside
+// the outer form body) are processed by RE-INVOKING
+// renderWikidotFormBlocks on the body. The outer render pass
+// matched only one `[`[`form…`]`]`-`[`/`form`]` pair, but the
+// BODY may contain a nested form which needs its own
+// processing; running renderWikidotFormBlocks recursively
+// handles that.
+//
+// Strategy: substitute each PAIR (opener + close) in TWO
+// passes — first the openers, then the closes. This avoids
+// the closure-captured-body pitfall (ReplaceAllStringFunc
+// only replaces the matched span, leaving text AFTER the
+// match untouched — so capturing the body and slicing beyond
+// the match double-emits the inner content). After both
+// passes the body has plain HTML form elements with the
+// original prose between them, and inlineOnlyProse only has
+// to walk plain HTML+text.
+//
+// Order of substitution:
+//  1. Nested form blocks first (recursive call) — otherwise
+//     a `[[form …]]` inside the body would survive to the
+//     widget passes and confuse them.
+//  2. Single-tag widgets (input / checkbox / radio /
+//     form-button) — their `[[input …]]` opener also matches
+//     when followed by another `]]` in the source, so
+//     substituting them first removes that ambiguity.
+//  3. `<textarea>` opener → `<textarea …>` and
+//     `[[/textarea]]` → `</textarea>` as separate passes.
+//  4. `<select>` and `<option>` follow the same pattern.
+//  5. inlineOnlyProse on the resulting body.
+func substituteFormWidgets(body string) string {
+	// Recurse into any nested form blocks first. We
+	// re-invoke renderWikidotFormBlocks (the depth-
+	// counter walker) on the body — it can find and
+	// process a nested `[[form …]]…[[/form]]` while
+	// leaving non-form prose intact.
+	body = renderWikidotFormBlocks(body)
+	body = reWDInput.ReplaceAllStringFunc(body, func(s string) string { return renderInputTag(s) })
+	body = reWDCheckbox.ReplaceAllStringFunc(body, func(s string) string { return renderCheckboxTag(s) })
+	body = reWDRadio.ReplaceAllStringFunc(body, func(s string) string { return renderRadioTag(s) })
+	body = reWDFormButton.ReplaceAllStringFunc(body, func(s string) string { return renderButtonTag(s) })
+	body = reWDTextareaOpen.ReplaceAllStringFunc(body, func(s string) string {
+		m := reWDTextareaOpen.FindStringSubmatch(s)
+		return "<textarea" + m[1] + ">"
+	})
+	body = reWDTextareaClose.ReplaceAllString(body, "</textarea>")
+	body = reWDSelectOpen.ReplaceAllStringFunc(body, func(s string) string {
+		m := reWDSelectOpen.FindStringSubmatch(s)
+		return "<select" + m[1] + ">"
+	})
+	body = reWDSelectClose.ReplaceAllString(body, "</select>")
+	body = reWDOptionOpen.ReplaceAllStringFunc(body, func(s string) string {
+		m := reWDOptionOpen.FindStringSubmatch(s)
+		return "<option" + m[1] + ">"
+	})
+	body = reWDOptionClose.ReplaceAllString(body, "</option>")
+	body = inlineOnlyProse(body)
+	return body
+}
+
+// inlineOnlyProse is a pass-through to inlineOnly that's used
+// as the form-body default — split into its own helper so
+// future tweaks (e.g. escape sensitive characters differently
+// inside forms) have a clean insertion point.
+func inlineOnlyProse(s string) string {
+	return inlineOnly(s)
+}
+
+// renderInputTag turns `[[input …]]` into `<input … />`. The
+// `type` defaults to `text` when omitted (matches HTML
+// forms' default). Unknown attributes (e.g. `placeholder=`,
+// `pattern=`, `required`) are passed through after
+// sanitisation so authors can wire up the full HTML5 input
+// surface without wikidot having to learn every new key.
+func renderInputTag(s string) string {
+	m := reWDInput.FindStringSubmatch(s)
+	attrs := parseWidgetAttrs(m[1])
+	if attrs["type"] == "" {
+		attrs["type"] = "text"
+	}
+	return buildSelfClosingWidget("input", attrs)
+}
+
+// renderCheckboxTag turns `[[checkbox …]]` into
+// `<input type="checkbox" … />`. A bare `checked` attribute
+// (no value) is preserved on the element so the box renders
+// pre-checked. `checked="false"` is dropped (the absence of
+// the attribute is the "unchecked" state).
+func renderCheckboxTag(s string) string {
+	m := reWDCheckbox.FindStringSubmatch(s)
+	attrs := parseWidgetAttrs(m[1])
+	attrs["type"] = "checkbox"
+	return buildSelfClosingWidget("input", attrs)
+}
+
+// renderRadioTag turns `[[radio …]]` into `<input type="radio" … />`.
+// Same posture as checkbox — `checked` is preserved when present.
+func renderRadioTag(s string) string {
+	m := reWDRadio.FindStringSubmatch(s)
+	attrs := parseWidgetAttrs(m[1])
+	attrs["type"] = "radio"
+	return buildSelfClosingWidget("input", attrs)
+}
+
+// renderButtonTag turns `[[button …]]` into `<button …>label</button>`
+// where `label` is taken from the `label="…"` attribute (the
+// wikidot convention — HTML <button> uses inner text, not
+// a label attribute). When `label` is omitted we render the
+// button with the literal text "Submit" as a sensible default.
+func renderButtonTag(s string) string {
+	m := reWDFormButton.FindStringSubmatch(s)
+	attrs := parseWidgetAttrs(m[1])
+	label := attrs["label"]
+	if label == "" {
+		label = "Submit"
+	}
+	delete(attrs, "label")
+	if attrs["type"] == "" {
+		attrs["type"] = "submit"
+	}
+	return buildPairedWidget("button", attrs, label)
+}
+
+// renderTextareaTag turns `[[textarea attrs]]content[[/textarea]]`
+// into `<textarea attrs>content</textarea>`. The body is
+// HTML-escaped at substitution time but already went through
+// inlineOnly first so links / bold become real HTML before
+// being inserted (no double-escape).
+func renderTextareaTag(attrs string, inner string) string {
+	a := parseWidgetAttrs(attrs)
+	return buildPairedWidget("textarea", a, inner)
+}
+
+// renderSelectTag turns `[[select attrs]]…options…[[/select]]`
+// into `<select attrs>…options…</select>`. The inner prose
+// has already been substituted by the parent loop, so we
+// just wrap it.
+func renderSelectTag(attrs string, inner string) string {
+	a := parseWidgetAttrs(attrs)
+	return buildPairedWidget("select", a, inner)
+}
+
+// renderOptionTag turns `[[option attrs]]label[[/option]]`
+// into `<option attrs>label</option>`. The label is run
+// through inlineOnly by the outer loop so wikidot inline
+// formatting (e.g. `//italic//` for an option label)
+// survives. We do NOT entity-escape here — the upstream
+// inlineOnly pass is already safe.
+func renderOptionTag(attrs string, label string) string {
+	a := parseWidgetAttrs(attrs)
+	return buildPairedWidget("option", a, label)
+}
+
+// parseWidgetAttrs parses the attribute tail shared by every
+// form widget (`[[TAG attrs]]`). Keys are lowercased; values
+// are HTML-escaped; bare keys (HTML5 boolean attributes like
+// `checked`, `selected`, `required`, `disabled`, `autofocus`)
+// are recorded with an empty value so the renderer knows to
+// emit them as bare attributes.
+//
+// Unknown keys (`placeholder`, `pattern`, `min`, `max`,
+// `step`, `data-*`, etc.) pass through sanitisation
+// unchanged — that's by design, since wikidot doesn't want
+// to maintain an allow-list of every HTML5 attribute.
+func parseWidgetAttrs(raw string) map[string]string {
+	out := make(map[string]string)
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return out
+	}
+	// Find every `key="value"` pair AND every bare `key`
+	// token. The two regexes together cover the full HTML5
+	// attribute surface; a `key="value"` is preferred over
+	// a bare `key` of the same name so an author can write
+	// `checked="false"` to mean "explicitly off" without
+	// getting a bare `checked` accidentally re-triggered
+	// (we record the value "" for bare keys; the `=false`
+	// form records `false` instead).
+	for _, m := range reWDImageAttr.FindAllStringSubmatch(raw, -1) {
+		key := strings.ToLower(strings.TrimSpace(m[1]))
+		val := m[2]
+		if key == "" {
+			continue
+		}
+		out[key] = val
+	}
+	for _, m := range reWDBareAttr.FindAllStringSubmatch(raw, -1) {
+		key := strings.ToLower(strings.TrimSpace(m[1]))
+		if key == "" {
+			continue
+		}
+		// Only set the bare-key form if `key="value"`
+		// hasn't already been recorded for the same name.
+		if _, exists := out[key]; exists {
+			continue
+		}
+		out[key] = ""
+	}
+	return out
+}
+
+// reWDBareAttr matches a bare attribute name (no `=value`)
+// like `checked`, `selected`, `required`, `disabled`,
+// `autofocus`, `readonly`, `multiple`. The lookahead ensures
+// we don't double-match a name that's already part of a
+// `key="value"` pair (the `key` half of `key="value"` is
+// followed by `=`, not whitespace-or-end).
+//
+// Whitelisted to the well-known HTML5 boolean attribute set
+// to avoid false-positives on substrings of a value (e.g. a
+// comment mentioning "checked" inside a `placeholder="…"`
+// should NOT turn into a bare attr). The list below is
+// small and well-defined; adding more is safe but rarely
+// needed.
+var reWDBareAttr = regexp.MustCompile(`(?:^|\s)(checked|selected|required|disabled|autofocus|readonly|multiple|hidden|open|loop|muted|controls|default|autoplay|nowrap|noresize|defer|ismap|declare|compact|itemscope|sortable|truespeed|typemustmatch|async|defer|formnovalidate|novalidate|allowfullscreen|playsinline)\b`)
+
+// buildSelfClosingWidget emits `<TAG k="v" … />` from a
+// sanitised attribute map. Used by input / checkbox / radio.
+// We always emit the tag in self-closing XML form so the
+// HTML parser doesn't open an implicit element boundary.
+//
+// Attribute emission rules:
+//   - `type` / `name` / `value` with non-empty value: `key="value"`.
+//     An empty value here drops the attribute entirely
+//     (HTML5 default kicks in for type, and `<input name>`
+//     with no value is rare enough that omission is the
+//     sensible default).
+//   - Any other key with non-empty value: `key="value"`
+//     (key sanitised via `sanitizeAnchorID`, value
+//     HTML-escaped).
+//   - Any non-type/name/value key with empty value: bare
+//     `key`. This is the canonical form for HTML5 boolean
+//     attributes (`checked`, `selected`, `required`, etc.)
+//     and is also the legacy wikidot form for the same
+//     surface.
+func buildSelfClosingWidget(tag string, attrs map[string]string) string {
+	keys := sortedAttrKeys(attrs)
+	var sb strings.Builder
+	sb.WriteString("<")
+	sb.WriteString(tag)
+	for _, k := range keys {
+		v := attrs[k]
+		switch {
+		case k == "type" || k == "name" || k == "value":
+			if v == "" {
+				// Drop the attribute entirely; an empty
+				// `type=""` or `name=""` is unusual and
+				// the empty form is rare enough that
+				// omission is safer than `<input type>`
+				// (which most browsers parse as
+				// `type=""` / "unspecified" with a
+				// fallback to text).
+				continue
+			}
+			sb.WriteString(" ")
+			sb.WriteString(k)
+			sb.WriteString(`="`)
+			sb.WriteString(html.EscapeString(v))
+			sb.WriteString(`"`)
+		case v != "":
+			// `key="value"` form — sanitise name and HTML-
+			// escape the value. Custom keys (`placeholder`,
+			// `pattern`, `min`, `max`, `step`,
+			// `data-*`, etc.) all flow through here.
+			cleanKey := sanitizeAnchorID(k)
+			if cleanKey == "" {
+				continue
+			}
+			if k != cleanKey && !strings.HasPrefix(cleanKey, "data-") {
+				continue
+			}
+			sb.WriteString(" ")
+			sb.WriteString(cleanKey)
+			sb.WriteString(`="`)
+			sb.WriteString(html.EscapeString(v))
+			sb.WriteString(`"`)
+		default:
+			// Bare form (v == "" for any key other than
+			// type/name/value). Canonical for HTML5 boolean
+			// attributes (`checked`, `required`, etc.).
+			cleanKey := sanitizeAnchorID(k)
+			if cleanKey == "" {
+				continue
+			}
+			if k != cleanKey && !strings.HasPrefix(cleanKey, "data-") {
+				continue
+			}
+			sb.WriteString(" ")
+			sb.WriteString(cleanKey)
+		}
+	}
+	sb.WriteString(" />")
+	return sb.String()
+}
+
+// buildPairedWidget emits `<TAG k="v" … >inner</TAG>`.
+// Used by button / textarea / select / option.
+//
+// Attribute emission rules mirror `buildSelfClosingWidget`:
+//   - `type` / `name` / `value` with empty value → dropped.
+//   - any other key with empty value → bare form.
+//   - any key with non-empty value → `key="value"` (name
+//     sanitised, value HTML-escaped).
+func buildPairedWidget(tag string, attrs map[string]string, inner string) string {
+	keys := sortedAttrKeys(attrs)
+	var sb strings.Builder
+	sb.WriteString("<")
+	sb.WriteString(tag)
+	for _, k := range keys {
+		v := attrs[k]
+		switch {
+		case k == "type" || k == "name" || k == "value":
+			if v == "" {
+				continue
+			}
+			sb.WriteString(" ")
+			sb.WriteString(k)
+			sb.WriteString(`="`)
+			sb.WriteString(html.EscapeString(v))
+			sb.WriteString(`"`)
+		case v != "":
+			cleanKey := sanitizeAnchorID(k)
+			if cleanKey == "" {
+				continue
+			}
+			if k != cleanKey && !strings.HasPrefix(cleanKey, "data-") {
+				continue
+			}
+			sb.WriteString(" ")
+			sb.WriteString(cleanKey)
+			sb.WriteString(`="`)
+			sb.WriteString(html.EscapeString(v))
+			sb.WriteString(`"`)
+		default:
+			cleanKey := sanitizeAnchorID(k)
+			if cleanKey == "" {
+				continue
+			}
+			if k != cleanKey && !strings.HasPrefix(cleanKey, "data-") {
+				continue
+			}
+			sb.WriteString(" ")
+			sb.WriteString(cleanKey)
+		}
+	}
+	sb.WriteString(">")
+	sb.WriteString(inner)
+	sb.WriteString("</")
+	sb.WriteString(tag)
+	sb.WriteString(">")
+	return sb.String()
+}
+
+// sortedAttrKeys returns the attribute keys in deterministic
+// order so the rendered HTML is stable across runs (helps
+// snapshot tests and diff-driven reviews).
+func sortedAttrKeys(attrs map[string]string) []string {
+	keys := make([]string, 0, len(attrs))
+	for k := range attrs {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		// Put `type`, `name`, `value` first so the rendered
+		// tag looks like HTML's typical attribute order.
+		prio := func(s string) int {
+			switch s {
+			case "type":
+				return 0
+			case "name":
+				return 1
+			case "value":
+				return 2
+			case "checked", "selected", "disabled", "required", "readonly", "autofocus":
+				return 3
+			}
+			return 4
+		}
+		pi, pj := prio(keys[i]), prio(keys[j])
+		if pi != pj {
+			return pi < pj
+		}
+		return keys[i] < keys[j]
+	})
+	return keys
+}
+
 func renderWikidotTable(p *wikidotParser, raw string) string {
 	lines := strings.Split(strings.TrimSpace(raw), "\n")
 	var sb strings.Builder
@@ -3624,8 +4359,140 @@ func renderWikidotIndentBlocks(source string, p *wikidotParser) string {
 // its own footnote list (Wikidot's behaviour;
 // footnote lists are article-scoped).
 //
-// An empty tabview (no `[[tab …]]` children) renders
-// to an empty container so the author can see the
+// renderWikidotSizeBlocks walks `source` left-to-right,
+// matching `[[size …]]…[[/size]]` blocks via a depth
+// counter (so a nested `[[size …]]` inside the inner
+// body doesn't trip the outer close). The recursive
+// structure mirrors renderWikidotIndentBlocks.
+//
+// Each block's body is itself run through this same
+// function (via `renderWikidotSizeBlocks(inner)`), so
+// nested `[[size …]]` blocks become nested `<span
+// style="font-size:…">` wrappers.
+//
+// Two valid value classes:
+//
+//  1. Whitelisted keyword (`xx-small`, `larger`, etc. —
+//     listed in `sizeMap`); the keyword is converted to
+//     a rem value for portability.
+//  2. Whitelisted numeric form (`N`, `Npx`, `Nem`,
+//     `N%`, with optional fractional part). The regex
+//     `reWDSizeValue` validates the pattern; values
+//     outside the whitelist degrade to plain text (no
+//     `<span style="font-size:giant">` typo-leak).
+//
+// Anything outside both classes (e.g. `[[size giant]]`,
+// `[[size huger]]`) keeps the construct verbatim so the
+// author sees the typo.
+func renderWikidotSizeBlocks(source string) string {
+	const close = "[[/size]]"
+	// `reWDSizeOpen` matches only the opener portion of a
+	// wikidot size construct — the size value but not the
+	// body / close. We need this separate regex because
+	// `reWDSize` greedily matches the full construct
+	// (`opener … body … close`), which would make the
+	// depth-counter below think the opener end is also the
+	// close end.
+	reWDSizeOpen := regexp.MustCompile(`(?is)\[\[size\s+[^\]]+\]\]`)
+	var sb strings.Builder
+	i := 0
+	for i < len(source) {
+		// Find next opener at-or-after i.
+		loc := reWDSizeOpen.FindStringIndex(source[i:])
+		if loc == nil {
+			sb.WriteString(source[i:])
+			return sb.String()
+		}
+		openerStart := i + loc[0]
+		openerEnd := i + loc[1]
+		// Emit everything verbatim up to the opener.
+		sb.WriteString(source[i:openerStart])
+		// Extract the opener's size value. We re-match
+		// just the opener so we capture only the size
+		// token (group 1), not the body of a nested
+		// construct.
+		m := reWDSizeOpen.FindStringSubmatch(source[openerStart:])
+		if m == nil {
+			// Defensive — shouldn't fail here since
+			// FindStringIndex returned a hit. Emit
+			// the opener verbatim and advance.
+			sb.WriteString(source[openerStart:openerEnd])
+			i = openerEnd
+			continue
+		}
+		// m[0] is the entire opener (e.g. `[[size 0]]`).
+		// The size value is between `[[size ` and `]]`.
+		// Trim both ends rather than using capture group
+		// 1 because the opener regex above doesn't expose
+		// a capture — only m[0] is the full match.
+		css := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(m[0], "[[size "), "]]"))
+		cssAttr, isValid := resolveSizeCss(css)
+		// Depth-counted walk for the matching `[[/size]]`.
+		j := openerEnd
+		depth := 1
+		for j < len(source) {
+			nextOpen := reWDSizeOpen.FindStringIndex(source[j:])
+			nextClose := strings.Index(source[j:], close)
+			switch {
+			case nextClose < 0:
+				// No close — leave the opener raw.
+				sb.WriteString(source[openerStart:])
+				return sb.String()
+			case nextOpen != nil && (j+nextOpen[0]) < (j+nextClose):
+				depth++
+				j = j + nextOpen[1]
+			default:
+				depth--
+				closeAt := j + nextClose
+				closeEnd := closeAt + len(close)
+				if depth == 0 {
+					body := source[openerEnd:closeAt]
+					bodyRendered := renderWikidotSizeBlocks(body)
+					if isValid {
+						sb.WriteString(`<span style="font-size:`)
+						sb.WriteString(cssAttr)
+						sb.WriteString(`">`)
+						sb.WriteString(bodyRendered)
+						sb.WriteString(`</span>`)
+					} else {
+						sb.WriteString(bodyRendered)
+					}
+					i = closeEnd
+					goto nextSize
+				}
+				j = closeEnd
+			}
+		}
+		// EOF without a matching close — leave raw.
+		sb.WriteString(source[openerStart:])
+		return sb.String()
+	nextSize:
+	}
+	return sb.String()
+}
+
+// resolveSizeCss returns the canonical CSS value for a
+// wikidot size token. If the token is a known keyword
+// (mapped via `sizeMap`), the rem value is returned with
+// `isValid=true`. If the token is a numeric form (`Npx` /
+// `Nem` / `N%` / plain `N`), the raw token is returned
+// with `isValid=true`. Anything else (including bogus
+// keywords like `giant`, or CSS values that bypassed
+// `reWDSizeValue`'s whitelist) returns `isValid=false`
+// so the caller falls back to the body-only path.
+func resolveSizeCss(token string) (string, bool) {
+	if v, ok := sizeMap[strings.ToLower(token)]; ok {
+		return v, true
+	}
+	if !reWDSizeValue.MatchString(token) {
+		return "", false
+	}
+	return token, true
+}
+
+// renderWikidotTabviews walks `source` left-to-right,
+// matching `[[tabview]]…[[/tabview]]` blocks via a
+// depth-counter (so a nested `[[tabview]]` inside a tab
 // (silent) mistake.
 func renderWikidotTabviews(source string, p *wikidotParser) string {
 	const open = "[[tabview]]"

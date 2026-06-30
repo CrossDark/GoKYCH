@@ -2600,3 +2600,479 @@ func TestWikidotTableCellContinuationUnmatched(t *testing.T) {
 	// a crash and absence of an emitted <table> for the
 	// unmatched opener.
 }
+
+// ── Stage 5 (P2 round 4) — gallery + size 相对值 + form widgets ─────
+
+// TestWikidotSizeRelativePercent verifies the `[[size N%]]`
+// form (relative units — percent of the parent's font size).
+// The size value passes through sanitizeCSSValue and gets
+// emitted on the `style` attribute verbatim. Wikidot's spec
+// lists `[[size 80%]]`, `[[size 100%]]`, `[[size 150%]]` as
+// canonical forms; we accept any non-negative percent.
+func TestWikidotSizeRelativePercent(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{`[[size 80%]]小[[/size]]`, `font-size:80%`},
+		{`[[size 100%]]不变[[/size]]`, `font-size:100%`},
+		{`[[size 150%]]放大到1.5倍[[/size]]`, `font-size:150%`},
+		{`[[size 50%]]一半[[/size]]`, `font-size:50%`},
+	}
+	for _, c := range cases {
+		out := RenderWikidot(c.in)
+		if !strings.Contains(out, c.want) {
+			t.Errorf("input %q: expected %q in %q", c.in, c.want, out)
+		}
+	}
+}
+
+// TestWikidotSizeRelativeEm verifies the `[[size Nem]]`
+// form. Em is also a relative unit (1em = current font size).
+// The spec lists `[[size 0.8em]]`, `[[size 1em]]`, `[[size 1.5em]]`
+// as canonical forms; we accept any non-negative value,
+// including fractional ones.
+func TestWikidotSizeRelativeEm(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{`[[size 0.8em]][[/size]]`, `font-size:0.8em`},
+		{`[[size 1em]][[/size]]`, `font-size:1em`},
+		{`[[size 1.5em]][[/size]]`, `font-size:1.5em`},
+		{`[[size 2em]][[/size]]`, `font-size:2em`},
+	}
+	for _, c := range cases {
+		out := RenderWikidot(c.in)
+		if !strings.Contains(out, c.want) {
+			t.Errorf("input %q: expected %q in %q", c.in, c.want, out)
+		}
+	}
+}
+
+// TestWikidotSizeAbsolutePx verifies the `[[size Npx]]`
+// form (absolute pixel size — not relative to the parent's
+// font size). The spec lists `[[size 7px]]` and
+// `[[size 18.75px]]` as canonical forms; we accept any
+// non-negative value.
+func TestWikidotSizeAbsolutePx(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{`[[size 7px]]7px[[/size]]`, `font-size:7px`},
+		{`[[size 14px]]14px[[/size]]`, `font-size:14px`},
+		{`[[size 18.75px]]18.75px[[/size]]`, `font-size:18.75px`},
+		{`[[size 24px]]24px[[/size]]`, `font-size:24px`},
+	}
+	for _, c := range cases {
+		out := RenderWikidot(c.in)
+		if !strings.Contains(out, c.want) {
+			t.Errorf("input %q: expected %q in %q", c.in, c.want, out)
+		}
+	}
+}
+
+// TestWikidotSizeKeywordAll9 verifies each of the 9 keyword
+// names Wikidot's spec lists under "绝对字体大小" + 相对
+// "larger" / "smaller" — every name maps to a CSS keyword
+// in `sizeMap`. The keyword form means the size is in
+// absolute CSS terms (independent of the parent's font
+// size), except for `larger` and `smaller` which are
+// relative.
+func TestWikidotSizeKeywordAll9(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{`[[size xx-small]]xx-sm[[/size]]`, `font-size:0.5rem`},
+		{`[[size x-small]]x-sm[[/size]]`, `font-size:0.625rem`},
+		{`[[size smaller]]更小[[/size]]`, `font-size:0.75rem`},
+		{`[[size small]]小[[/size]]`, `font-size:0.8rem`},
+		{`[[size medium]]中[[/size]]`, `font-size:1rem`},
+		{`[[size large]]大[[/size]]`, `font-size:1.25rem`},
+		{`[[size x-large]]更大[[/size]]`, `font-size:1.5rem`},
+		{`[[size xx-large]]最大[[/size]]`, `font-size:2rem`},
+		{`[[size larger]]最大[[/size]]`, `font-size:2.5rem`},
+	}
+	for _, c := range cases {
+		out := RenderWikidot(c.in)
+		if !strings.Contains(out, c.want) {
+			t.Errorf("input %q: expected %q in %q", c.in, c.want, out)
+		}
+	}
+}
+
+// TestWikidotSizeNested verifies a `[[size larger]]` with an
+// inner `[[size smaller]]` produces two stacked `<span
+// style="font-size:…">` elements. The inner span's CSS value
+// is computed against its own sizeMap entry (Wikidot
+// computes it relative to the parent's font size in the
+// browser — the static `font-size` value we emit is the
+// absolute rem value the sizeMap gives).
+func TestWikidotSizeNested(t *testing.T) {
+	in := `[[size larger]]外 [[size smaller]]内[[/size]] 又外[[/size]]`
+	out := RenderWikidot(in)
+	// Outer = 2.5rem, inner = 0.75rem.
+	if !strings.Contains(out, `font-size:2.5rem`) {
+		t.Errorf("expected outer font-size 2.5rem, got %q", out)
+	}
+	if !strings.Contains(out, `font-size:0.75rem`) {
+		t.Errorf("expected inner font-size 0.75rem, got %q", out)
+	}
+	// Two stacked <span>s.
+	if got, want := strings.Count(out, "<span style=\"font-size"), 2; got != want {
+		t.Errorf("expected %d font-size spans, got %d in %q", want, got, out)
+	}
+}
+
+// TestWikidotSizeUnknownFallsBackToPlain verifies an
+// unrecognized `[[size keyword]]` (e.g. `[[size giant]]`) —
+// not in sizeMap AND not a number — degrades to plain text
+// (no `<span style="font-size:giant">` is rendered). The
+// author sees the typo.
+func TestWikidotSizeUnknownFallsBackToPlain(t *testing.T) {
+	out := RenderWikidot(`[[size giant]]巨型字[[/size]]`)
+	if strings.Contains(out, "font-size") {
+		t.Errorf("expected NO font-size on unknown keyword, got %q", out)
+	}
+	// Inner text preserved.
+	if !strings.Contains(out, "巨型字") {
+		t.Errorf("expected inner text preserved, got %q", out)
+	}
+}
+
+// TestWikidotSizeZeroSafe verifies `[[size 0]]` and
+// `[[size 0px]]` accept the explicit-zero form (some CSS
+// contexts need a hard zero to override a relative unit).
+// sanitizeCSSValue accepts `0` and `0px` directly.
+func TestWikidotSizeZeroSafe(t *testing.T) {
+	if out := RenderWikidot(`[[size 0]]零[[/size]]`); !strings.Contains(out, "font-size:0") {
+		t.Errorf("expected font-size:0, got %q", out)
+	}
+	if out := RenderWikidot(`[[size 0px]]零[[/size]]`); !strings.Contains(out, "font-size:0px") {
+		t.Errorf("expected font-size:0px, got %q", out)
+	}
+}
+
+// TestWikidotGalleryBasicLines verifies a gallery with two
+// plain `URL` lines (no caption) renders as two figures
+// each with an `<img>` and a thumbnail structure (no
+// `<figcaption>` when no caption).
+func TestWikidotGalleryBasicLines(t *testing.T) {
+	in := `[[gallery]]
+https://example.com/a.jpg
+https://example.com/b.png
+[[/gallery]]`
+	out := RenderWikidot(in)
+	if !strings.Contains(out, `<div class="wikidot-gallery">`) {
+		t.Errorf("expected wikidot-gallery wrapper, got %q", out)
+	}
+	if got, want := strings.Count(out, "<figure>"), 2; got != want {
+		t.Errorf("expected %d figures, got %d in %q", want, got, out)
+	}
+	if !strings.Contains(out, `src="https://example.com/a.jpg"`) {
+		t.Errorf("expected first image src, got %q", out)
+	}
+	if !strings.Contains(out, `src="https://example.com/b.png"`) {
+		t.Errorf("expected second image src, got %q", out)
+	}
+}
+
+// TestWikidotGalleryCaptions verifies `URL | caption` lines
+// produce `<figcaption>` elements with the caption text.
+// We split on the FIRST `|` so captions containing a pipe
+// are preserved as-is (no further parsing on the caption).
+func TestWikidotGalleryCaptions(t *testing.T) {
+	in := `[[gallery]]
+https://example.com/a.jpg | 第一张图
+https://example.com/b.png | 第二张 | 含管道符
+[[/gallery]]`
+	out := RenderWikidot(in)
+	if !strings.Contains(out, "<figcaption>第一张图</figcaption>") {
+		t.Errorf("expected first figcaption, got %q", out)
+	}
+	if !strings.Contains(out, "<figcaption>第二张 | 含管道符</figcaption>") {
+		t.Errorf("expected caption with embedded pipe preserved, got %q", out)
+	}
+	// alt attribute is built from the caption text.
+	if !strings.Contains(out, `alt="第一张图"`) {
+		t.Errorf("expected first img alt from caption, got %q", out)
+	}
+}
+
+// TestWikidotGalleryEmptyAndBlank verifies an empty gallery
+// (no inner lines) and a gallery with only blank lines both
+// render as an empty `<div class="wikidot-gallery">` (no
+// figure children). This avoids a `<div>` containing only
+// whitespace text nodes.
+func TestWikidotGalleryEmptyAndBlank(t *testing.T) {
+	empty := `[[gallery]]
+[[/gallery]]`
+	out := RenderWikidot(empty)
+	if !strings.Contains(out, `<div class="wikidot-gallery">`) {
+		t.Errorf("expected gallery wrapper for empty body, got %q", out)
+	}
+	if strings.Contains(out, "<figure>") {
+		t.Errorf("expected NO figures in empty body, got %q", out)
+	}
+}
+
+// TestWikidotGalleryDropsBadURLs verifies that a line with
+// an unsafe URL (e.g. `javascript:alert(1)`) is dropped
+// silently — `sanitizeURLForAttr` rejects it — without
+// breaking the gallery's grid layout.
+func TestWikidotGalleryDropsBadURLs(t *testing.T) {
+	in := `[[gallery]]
+https://example.com/a.jpg
+javascript:alert(1)
+https://example.com/b.png
+[[/gallery]]`
+	out := RenderWikidot(in)
+	if !strings.Contains(out, `src="https://example.com/a.jpg"`) {
+		t.Errorf("expected first image src, got %q", out)
+	}
+	if !strings.Contains(out, `src="https://example.com/b.png"`) {
+		t.Errorf("expected third image src, got %q", out)
+	}
+	if strings.Contains(out, "javascript:") {
+		t.Errorf("expected javascript: scheme dropped, got %q", out)
+	}
+	if got, want := strings.Count(out, "<figure>"), 2; got != want {
+		t.Errorf("expected %d safe figures, got %d in %q", want, got, out)
+	}
+}
+
+// TestWikidotGalleryUnclosed verifies that an unclosed
+// `[[gallery]]` (no matching `[[/gallery]]`) leaves the
+// opener raw so the author can see the typo. We don't crash
+// and we don't emit a half-rendered gallery.
+func TestWikidotGalleryUnclosed(t *testing.T) {
+	out := RenderWikidot(`前面一段。
+[[gallery]]
+https://example.com/a.jpg`)
+	if strings.Contains(out, `class="wikidot-gallery"`) {
+		t.Errorf("expected NO gallery wrapper on unclosed, got %q", out)
+	}
+}
+
+// TestWikidotFormBasic verifies a minimal form with method +
+// action is rendered as `<form method="…" action="…">…</form>`
+// with the inner prose passed through inlineOnly.
+func TestWikidotFormBasic(t *testing.T) {
+	in := `[[form method="post" action="/api/submit"]]
+请输入姓名: **必填**
+[[/form]]`
+	out := RenderWikidot(in)
+	if !strings.Contains(out, `<form method="post" action="/api/submit">`) {
+		t.Errorf("expected form with method+action, got %q", out)
+	}
+	if !strings.Contains(out, `<strong>必填</strong>`) {
+		t.Errorf("expected bold inside form, got %q", out)
+	}
+	if !strings.Contains(out, `</form>`) {
+		t.Errorf("expected form close, got %q", out)
+	}
+}
+
+// TestWikidotFormInputText verifies the `[[input type="text"
+// name="…"]]` single-tag widget renders as `<input
+// type="text" name="…">`. Default `type` is `text` if the
+// author omits it (matches HTML form default).
+func TestWikidotFormInputText(t *testing.T) {
+	in := `[[form action="x"]]
+[[input type="text" name="username" value="默认"]]
+[[/form]]`
+	out := RenderWikidot(in)
+	if !strings.Contains(out, `<input type="text" name="username" value="默认"`) {
+		t.Errorf("expected input text widget, got %q", out)
+	}
+}
+
+// TestWikidotFormInputDefaultType verifies that an `[[input
+// name="…"]]` without an explicit `type` attribute defaults
+// to `type="text"` (HTML's input default). This avoids an
+// author writing `[[input name="email"]]` and getting
+// nothing visible because the default of HTML input IS
+// `text`, but we want it spelled out so the rendered HTML
+// is explicit.
+func TestWikidotFormInputDefaultType(t *testing.T) {
+	out := RenderWikidot(`[[form action="x"]][[input name="author"]][[/form]]`)
+	if !strings.Contains(out, `type="text"`) {
+		t.Errorf("expected default type=text, got %q", out)
+	}
+	if !strings.Contains(out, `name="author"`) {
+		t.Errorf("expected name attribute, got %q", out)
+	}
+}
+
+// TestWikidotFormCheckbox verifies `[[checkbox name="…"
+// checked]]` renders as `<input type="checkbox" name="…"
+// checked>` (the bare `checked` attribute is preserved).
+func TestWikidotFormCheckbox(t *testing.T) {
+	in := `[[form action="x"]]
+[[checkbox name="agree" checked]]
+[[/form]]`
+	out := RenderWikidot(in)
+	if !strings.Contains(out, `<input type="checkbox" name="agree"`) {
+		t.Errorf("expected checkbox input, got %q", out)
+	}
+	if !strings.Contains(out, "checked") {
+		t.Errorf("expected bare checked attribute, got %q", out)
+	}
+}
+
+// TestWikidotFormRadio verifies `[[radio …]]` renders as
+// `<input type="radio" …>` (shares the input rendering
+// path with checkbox — only `type` differs).
+func TestWikidotFormRadio(t *testing.T) {
+	in := `[[form action="x"]]
+[[radio name="choice" value="a"]]
+[[radio name="choice" value="b"]]
+[[/form]]`
+	out := RenderWikidot(in)
+	if !strings.Contains(out, `type="radio" name="choice" value="a"`) {
+		t.Errorf("expected first radio input, got %q", out)
+	}
+	if !strings.Contains(out, `type="radio" name="choice" value="b"`) {
+		t.Errorf("expected second radio input, got %q", out)
+	}
+}
+
+// TestWikidotFormTextarea verifies `[[textarea
+// attrs]]content[[/textarea]]` renders as
+// `<textarea attrs>content</textarea>`. The body goes
+// through inlineOnly so wikidot inline formatting
+// (`[link]`, `**bold**`) survives inside the textarea.
+func TestWikidotFormTextarea(t *testing.T) {
+	in := `[[form action="x"]]
+[[textarea name="body" rows="5"]]默认内容,**粗体**。[[/textarea]]
+[[/form]]`
+	out := RenderWikidot(in)
+	if !strings.Contains(out, `<textarea name="body" rows="5"`) {
+		t.Errorf("expected textarea with name+rows, got %q", out)
+	}
+	if !strings.Contains(out, `>默认内容,<strong>粗体</strong>。<`) {
+		t.Errorf("expected textarea inner with bold markup, got %q", out)
+	}
+	if !strings.Contains(out, `</textarea>`) {
+		t.Errorf("expected textarea close, got %q", out)
+	}
+}
+
+// TestWikidotFormButtonLabel verifies `[[button
+// label="…"]]` renders as `<button type="submit">…</button>`
+// (HTML's <button> uses inner text, not a label attribute).
+// The `label` attribute is consumed and rendered as the
+// inner text; the `type` defaults to `submit`.
+func TestWikidotFormButtonLabel(t *testing.T) {
+	out := RenderWikidot(`[[form action="x"]][[button label="提交"]][[/form]]`)
+	if !strings.Contains(out, `<button type="submit">提交</button>`) {
+		t.Errorf("expected submit button with inner text, got %q", out)
+	}
+}
+
+// TestWikidotFormButtonEmptyLabel verifies that an empty /
+// missing `label` attribute yields the literal text "Submit"
+// (a sensible default so an empty `[[button]]` doesn't
+// produce a zero-width button that's unclickable in tests).
+func TestWikidotFormButtonEmptyLabel(t *testing.T) {
+	out := RenderWikidot(`[[form action="x"]][[button]][[/form]]`)
+	if !strings.Contains(out, `<button type="submit">Submit</button>`) {
+		t.Errorf("expected default Submit text, got %q", out)
+	}
+}
+
+// TestWikidotFormSelectOption verifies the paired
+// `[[select …]]…[[/select]]` containing multiple
+// `[[option …]]Label[[/option]]` constructs renders to
+// a `<select>` with `<option>` children. Inner labels
+// go through inlineOnly so wikidot inline formatting
+// inside an option label is preserved.
+func TestWikidotFormSelectOption(t *testing.T) {
+	in := `[[form action="x"]]
+[[select name="color"]]
+[[option value="r"]]红[[/option]]
+[[option value="g" selected]]绿[[/option]]
+[[option value="b"]]蓝[[/option]]
+[[/select]]
+[[/form]]`
+	out := RenderWikidot(in)
+	if !strings.Contains(out, `<select name="color">`) {
+		t.Errorf("expected select wrapper, got %q", out)
+	}
+	if !strings.Contains(out, `<option value="r">红</option>`) {
+		t.Errorf("expected first option, got %q", out)
+	}
+	if !strings.Contains(out, `<option value="g"`) {
+		t.Errorf("expected second option, got %q", out)
+	}
+	if !strings.Contains(out, ` selected`) {
+		t.Errorf("expected bare selected attribute on g, got %q", out)
+	}
+	if !strings.Contains(out, `<option value="b">蓝</option>`) {
+		t.Errorf("expected third option, got %q", out)
+	}
+	if !strings.Contains(out, `</select>`) {
+		t.Errorf("expected select close, got %q", out)
+	}
+}
+
+// TestWikidotFormUnclosed verifies that an unbalanced
+// `[[form …]]` (no `[[/form]]`) leaves the opener raw and
+// the inner widgets unparsed. The body widgets become
+// either replaced by their HTML widgets (input / button /
+// checkbox / radio all have single-tag regexes that fire
+// outside the form block as well, but since the inner form
+// body never had its terminator matched, the substitute-
+// FormWidgets pass never runs — so they stay raw).
+func TestWikidotFormUnclosed(t *testing.T) {
+	in := `[[form method="post"]]
+[[input type="text" name="x"]]`
+	out := RenderWikidot(in)
+	if strings.Contains(out, "<form") {
+		t.Errorf("expected NO <form on unclosed, got %q", out)
+	}
+	// The opener tag itself stays raw so the author sees
+	// the typo.
+	if !strings.Contains(out, "[[form method=\"post\"]]") {
+		t.Errorf("expected raw opener, got %q", out)
+	}
+}
+
+// TestWikidotFormCustomAttr verifies non-standard HTML5
+// attributes on widgets pass through sanitisation. `pattern=`,
+// `placeholder=`, `required=` are forwarded verbatim so
+// authors get the full HTML5 input surface without wikidot
+// having to maintain an allow-list of every new key.
+func TestWikidotFormCustomAttr(t *testing.T) {
+	out := RenderWikidot(`[[form action="x"]]
+[[input type="email" name="email" placeholder="you@example.com" required="true"]]
+[[/form]]`)
+	if !strings.Contains(out, `type="email"`) {
+		t.Errorf("expected email input, got %q", out)
+	}
+	if !strings.Contains(out, `placeholder="you@example.com"`) {
+		t.Errorf("expected placeholder attribute, got %q", out)
+	}
+	if !strings.Contains(out, `required="true"`) {
+		t.Errorf("expected required attribute, got %q", out)
+	}
+}
+
+// TestWikidotFormNested verifies a nested `[[form action="x"]]` block
+// (rare but legal) renders both `<form>` tags in document
+// order with correctly paired closes. The depth counter
+// in renderWikidotFormBlocks keeps the match balanced.
+func TestWikidotFormNested(t *testing.T) {
+	in := `[[form method="post" action="/outer"]]
+外层
+[[form method="get" action="/inner"]]
+内层
+[[/form]]
+回到外层
+[[/form]]`
+	out := RenderWikidot(in)
+	if !strings.Contains(out, `action="/outer"`) {
+		t.Errorf("expected outer form, got %q", out)
+	}
+	if !strings.Contains(out, `action="/inner"`) {
+		t.Errorf("expected inner form, got %q", out)
+	}
+	if got, want := strings.Count(out, "<form"), 2; got != want {
+		t.Errorf("expected %d <form> openings, got %d in %q", want, got, out)
+	}
+	if got, want := strings.Count(out, "</form>"), 2; got != want {
+		t.Errorf("expected %d </form> closings, got %d in %q", want, got, out)
+	}
+}
