@@ -6,6 +6,8 @@ import (
 	"math"
 	"strings"
 	"time"
+
+	"gokych/internal/typst"
 )
 
 // Article represents a row from the unified articles table.
@@ -221,8 +223,16 @@ func UpdateArticle(db *sql.DB, atype, slug, title, content string) (*Article, er
 	// Invalidate the typst cache: the source changed, so any cached HTML is
 	// stale. (Article deletion is handled by the ON DELETE CASCADE fk on
 	// typst_cache, so DeleteArticle needs no extra step.)
-	if _, derr := db.Exec(`DELETE FROM typst_cache WHERE article_id = ?`, a.ID); derr != nil {
-		slog.Warn("failed to invalidate typst_cache", "article_id", a.ID, "err", derr)
+	if atype == "typst" {
+		if _, derr := db.Exec(`DELETE FROM typst_cache WHERE article_id = ?`, a.ID); derr != nil {
+			slog.Warn("failed to invalidate typst_cache", "article_id", a.ID, "err", derr)
+		}
+		// Cascade: any article that @imports this one (directly or
+		// transitively) must also have its cache cleared so the next
+		// view doesn't show HTML compiled against the old content.
+		if ierr := typst.InvalidateDependents(db, a.ID); ierr != nil {
+			slog.Warn("failed to invalidate typst dependents", "article_id", a.ID, "err", ierr)
+		}
 	}
 	return a, nil
 }
@@ -230,11 +240,22 @@ func UpdateArticle(db *sql.DB, atype, slug, title, content string) (*Article, er
 // DeleteArticle removes an article and all associated data (CASCADE handles
 // comments, ratings, article_tags, typst_files, typst_cache, featured).
 func DeleteArticle(db *sql.DB, atype, slug string) (bool, error) {
+	// Load the article first so we can cascade-invalidate typst dependents
+	// before the row is gone (CASCADE will delete typst_cache but not
+	// invalidate other articles' caches that depend on this one).
+	a, _ := GetArticle(db, atype, slug)
 	res, err := db.Exec(`DELETE FROM articles WHERE type = ? AND slug = ?`, atype, slug)
 	if err != nil {
 		return false, err
 	}
 	n, _ := res.RowsAffected()
+	if n > 0 && a != nil && atype == "typst" {
+		// Invalidate any articles that imported this one. The deleted
+		// article's own cache is already gone via ON DELETE CASCADE.
+		if ierr := typst.InvalidateDependents(db, a.ID); ierr != nil {
+			slog.Warn("failed to invalidate typst dependents on delete", "article_id", a.ID, "err", ierr)
+		}
+	}
 	return n > 0, nil
 }
 

@@ -153,8 +153,11 @@ func envWhitelist() []string {
 // Uses a temporary file for input and output. The subprocess is bounded by a
 // 30s timeout and a concurrency semaphore (maxConcurrent) to prevent a
 // pathological document from pinning goroutines or exhausting resources.
+// Note: cross-article @imports are NOT resolved here (no DB), so this path
+// is only suitable for single-line / standalone snippets. Use CompileAndCache
+// for full articles that may reference other typst articles.
 func CompileHTML(source string) (string, error) {
-	_, html, err := compileBoth(source)
+	_, html, _, err := compileBoth(0, source)
 	return html, err
 }
 
@@ -165,7 +168,7 @@ func CompileHTML(source string) (string, error) {
 // fast-path doesn't share work). The result is cached separately via
 // CompilePDFCached so subsequent PDF requests are free.
 func CompilePDF(source string) ([]byte, error) {
-	pdf, _, err := compileBoth(source)
+	pdf, _, _, err := compileBoth(0, source)
 	return pdf, err
 }
 
@@ -176,19 +179,44 @@ func CompilePDF(source string) ([]byte, error) {
 // output files use a per-invocation unique prefix (UnixNano + PID) so the
 // semaphore's maxConcurrent goroutines can run without trampling each
 // other.
-func compileBoth(source string) (pdf []byte, html string, err error) {
+//
+// currentArticleID > 0 enables cross-article @import resolution: before
+// writing the input file, resolveDependencies walks @slug references,
+// writes dep files to workspaceDir, rewrites the source, and returns the
+// list of resolved dependency IDs. Pass 0 to skip resolution (used for
+// single-line / standalone snippets).
+func compileBoth(currentArticleID int, source string) (pdf []byte, html string, depIDs []int, err error) {
 	bin := Path()
 	if bin == "" {
-		return nil, "", fmt.Errorf("typst: CLI not found")
+		return nil, "", nil, fmt.Errorf("typst: CLI not found")
 	}
 	// Trigger lazy workspace setup (mkdir + materialize + leak cleanup) on
 	// first compile. Tests that don't call CompileHTML never hit this path.
 	ensureWorkspace()
 
+	// Resolve cross-article @imports (writes .dep_N.typ files into workspace).
+	var depFiles []string
+	if currentArticleID > 0 {
+		res, rerr := resolveDependencies(db, workspaceDir, currentArticleID, source)
+		if rerr != nil {
+			return nil, "", nil, rerr
+		}
+		source = res.source
+		depFiles = res.depFiles
+		depIDs = res.depIDs
+	}
+
 	// Limit concurrent compilations. Both HTML and PDF invocations share
 	// one slot so a request for "give me both" doesn't bypass the cap.
 	compileSem <- struct{}{}
 	defer func() { <-compileSem }()
+
+	// Ensure dep files are cleaned up after compilation (success or failure).
+	defer func() {
+		for _, f := range depFiles {
+			_ = os.Remove(f)
+		}
+	}()
 
 	// Bound the subprocess lifetime so a hang can't pin a goroutine forever.
 	ctx, cancel := context.WithTimeout(context.Background(), compileTimeout)
@@ -209,7 +237,7 @@ func compileBoth(source string) (pdf []byte, html string, err error) {
 	defer os.Remove(pdfPath)
 
 	if err := os.WriteFile(inputPath, []byte(source), 0600); err != nil {
-		return nil, "", fmt.Errorf("typst: write temp input: %w", err)
+		return nil, "", nil, fmt.Errorf("typst: write temp input: %w", err)
 	}
 
 	// Compile HTML.
@@ -224,13 +252,13 @@ func compileBoth(source string) (pdf []byte, html string, err error) {
 	cmd.Dir = workspaceDir
 	if output, err := cmd.CombinedOutput(); err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
-			return nil, "", fmt.Errorf("typst: compile timed out after %s", compileTimeout)
+			return nil, "", nil, fmt.Errorf("typst: compile timed out after %s", compileTimeout)
 		}
-		return nil, "", fmt.Errorf("typst: html compile failed: %w\n%s", err, string(output))
+		return nil, "", nil, fmt.Errorf("typst: html compile failed: %w\n%s", err, string(output))
 	}
 	htmlBytes, err := os.ReadFile(htmlPath)
 	if err != nil {
-		return nil, "", fmt.Errorf("typst: read html output: %w", err)
+		return nil, "", nil, fmt.Errorf("typst: read html output: %w", err)
 	}
 	html = extractBody(string(htmlBytes))
 
@@ -241,18 +269,18 @@ func compileBoth(source string) (pdf []byte, html string, err error) {
 	cmdPDF.Dir = workspaceDir
 	if output, err := cmdPDF.CombinedOutput(); err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
-			return nil, "", fmt.Errorf("typst: pdf compile timed out after %s", compileTimeout)
+			return nil, "", nil, fmt.Errorf("typst: pdf compile timed out after %s", compileTimeout)
 		}
 		// Don't fail the whole call if only the PDF compile failed — HTML
 		// is already useful. Caller can detect via empty pdf slice.
 		slog.Warn("typst pdf compile failed", "err", err, "output", string(output))
-		return nil, html, nil
+		return nil, html, depIDs, nil
 	}
 	pdf, err = os.ReadFile(pdfPath)
 	if err != nil {
-		return nil, html, fmt.Errorf("typst: read pdf output: %w", err)
+		return nil, html, depIDs, fmt.Errorf("typst: read pdf output: %w", err)
 	}
-	return pdf, html, nil
+	return pdf, html, depIDs, nil
 }
 
 // CompileAndCache is the eager-precompile path used at article publish time:
@@ -276,7 +304,7 @@ func CompileAndCache(articleID int, source string) error {
 	if articleID <= 0 {
 		return errors.New("typst: invalid article id")
 	}
-	pdf, html, err := compileBoth(source)
+	pdf, html, depIDs, err := compileBoth(articleID, source)
 	if err != nil {
 		return err
 	}
@@ -286,17 +314,20 @@ func CompileAndCache(articleID int, source string) error {
 	if len(pdf) == 0 {
 		return errors.New("typst: PDF compile produced empty output (typst CLI failed or syntax error)")
 	}
+	depStr := formatDepList(depIDs)
 	if _, err := db.Exec(
-		`INSERT INTO typst_cache (article_id, html_content, pdf_content)
-		 VALUES (?, ?, ?)
+		`INSERT INTO typst_cache (article_id, html_content, pdf_content, dependencies)
+		 VALUES (?, ?, ?, ?)
 		 ON DUPLICATE KEY UPDATE
 		   html_content = VALUES(html_content),
 		   pdf_content  = VALUES(pdf_content),
+		   dependencies = VALUES(dependencies),
 		   compiled_at  = CURRENT_TIMESTAMP`,
-		articleID, html, pdf,
+		articleID, html, pdf, depStr,
 	); err != nil {
 		return fmt.Errorf("typst: cache write failed: %w", err)
 	}
+	slog.Info("typst: compiled and cached", "article_id", articleID, "deps", len(depIDs))
 	return nil
 }
 
@@ -372,8 +403,9 @@ func extractBody(html string) string {
 }
 
 // cleanupLeakedInputs removes any `.input_*.typ` / `.output_*.html` /
-// `.output_*.pdf` files left over from a previous crash (process kill,
-// OOM, etc.). Logs the outcome so stale files don't go unnoticed.
+// `.output_*.pdf` / `.dep_*.typ` files left over from a previous crash
+// (process kill, OOM, etc.). Logs the outcome so stale files don't go
+// unnoticed.
 func cleanupLeakedInputs(dir string) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -385,7 +417,9 @@ func cleanupLeakedInputs(dir string) {
 			continue
 		}
 		name := e.Name()
-		if strings.HasPrefix(name, ".input_") || strings.HasPrefix(name, ".output_") {
+		if strings.HasPrefix(name, ".input_") ||
+			strings.HasPrefix(name, ".output_") ||
+			strings.HasPrefix(name, ".dep_") {
 			if err := os.Remove(filepath.Join(dir, name)); err != nil {
 				failed++
 			} else {
@@ -425,6 +459,81 @@ func materializeAssets(dir string) {
 		}
 		slog.Info("typst: materialized asset", "file", dst)
 	}
+}
+
+// InvalidateDependents removes cached compilation output for ALL typst
+// articles that transitively depend on changedID (via @import). Call this
+// after updating or deleting a typst article so readers don't see stale
+// compiled output that was built against the old version.
+//
+// The dependencies column stores a comma-separated list of direct
+// dependency article IDs. We BFS through the reverse dependency graph
+// (who depends on whom) to find every article that either directly or
+// transitively imports changedID, and delete their cache rows. The
+// next view request will surface a "pending compile" placeholder, and
+// the next save/edit will trigger a fresh CompileAndCache.
+func InvalidateDependents(dbx *sql.DB, changedID int) error {
+	if dbx == nil || changedID <= 0 {
+		return nil
+	}
+
+	// Fetch all cache rows so we can build a reverse-dep map in one query.
+	// typst_cache is small (one row per typst article), so this is cheap.
+	rows, err := dbx.Query(`SELECT article_id, dependencies FROM typst_cache WHERE dependencies IS NOT NULL AND dependencies != ''`)
+	if err != nil {
+		return fmt.Errorf("typst: query dependencies for invalidation: %w", err)
+	}
+	// reverseDep: "who depends on me" — article_id → list of articles that import it
+	reverseDep := make(map[int][]int)
+	for rows.Next() {
+		var aid int
+		var depsStr string
+		if err := rows.Scan(&aid, &depsStr); err != nil {
+			rows.Close()
+			return err
+		}
+		for _, part := range strings.Split(depsStr, ",") {
+			var did int
+			if _, err := fmt.Sscanf(strings.TrimSpace(part), "%d", &did); err == nil && did > 0 {
+				reverseDep[did] = append(reverseDep[did], aid)
+			}
+		}
+	}
+	rows.Close()
+
+	// BFS from changedID to find all transitively dependent articles.
+	visited := make(map[int]bool)
+	queue := []int{changedID}
+	var toInvalidate []int
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		for _, dep := range reverseDep[cur] {
+			if !visited[dep] {
+				visited[dep] = true
+				toInvalidate = append(toInvalidate, dep)
+				queue = append(queue, dep)
+			}
+		}
+	}
+
+	if len(toInvalidate) == 0 {
+		return nil
+	}
+
+	// Delete cache rows for all invalidated articles.
+	placeholders := make([]string, len(toInvalidate))
+	args := make([]any, len(toInvalidate))
+	for i, id := range toInvalidate {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	q := `DELETE FROM typst_cache WHERE article_id IN (` + strings.Join(placeholders, ",") + `)`
+	if _, err := dbx.Exec(q, args...); err != nil {
+		return fmt.Errorf("typst: invalidate dependents: %w", err)
+	}
+	slog.Info("typst: invalidated dependent caches", "changed_id", changedID, "invalidated", toInvalidate)
+	return nil
 }
 
 func init() {
