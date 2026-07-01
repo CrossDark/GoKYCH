@@ -32,23 +32,33 @@ func Render(at ArticleType, articleID int, source string) template.HTML {
 // `%%var%%`, `[[toc]]`, and footnote interlink resolution all
 // short-circuit to raw source when there's no PageLookup, so passing
 // nil is safe for the static subset.
+//
+// After the type-specific renderer converts markup to HTML, the result
+// flows through PostProcessArticleHTML which (once per render) handles
+// sanitisation, YouTube-placeholder → iframe, image lazy loading,
+// external link attributes, data-line numbering, and wrapper markup.
+// That means EVERY article type — including typst — leaves this
+// function as a fully-prepared HTML blob that the client can display
+// without running any DOM mutations.
 func RenderCtx(at ArticleType, articleID int, source string, ctx *RenderContext) template.HTML {
-	var html string
+	var raw string
+	var extraClass string
 	switch at {
 	case TypeMarkdown:
-		html = RenderMarkdown(source)
+		raw = RenderMarkdown(source)
 	case TypeWikidot:
-		html = RenderWikidotCtx(ctx, source)
+		raw = RenderWikidotCtx(ctx, source)
 	case TypeBBCode:
-		html = RenderBBCode(source)
+		raw = RenderBBCode(source)
 	case TypeHTML:
-		html = source // trusted admin content
+		raw = source // trusted admin content (sanitised by PostProcessArticleHTML)
 	case TypeTypst:
-		html = renderTypst(articleID, source)
+		raw = renderTypst(articleID, source)
+		extraClass = "typst-content" // Typst-specific CSS hooks (MathML alignment, layout)
 	default:
-		html = "<p>不支持的格式。</p>"
+		raw = "<p>不支持的格式。</p>"
 	}
-	return template.HTML(html)
+	return template.HTML(PostProcessArticleHTML(raw, extraClass))
 }
 
 // RenderLine breaks a multi-line source into lines that match the original

@@ -225,218 +225,90 @@ export function ArticleView({ data, articleType, articleSlug }: Props) {
     return () => window.removeEventListener("resize", onResize);
   }, [measureBubbleTops]);
 
-  // Content hydration effect — runs once per article (html change only).
+  // Content enhancement effect — runs once per article (html change only).
   //
-  // TWO PATHS for performance:
+  // After the server-side PostProcessArticleHTML pass, the HTML arriving
+  // in the client is ALREADY fully prepared:
+  //   ✓ Sanitised (bluemonday on the server; no scripts/event-handlers)
+  //   ✓ YouTube placeholders → real <iframe loading="lazy">
+  //   ✓ All <img> have loading="lazy" decoding="async"
+  //   ✓ External links have target="_blank" rel=noopener/referrerpolicy
+  //   ✓ <video>/<audio> have controls/preload
+  //   ✓ Top-level block elements have data-line="N"
+  //   ✓ Wrapped in <div class="article-content [typst-content]" data-processed="1">
   //
-  // 1. TYPST FAST PATH (`isTypst`):
-  //    Typst's `compile --format html` output is a fully self-contained,
-  //    trusted document:
-  //      - Math is already rendered as native MathML (<math>) — no KaTeX needed
-  //      - No ```mermaid fenced blocks (Typst has its own diagram primitives)
-  //      - No wikidot [[youtube]] / [[tabview]] placeholders
-  //      - The HTML comes from the Typst compiler, not from user input,
-  //        so DOMPurify is unnecessary overhead
-  //    For long documents like the Typst syntax guide, the HTML can be
-  //    multiple megabytes with thousands of SVG/MathML nodes. Running
-  //    DOMPurify + KaTeX tree walker over that DOM blocks the main thread
-  //    for hundreds of milliseconds. We skip all of it and only:
-  //      - Add loading="lazy" to images
-  //      - Assign data-line attributes for line-comment positioning
-  //      - Measure bubble positions
+  // So the client MUST NOT:
+  //   • Run DOMPurify (already done server-side; importing it is dead weight)
+  //   • Rewrite innerHTML (would force a synchronous layout)
+  //   • Convert youtube placeholders (already converted)
+  //   • Add lazy/decode attrs to images (already there)
+  //   • Assign data-line (already numbered)
   //
-  // 2. MARKDOWN/WIKIDOT/BBCODE/HTML PATH (full hydration):
-  //    These may contain user-authored raw HTML, math patterns ($...$),
-  //    mermaid blocks, or wikidot custom elements, so we run DOMPurify,
-  //    YouTube/tabview wiring, KaTeX, and mermaid as before.
+  // What the client still needs to do (things that depend on browser
+  // state or runtime data that the server cannot predict):
+  //   1. Wire up Wikidot [[tabview]] click handlers (pure JS event binding)
+  //   2. Toggle .has-line-comments class based on live comment counts
+  //      (these change over time and are viewer-specific)
+  //   3. Deferred: hydrate KaTeX math ($...$) and mermaid diagrams in
+  //      Markdown/Wikidot articles (Typst uses native MathML so it
+  //      doesn't need KaTeX). These are non-critical for reading and
+  //      run via requestIdleCallback so they never block the main thread.
+  //   4. Measure comment bubble positions (needs real layout).
   //
-  // In both paths the content div is already pre-populated via
-  // dangerouslySetInnerHTML on the first render (SSR + initial client
-  // paint), so readers see article text immediately without waiting for
-  // JS — this effect only adds progressive enhancement.
+  // The content div is pre-populated via dangerouslySetInnerHTML on the
+  // first render (SSR + initial client paint), so readers see article
+  // text immediately — this effect does zero DOM writes beyond adding
+  // event listeners and the comment-marker class.
   useEffect(() => {
     const container = contentRef.current;
     if (!container) return;
 
     let cancelled = false;
-    // Detect typst fast path via the server-injected marker. The marker is
-    // placed by renderTypst() in parsers/render.go as a wrapping
-    // <div class="typst-content" data-typst="1">, so checking the first
-    // child (or the container's only child) is reliable even when the div
-    // was already populated by dangerouslySetInnerHTML.
-    const isTypst = !!(
-      container.querySelector?.('[data-typst="1"]') ||
-      (container.firstElementChild && (container.firstElementChild as HTMLElement).dataset?.typst === "1")
-    );
 
-    if (isTypst) {
-      // ── TYPST ZERO-MUTATION FAST PATH ────────────────────────────
-      // All static DOM transformations were already applied at
-      // COMPILE TIME on the server (see typst.postprocessTypedHTML):
-      //   - <div class="typst-content" data-typst="1"> wrapper is present
-      //   - data-line attributes are pre-numbered on block elements
-      //   - <img> tags already have loading="lazy" decoding="async"
-      //   - external links already have target/rel/referrerpolicy
-      //   - MathML is rendered natively (no KaTeX needed)
-      //   - No mermaid fenced blocks, no wikidot youtube/tabview widgets
-      //
-      // The only thing we must do on the client is apply the dynamic
-      // "has-line-comments" class (depends on line comment counts which
-      // vary per viewer and change over time) and measure comment
-      // bubble positions (requires real browser layout, which the
-      // server cannot predict).
-      (() => {
-        // Apply comment marker dots to blocks that have comments.
-        // data-line is already on the elements from compile time.
-        const counts = lineCountsRef.current;
-        container.querySelectorAll<HTMLElement>("[data-line]").forEach((block) => {
-          const n = parseInt(block.getAttribute("data-line")!);
-          const count = counts[n] || 0;
-          block.classList.toggle("has-line-comments", count > 0);
-        });
+    // Detect whether this is a Typst article. Typst compiles math to
+    // native MathML, so we skip KaTeX entirely for those — no need to
+    // tree-walk thousands of SVG/MathML nodes looking for $...$ markers
+    // that don't exist.
+    const isTypst = container.querySelector?.(".typst-content") !== null;
 
-        // Measure bubble positions on the next frame so layout is settled.
-        requestAnimationFrame(() => {
-          if (!cancelled) measureBubbleTops(container);
-        });
-      })();
-      return () => { cancelled = true; };
-    }
-
-    // ── FULL HYDRATION PATH (non-Typst) ───────────────────────────
-    (async () => {
-      const DOMPurify = (await import("dompurify")).default;
-      if (cancelled) return;
-      const purifyCfg = {
-        ALLOWED_TAGS: [
-          "a", "abbr", "aside", "b", "blockquote", "br", "cite", "code",
-          "details", "div", "dl", "dt", "dd", "em", "figcaption", "figure",
-          "h1", "h2", "h3", "h4", "h5", "h6", "hr", "i", "img", "ins",
-          "kbd", "li", "mark", "ol", "p", "pre", "s", "section", "small",
-          "span", "strong", "sub", "summary", "sup", "table", "tbody",
-          "td", "th", "thead", "tr", "u", "ul",
-          // Typst HTML output uses inline SVG extensively for
-          // math glyphs, shapes, and decorated boxes. Without
-          // these, DOMPurify strips all SVG content and Typst
-          // pages render as broken/missing text.
-          "svg", "path", "g", "text", "rect", "circle", "ellipse", "line",
-          "polyline", "polygon", "defs", "clippath", "marker", "mask",
-          "pattern", "lineargradient", "radialgradient", "stop", "use",
-          "image", "foreignObject",
-          // MathML tags (KaTeX output)
-          "math", "mrow", "mi", "mn", "mo", "msup", "msub", "msubsup",
-          "mfrac", "mtable", "mtr", "mtd", "mover", "munder", "munderover",
-          "mtext", "mspace", "msqrt", "mroot", "mfenced",
-        ],
-        ALLOWED_ATTR: [
-          "href", "title", "alt", "src", "class", "style", "id", "target",
-          "rel", "colspan", "rowspan", "data-line", "data-tab-id",
-          "data-toggle", "data-source",
-          // SVG attributes required by Typst output
-          "d", "fill", "stroke", "stroke-width", "viewBox", "width", "height",
-          "x", "y", "x1", "y1", "x2", "y2", "cx", "cy", "r", "rx", "ry",
-          "transform", "font-family", "font-size", "font-weight", "font-style",
-          "text-anchor", "dominant-baseline", "points",
-          "clip-path", "mask", "fill-opacity", "stroke-opacity", "stroke-linecap",
-          "stroke-linejoin", "stroke-dasharray", "offset", "stop-color", "stop-opacity",
-          "xmlns", "xmlns:xlink", "xlink:href", "data-math-rendered", "data-math-error",
-          "data-mermaid-rendered", "data-mermaid-error",
-          // MathML attributes
-          "display", "accent", "accentunder", "mathvariant", "mathsize",
-          "mathcolor", "mathbackground", "scriptlevel", "displaystyle",
-        ],
-        ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto):|javascript:;$|[#/])/i,
-        FORBID_TAGS: ["script", "object", "embed", "form"],
-        FORBID_ATTR: ["onerror", "onload", "onclick", "onmouseover", "onfocus", "onblur"],
-        ADD_TAGS: ["iframe"],
-        ADD_ATTR: ["allowfullscreen", "frameborder", "referrerpolicy", "loading", "decoding"],
-      };
-      const safe = DOMPurify.sanitize(html ?? "", purifyCfg);
-      // Only overwrite innerHTML if the sanitised output differs from
-      // what's already there (which is the server-rendered HTML). On the
-      // first client paint the div already contains the raw server HTML;
-      // if DOMPurify didn't strip anything, we skip the write to avoid
-      // a forced synchronous layout.
-      if (container.innerHTML !== safe) {
-        container.innerHTML = safe;
-      }
-
-      // Wikidot `[[youtube ID]]` emits a placeholder div; swap for iframe
-      // after sanitisation (we re-allowed iframe + its attrs above).
-      container.querySelectorAll<HTMLElement>(".wikidot-youtube[data-youtube-id]").forEach((el) => {
-        const id = el.dataset.youtubeId;
-        if (!id) return;
-        const iframe = document.createElement("iframe");
-        iframe.src = `https://www.youtube.com/embed/${id}`;
-        iframe.loading = "lazy";
-        iframe.allowFullscreen = true;
-        iframe.setAttribute("frameborder", "0");
-        iframe.setAttribute("referrerpolicy", "strict-origin-when-cross-origin");
-        iframe.setAttribute("title", "YouTube video");
-        el.replaceChildren(iframe);
-      });
-
-      // Lazy-load images.
-      container.querySelectorAll<HTMLImageElement>("img").forEach((img) => {
-        if (!img.hasAttribute("loading")) img.setAttribute("loading", "lazy");
-        if (!img.hasAttribute("decoding")) img.setAttribute("decoding", "async");
-      });
-
-      // Wikidot [[tabview]] — wire up click-to-switch behaviour.
-      container.querySelectorAll<HTMLElement>(".wikidot-tabview").forEach((tv) => {
-        const tabs = tv.querySelectorAll<HTMLElement>(".wikidot-tab-tab");
-        const panels = tv.querySelectorAll<HTMLElement>(".wikidot-tab-panel");
-        tabs.forEach((tab) => {
-          tab.addEventListener("click", (e) => {
-            e.preventDefault();
-            const id = tab.dataset.tabId;
-            if (id === undefined) return;
-            tabs.forEach((t) => t.classList.remove("active"));
-            panels.forEach((p) => p.classList.remove("active"));
-            tab.classList.add("active");
-            const target = tv.querySelector<HTMLElement>(
-              `.wikidot-tab-panel[data-tab-id="${id}"]`,
-            );
-            if (target) target.classList.add("active");
-          });
+    // 1. Wire up Wikidot [[tabview]] clicks (idempotent — harmless if
+    //    no tabviews are present).
+    container.querySelectorAll<HTMLElement>(".wikidot-tabview").forEach((tv) => {
+      const tabs = tv.querySelectorAll<HTMLElement>(".wikidot-tab-tab");
+      const panels = tv.querySelectorAll<HTMLElement>(".wikidot-tab-panel");
+      tabs.forEach((tab) => {
+        tab.addEventListener("click", (e) => {
+          e.preventDefault();
+          const id = tab.dataset.tabId;
+          if (id === undefined) return;
+          tabs.forEach((t) => t.classList.remove("active"));
+          panels.forEach((p) => p.classList.remove("active"));
+          tab.classList.add("active");
+          const target = tv.querySelector<HTMLElement>(
+            `.wikidot-tab-panel[data-tab-id="${id}"]`,
+          );
+          if (target) target.classList.add("active");
         });
       });
+    });
 
-      // Assign line numbers to block elements. Skip nested elements
-      // inside pre/li/table, auto-generated TOC, tab nav, etc.
-      const blocks = container.querySelectorAll("p, h1, h2, h3, h4, h5, h6, li, pre, blockquote, div, table");
-      let ln = 0;
-      blocks.forEach((block) => {
-        const el = block as HTMLElement;
-        if (el.closest("pre") && el.tagName !== "PRE") return;
-        if (el.tagName !== "LI" && el.closest("li") && el.closest("li") !== el) return;
-        if (el.tagName !== "TABLE" && el.closest("table")) return;
-        const tocRoot = el.closest(".wikidot-toc");
-        if (tocRoot && tocRoot !== el) return;
-        if (el.tagName === "LI" && el.closest(".wikidot-tab-nav")) return;
-        if (el.classList.contains("wikidot-tab-panels") || el.classList.contains("wikidot-tab-panel")) return;
-        if (el.classList.contains("collapsible-content")) return;
-        if (el.classList.contains("wikidot-align")) return;
-        if (el.closest("section.footnotes") && el.tagName !== "SECTION") return;
-        ln++;
-        el.setAttribute("data-line", String(ln));
-      });
+    // 2. Apply comment-marker dots. data-line is already on elements
+    //    from the server; we only toggle the class based on current
+    //    comment counts (which change after load).
+    const counts = lineCountsRef.current;
+    container.querySelectorAll<HTMLElement>("[data-line]").forEach((block) => {
+      const n = parseInt(block.getAttribute("data-line")!);
+      const count = counts[n] || 0;
+      block.classList.toggle("has-line-comments", count > 0);
+    });
 
-      // Apply comment marker dots.
-      const counts = lineCountsRef.current;
-      container.querySelectorAll("[data-line]").forEach((block) => {
-        const n = parseInt(block.getAttribute("data-line")!);
-        const count = counts[n] || 0;
-        block.classList.toggle("has-line-comments", count > 0);
-      });
-
-      // Hydrate KaTeX + mermaid. Yield to the browser between sync/async
-      // phases so the user can scroll/interact while math renders in.
-      // requestIdleCallback (fallback to setTimeout) ensures long articles
-      // don't block the main thread for hundreds of ms.
+    // 3. Deferred KaTeX + mermaid hydration. Skipped for Typst (native
+    //    MathML, no mermaid blocks). Uses requestIdleCallback so it
+    //    never blocks scrolling/interaction.
+    if (!isTypst) {
       const schedule = (cb: () => void) => {
         if ("requestIdleCallback" in window) {
-          (window as any).requestIdleCallback(() => { if (!cancelled) cb(); }, { timeout: 200 });
+          (window as any).requestIdleCallback(() => { if (!cancelled) cb(); }, { timeout: 500 });
         } else {
           setTimeout(() => { if (!cancelled) cb(); }, 0);
         }
@@ -447,7 +319,14 @@ export function ArticleView({ data, articleType, articleSlug }: Props) {
           if (!cancelled) measureBubbleTops(container);
         });
       });
-    })();
+    } else {
+      // For Typst, measure bubble positions on the next frame (layout
+      // is settled by then).
+      requestAnimationFrame(() => {
+        if (!cancelled) measureBubbleTops(container);
+      });
+    }
+
     return () => {
       cancelled = true;
     };

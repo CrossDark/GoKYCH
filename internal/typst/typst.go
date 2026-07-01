@@ -261,11 +261,12 @@ func compileBoth(currentArticleID int, source string) (pdf []byte, html string, 
 		return nil, "", nil, fmt.Errorf("typst: read html output: %w", err)
 	}
 	html = extractBody(string(htmlBytes))
-	// Run server-side DOM postprocessing ONCE at compile time so that the
-	// cached HTML already contains the wrapper div, data-line numbers,
-	// lazy image attributes, and external link attributes. Readers then
-	// get a fully-prepared blob with zero client-side DOM mutations.
-	html = postprocessTypedHTML(html)
+	// NOTE: HTML post-processing (sanitisation, data-line numbers, lazy
+	// image attrs, external link attrs, wrapper markup) is NOT done here.
+	// It runs at READ TIME in parsers.PostProcessArticleHTML so that all
+	// article types — not just typst — benefit, and so post-process
+	// improvements don't require re-compiling every cached article.
+	// The cached value is the raw <body> content emitted by the typst CLI.
 
 	// Compile PDF. typst's default format IS pdf, so we just don't pass
 	// --format. The CLI will still pick up the timeout via ctx.
