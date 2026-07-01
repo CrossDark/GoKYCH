@@ -72,6 +72,8 @@ export interface Comment {
   article_id: number;
   line_number: number | null;
   author_name: string;
+  author_nickname?: string;
+  author_avatar?: string;
   content: string;
   /** Server-rendered, sanitized markdown HTML. Use for display; the
    *  frontend should still pass this through DOMPurify as defense in depth. */

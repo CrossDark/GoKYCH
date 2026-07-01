@@ -24,23 +24,42 @@ var ErrCommentTooLong = errors.New("评论内容过长")
 // safe goldmark instance) so the frontend can inject it directly without
 // re-parsing. It's not filled in by the data-layer helpers — callers that
 // return comments over the wire must run them through the renderer.
+//
+// AuthorNickname and AuthorAvatar are LEFT JOINed from the users table.
+// For anonymous comments (user_id IS NULL) these will be empty strings;
+// the frontend should fall back to AuthorName (display name entered at
+// comment time) and a default avatar.
 type Comment struct {
-	ID         int       `json:"id"`
-	ArticleID  int       `json:"article_id"`
-	LineNumber *int      `json:"line_number,omitempty"`
-	UserID     *int      `json:"user_id,omitempty"`
-	AuthorName string    `json:"author_name"`
-	Content    string    `json:"content"`
-	ContentHTML string   `json:"content_html,omitempty"`
-	CreatedAt  time.Time `json:"created_at"`
+	ID             int       `json:"id"`
+	ArticleID      int       `json:"article_id"`
+	LineNumber     *int      `json:"line_number,omitempty"`
+	UserID         *int      `json:"user_id,omitempty"`
+	AuthorName     string    `json:"author_name"`
+	AuthorNickname string    `json:"author_nickname,omitempty"`
+	AuthorAvatar   string    `json:"author_avatar,omitempty"`
+	Content        string    `json:"content"`
+	ContentHTML    string    `json:"content_html,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
 }
+
+// commentSelect is the shared SELECT fragment that LEFT JOINs users to
+// pull nickname/avatar. Used by all comment queries to keep the column
+// list consistent.
+const commentSelect = `
+SELECT c.id, c.article_id, c.line_number,
+       COALESCE(c.user_id, 0) AS uid,
+       c.author_name,
+       COALESCE(u.nickname, '')  AS author_nickname,
+       COALESCE(u.avatar, '')    AS author_avatar,
+       c.content, c.created_at
+FROM comments c
+LEFT JOIN users u ON u.id = c.user_id`
 
 // GetComments returns full-text comments (line_number IS NULL) for an article.
 func GetComments(db *sql.DB, articleID int) ([]Comment, error) {
 	rows, err := db.Query(
-		`SELECT id, article_id, line_number, COALESCE(user_id, 0) AS uid, author_name, content, created_at
-		 FROM comments WHERE article_id = ? AND line_number IS NULL
-		 ORDER BY created_at ASC`, articleID)
+		commentSelect+` WHERE c.article_id = ? AND c.line_number IS NULL ORDER BY c.created_at ASC`,
+		articleID)
 	if err != nil {
 		return nil, err
 	}
@@ -51,9 +70,8 @@ func GetComments(db *sql.DB, articleID int) ([]Comment, error) {
 // GetLineComments returns line comments for an article, ordered by line then time.
 func GetLineComments(db *sql.DB, articleID int) ([]Comment, error) {
 	rows, err := db.Query(
-		`SELECT id, article_id, line_number, COALESCE(user_id, 0) AS uid, author_name, content, created_at
-		 FROM comments WHERE article_id = ? AND line_number IS NOT NULL
-		 ORDER BY line_number ASC, created_at ASC`, articleID)
+		commentSelect+` WHERE c.article_id = ? AND c.line_number IS NOT NULL ORDER BY c.line_number ASC, c.created_at ASC`,
+		articleID)
 	if err != nil {
 		return nil, err
 	}
@@ -85,9 +103,8 @@ func GetLineCommentCounts(db *sql.DB, articleID int) (map[int]int, error) {
 // GetLineCommentsByLine returns comments for a specific line.
 func GetLineCommentsByLine(db *sql.DB, articleID, lineNumber int) ([]Comment, error) {
 	rows, err := db.Query(
-		`SELECT id, article_id, line_number, COALESCE(user_id, 0) AS uid, author_name, content, created_at
-		 FROM comments WHERE article_id = ? AND line_number = ?
-		 ORDER BY created_at ASC`, articleID, lineNumber)
+		commentSelect+` WHERE c.article_id = ? AND c.line_number = ? ORDER BY c.created_at ASC`,
+		articleID, lineNumber)
 	if err != nil {
 		return nil, err
 	}
@@ -150,12 +167,19 @@ func scanComments(rows *sql.Rows) ([]Comment, error) {
 	for rows.Next() {
 		var c Comment
 		var uid int
-		if err := rows.Scan(&c.ID, &c.ArticleID, &c.LineNumber, &uid, &c.AuthorName, &c.Content, &c.CreatedAt); err != nil {
+		var nickname, avatar sql.NullString
+		if err := rows.Scan(
+			&c.ID, &c.ArticleID, &c.LineNumber, &uid,
+			&c.AuthorName, &nickname, &avatar,
+			&c.Content, &c.CreatedAt,
+		); err != nil {
 			return nil, err
 		}
 		if uid != 0 {
 			c.UserID = &uid
 		}
+		c.AuthorNickname = nickname.String
+		c.AuthorAvatar = avatar.String
 		out = append(out, c)
 	}
 	return out, rows.Err()
@@ -164,15 +188,21 @@ func scanComments(rows *sql.Rows) ([]Comment, error) {
 func getCommentByID(db *sql.DB, id int) (*Comment, error) {
 	c := &Comment{}
 	var uid int
+	var nickname, avatar sql.NullString
 	err := db.QueryRow(
-		`SELECT id, article_id, line_number, COALESCE(user_id, 0) AS uid, author_name, content, created_at
-		 FROM comments WHERE id = ?`, id,
-	).Scan(&c.ID, &c.ArticleID, &c.LineNumber, &uid, &c.AuthorName, &c.Content, &c.CreatedAt)
+		commentSelect+` WHERE c.id = ?`, id,
+	).Scan(
+		&c.ID, &c.ArticleID, &c.LineNumber, &uid,
+		&c.AuthorName, &nickname, &avatar,
+		&c.Content, &c.CreatedAt,
+	)
 	if err != nil {
 		return nil, err
 	}
 	if uid != 0 {
 		c.UserID = &uid
 	}
+	c.AuthorNickname = nickname.String
+	c.AuthorAvatar = avatar.String
 	return c, nil
 }

@@ -5,11 +5,19 @@ import Link from "next/link";
 import { addComment, getCsrf, getMe } from "@/lib/api";
 import type { Comment } from "@/lib/types";
 import { SafeMarkdown } from "@/components/SafeMarkdown";
+import { UserAvatar } from "@/components/admin/UserAvatar";
 
 interface Props {
   articleType: string;
   articleSlug: string;
   initialComments: Comment[];
+}
+
+// commentDisplayName returns nickname if available, else author_name.
+function commentDisplayName(c: Comment): string {
+  return c.author_nickname && c.author_nickname.trim() !== ""
+    ? c.author_nickname
+    : (c.author_name || "匿名");
 }
 
 export function CommentSection({
@@ -73,11 +81,18 @@ export function CommentSection({
           {comments.map((cm) => (
             <div key={cm.id} className="comment-item">
               <div className="comment-avatar">
-                {(cm.author_name || "匿")[0]}
+                <UserAvatar
+                  user={{
+                    nickname: cm.author_nickname || "",
+                    username: cm.author_name || "匿名",
+                    avatar: cm.author_avatar || "",
+                  }}
+                  size={36}
+                />
               </div>
               <div className="comment-body-wrap">
                 <div className="comment-header">
-                  <span className="comment-author">{cm.author_name}</span>
+                  <span className="comment-author">{commentDisplayName(cm)}</span>
                   <time className="comment-time">
                     {new Date(cm.created_at).toLocaleString("zh-CN")}
                   </time>
