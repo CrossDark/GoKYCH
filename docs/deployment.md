@@ -391,7 +391,7 @@ Middleware 全部保留。我们这边 zero config — 不用写 EdgeOne adapter
    `CrossDark/GoKYCH` 仓库，根目录留空（默认就是 `web/`，如果
    EdgeOne 不自动识别就到"构建设置"里把 Root Directory 改成 `web/`）。
 2. **环境变量**（生产）：
-   - `NEXT_PUBLIC_API_BASE_URL` = `https://api.kych.net`
+   - **`NEXT_PUBLIC_API_BASE_URL` = `https://api.kych.net`** ← **必填，缺失会让构建直接 fail（`web/next.config.ts` 起手就 throw）。** 没配它的话每个文章详情页都会静默 fallback 到 `http://localhost:8000` 然后 ECONNREFUSED,被 catch block 渲染成"文章不存在"——而且 SSR log 只有一个裸 `ECONNREFUSED` 没有提示。配置错了能在控制台"环境变量"里看；构建后才能改，需要重新触发部署。
    - 其他可选：`API_BASE_URL` = `https://api.kych.net`（SSR 路径
      备用，`apiUrl()` 已经优先读 `NEXT_PUBLIC_*`）
 3. **构建命令 / 输出目录**：留平台默认（`next build`，输出到

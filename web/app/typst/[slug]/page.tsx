@@ -1,4 +1,5 @@
 import { getArticle } from "@/lib/api";
+import { renderArticleDetailError } from "@/components/ArticleDetailError";
 import { ArticleView } from "@/components/ArticleView";
 import { cookies } from "next/headers";
 import type { Metadata } from "next";
@@ -25,12 +26,7 @@ export default async function DetailPage({ params }: Props) {
     const data = await getArticle("typst", slug);
     // Extract CSRF token from cookies for the client components.
     return <ArticleView data={data} articleType="typst" articleSlug={slug} />;
-  } catch {
-    return (
-      <div className="page">
-        <h1>文章不存在</h1>
-        <p>该文章可能已被删除，或地址不正确。</p>
-      </div>
-    );
+  } catch (err) {
+    return renderArticleDetailError(err, { type: "typst", slug });
   }
 }
