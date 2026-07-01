@@ -227,30 +227,83 @@ export function ArticleView({ data, articleType, articleSlug }: Props) {
 
   // Content hydration effect — runs once per article (html change only).
   //
-  // CRITICAL PERFORMANCE NOTE:
-  // The content div is pre-populated via dangerouslySetInnerHTML on the
-  // FIRST render (both SSR and the initial client paint), so readers see
-  // article text immediately without waiting for JS to download, parse,
-  // and hydrate. This effect then:
-  //   1. Runs DOMPurify as defense-in-depth (backend already sanitises).
-  //   2. Rewrites YouTube placeholders → lazy <iframe>.
-  //   3. Wires up tabview click handlers.
-  //   4. Assigns data-line attributes for line-comment positioning.
-  //   5. Hydrates KaTeX math (async, yields to browser between blocks).
-  //   6. Hydrates mermaid diagrams (async, yields to browser).
-  //   7. Measures bubble positions.
+  // TWO PATHS for performance:
   //
-  // Deps are ONLY [html] — adding lineCounts/commentedLines here causes
-  // the ENTIRE heavy pass (DOMPurify + KaTeX over every text node) to
-  // run TWICE for long articles, which is the main reason Typst pages
-  // like the syntax guide appeared "extremely slow" — the user saw the
-  // server-rendered content immediately, but then React wiped it and
-  // re-processed the whole DOM a second time, blocking the main thread.
+  // 1. TYPST FAST PATH (`isTypst`):
+  //    Typst's `compile --format html` output is a fully self-contained,
+  //    trusted document:
+  //      - Math is already rendered as native MathML (<math>) — no KaTeX needed
+  //      - No ```mermaid fenced blocks (Typst has its own diagram primitives)
+  //      - No wikidot [[youtube]] / [[tabview]] placeholders
+  //      - The HTML comes from the Typst compiler, not from user input,
+  //        so DOMPurify is unnecessary overhead
+  //    For long documents like the Typst syntax guide, the HTML can be
+  //    multiple megabytes with thousands of SVG/MathML nodes. Running
+  //    DOMPurify + KaTeX tree walker over that DOM blocks the main thread
+  //    for hundreds of milliseconds. We skip all of it and only:
+  //      - Add loading="lazy" to images
+  //      - Assign data-line attributes for line-comment positioning
+  //      - Measure bubble positions
+  //
+  // 2. MARKDOWN/WIKIDOT/BBCODE/HTML PATH (full hydration):
+  //    These may contain user-authored raw HTML, math patterns ($...$),
+  //    mermaid blocks, or wikidot custom elements, so we run DOMPurify,
+  //    YouTube/tabview wiring, KaTeX, and mermaid as before.
+  //
+  // In both paths the content div is already pre-populated via
+  // dangerouslySetInnerHTML on the first render (SSR + initial client
+  // paint), so readers see article text immediately without waiting for
+  // JS — this effect only adds progressive enhancement.
   useEffect(() => {
     const container = contentRef.current;
     if (!container) return;
 
     let cancelled = false;
+    // Detect typst fast path via the server-injected marker. The marker is
+    // placed by renderTypst() in parsers/render.go as a wrapping
+    // <div class="typst-content" data-typst="1">, so checking the first
+    // child (or the container's only child) is reliable even when the div
+    // was already populated by dangerouslySetInnerHTML.
+    const isTypst = !!(
+      container.querySelector?.('[data-typst="1"]') ||
+      (container.firstElementChild && (container.firstElementChild as HTMLElement).dataset?.typst === "1")
+    );
+
+    if (isTypst) {
+      // ── TYPST ZERO-MUTATION FAST PATH ────────────────────────────
+      // All static DOM transformations were already applied at
+      // COMPILE TIME on the server (see typst.postprocessTypedHTML):
+      //   - <div class="typst-content" data-typst="1"> wrapper is present
+      //   - data-line attributes are pre-numbered on block elements
+      //   - <img> tags already have loading="lazy" decoding="async"
+      //   - external links already have target/rel/referrerpolicy
+      //   - MathML is rendered natively (no KaTeX needed)
+      //   - No mermaid fenced blocks, no wikidot youtube/tabview widgets
+      //
+      // The only thing we must do on the client is apply the dynamic
+      // "has-line-comments" class (depends on line comment counts which
+      // vary per viewer and change over time) and measure comment
+      // bubble positions (requires real browser layout, which the
+      // server cannot predict).
+      (() => {
+        // Apply comment marker dots to blocks that have comments.
+        // data-line is already on the elements from compile time.
+        const counts = lineCountsRef.current;
+        container.querySelectorAll<HTMLElement>("[data-line]").forEach((block) => {
+          const n = parseInt(block.getAttribute("data-line")!);
+          const count = counts[n] || 0;
+          block.classList.toggle("has-line-comments", count > 0);
+        });
+
+        // Measure bubble positions on the next frame so layout is settled.
+        requestAnimationFrame(() => {
+          if (!cancelled) measureBubbleTops(container);
+        });
+      })();
+      return () => { cancelled = true; };
+    }
+
+    // ── FULL HYDRATION PATH (non-Typst) ───────────────────────────
     (async () => {
       const DOMPurify = (await import("dompurify")).default;
       if (cancelled) return;
@@ -270,6 +323,10 @@ export function ArticleView({ data, articleType, articleSlug }: Props) {
           "polyline", "polygon", "defs", "clippath", "marker", "mask",
           "pattern", "lineargradient", "radialgradient", "stop", "use",
           "image", "foreignObject",
+          // MathML tags (KaTeX output)
+          "math", "mrow", "mi", "mn", "mo", "msup", "msub", "msubsup",
+          "mfrac", "mtable", "mtr", "mtd", "mover", "munder", "munderover",
+          "mtext", "mspace", "msqrt", "mroot", "mfenced",
         ],
         ALLOWED_ATTR: [
           "href", "title", "alt", "src", "class", "style", "id", "target",
@@ -284,12 +341,15 @@ export function ArticleView({ data, articleType, articleSlug }: Props) {
           "stroke-linejoin", "stroke-dasharray", "offset", "stop-color", "stop-opacity",
           "xmlns", "xmlns:xlink", "xlink:href", "data-math-rendered", "data-math-error",
           "data-mermaid-rendered", "data-mermaid-error",
+          // MathML attributes
+          "display", "accent", "accentunder", "mathvariant", "mathsize",
+          "mathcolor", "mathbackground", "scriptlevel", "displaystyle",
         ],
         ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto):|javascript:;$|[#/])/i,
         FORBID_TAGS: ["script", "object", "embed", "form"],
         FORBID_ATTR: ["onerror", "onload", "onclick", "onmouseover", "onfocus", "onblur"],
         ADD_TAGS: ["iframe"],
-        ADD_ATTR: ["allowfullscreen", "frameborder", "referrerpolicy", "loading"],
+        ADD_ATTR: ["allowfullscreen", "frameborder", "referrerpolicy", "loading", "decoding"],
       };
       const safe = DOMPurify.sanitize(html ?? "", purifyCfg);
       // Only overwrite innerHTML if the sanitised output differs from
@@ -314,6 +374,12 @@ export function ArticleView({ data, articleType, articleSlug }: Props) {
         iframe.setAttribute("referrerpolicy", "strict-origin-when-cross-origin");
         iframe.setAttribute("title", "YouTube video");
         el.replaceChildren(iframe);
+      });
+
+      // Lazy-load images.
+      container.querySelectorAll<HTMLImageElement>("img").forEach((img) => {
+        if (!img.hasAttribute("loading")) img.setAttribute("loading", "lazy");
+        if (!img.hasAttribute("decoding")) img.setAttribute("decoding", "async");
       });
 
       // Wikidot [[tabview]] — wire up click-to-switch behaviour.
@@ -366,8 +432,8 @@ export function ArticleView({ data, articleType, articleSlug }: Props) {
 
       // Hydrate KaTeX + mermaid. Yield to the browser between sync/async
       // phases so the user can scroll/interact while math renders in.
-      // requestIdleCallback (fallback to setTimeout) ensures long Typst
-      // articles don't block the main thread for hundreds of ms.
+      // requestIdleCallback (fallback to setTimeout) ensures long articles
+      // don't block the main thread for hundreds of ms.
       const schedule = (cb: () => void) => {
         if ("requestIdleCallback" in window) {
           (window as any).requestIdleCallback(() => { if (!cancelled) cb(); }, { timeout: 200 });

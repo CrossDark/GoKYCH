@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, type ReactNode } from "react";
 import { getCsrf, apiUrl, apiFetch } from "@/lib/api";
 import { useToast } from "@/lib/admin-feedback";
 
@@ -14,8 +14,11 @@ interface UpdateCheckInfo {
   binary_path: string;
   can_write: boolean;
   can_write_error?: string;
+  write_err_category?: "erofs" | "eacces" | "eperm" | "other" | string;
   process_user?: string;
   dir_permissions?: string;
+  in_container?: boolean;
+  mount_options?: string;
   published_at?: string;
   release_url?: string;
   release_notes?: string;
@@ -35,6 +38,116 @@ function formatBytes(bytes: number): string {
   if (bytes < 1024) return bytes + " B";
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
   return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+}
+
+// WriteErrorPanel shows a diagnostic box explaining WHY the binary directory
+// is not writable, with category-specific remediation steps. The key insight:
+//   - "erofs"  → chmod/chown will NOT help; the filesystem is mounted read-only
+//                (common: systemd ProtectSystem=strict, fstab ro mount,
+//                 kernel remount-ro after disk error, Docker read-only layer)
+//   - "eacces" → classic Unix permission issue; chmod/chown helps
+//   - "eperm"  → MAC/LSM/immutable flag (SELinux, AppArmor, chflags uchg)
+//   - "other"  → show raw error + generic hints
+function WriteErrorPanel({ info }: { info: UpdateCheckInfo }) {
+  const cat = info.write_err_category || "other";
+  const dir = info.binary_path ? info.binary_path.substring(0, info.binary_path.lastIndexOf("/")) : "";
+  const binName = info.binary_path ? info.binary_path.substring(info.binary_path.lastIndexOf("/") + 1) : "gokych";
+
+  let title = "写入失败";
+  let diagnosis: React.ReactNode = null;
+  let solutions: React.ReactNode[] = [];
+
+  if (cat === "erofs") {
+    title = "🔒 只读文件系统（read-only file system）";
+    diagnosis = (
+      <>
+        <p>文件权限 <code>{info.dir_permissions || "0777"}</code> 没有问题——<strong>chmod / chown 无法解决这个问题</strong>。
+        写入失败是因为该目录所在的文件系统被<strong>挂载为只读</strong>，操作系统从内核层面拒绝了所有写操作。</p>
+        {info.mount_options && info.mount_options.includes("ro") && (
+          <p>检测到挂载选项包含 <code>ro</code>（read-only）：<code>{info.mount_options}</code></p>
+        )}
+      </>
+    );
+    if (info.in_container) {
+      solutions = [
+        <>这是<strong>容器环境</strong>：二进制在镜像层中本身就是只读的。自更新功能不适用于容器部署——请通过重建/拉取新镜像来更新，或将二进制放在可写 volume 挂载路径下。</>,
+      ];
+    } else {
+      solutions = [
+        <>
+          <strong>检查 systemd 服务配置</strong>（最常见原因）：运行 <code style={{background:"#fee2e2",padding:"0.1rem 0.3rem",borderRadius:3}}>systemctl cat {binName}</code>，查看是否有 <code>ProtectSystem=strict</code>、<code>ProtectSystem=full</code>、<code>ReadOnlyPaths=-/opt</code>、<code>ReadOnlyPaths={dir}</code> 等指令。这些会将 <code>/opt</code> 以只读方式挂载到服务命名空间中。修复方法：在服务文件中添加 <code>ReadWritePaths={dir}</code> 然后 <code>systemctl daemon-reload && systemctl restart {binName}</code>。
+        </>,
+        <>
+          <strong>检查 /etc/fstab</strong>：运行 <code style={{background:"#fee2e2",padding:"0.1rem 0.3rem",borderRadius:3}}>mount | grep '{dir}'</code> 或 <code>findmnt {dir}</code> 查看挂载选项是否包含 <code>ro</code>。
+        </>,
+        <>
+          <strong>检查内核日志</strong>：运行 <code style={{background:"#fee2e2",padding:"0.1rem 0.3rem",borderRadius:3}}>dmesg | tail -30</code>，如果看到 "remounted read-only" 或 EXT4/XFS error，说明磁盘有 I/O 错误导致内核自动保护，先修复磁盘问题。
+        </>,
+      ];
+    }
+  } else if (cat === "eacces") {
+    title = "🚫 权限不足（permission denied）";
+    diagnosis = (
+      <p>进程用户 <code>{info.process_user}</code> 对目录 <code>{dir}</code>（权限 <code>{info.dir_permissions}</code>）没有写入权限。</p>
+    );
+    solutions = [
+      <>修改目录权限：<code style={{background:"#fee2e2",padding:"0.1rem 0.3rem",borderRadius:3}}>chmod 775 {dir}</code></>,
+      <>修改目录所有者：<code style={{background:"#fee2e2",padding:"0.1rem 0.3rem",borderRadius:3}}>chown {info.process_user || "$USER"} {dir}</code></>,
+      <>如使用 systemd：确保服务 <code>User=</code> 与目录所有者一致。</>,
+    ];
+  } else if (cat === "eperm") {
+    title = "⛔ 操作被拒绝（operation not permitted）";
+    diagnosis = (
+      <p>操作系统安全模块拒绝了写入操作，这通常不是普通文件权限问题。</p>
+    );
+    solutions = [
+      <>检查文件不可变标志：<code style={{background:"#fee2e2",padding:"0.1rem 0.3rem",borderRadius:3}}>lsattr {dir}/{binName}</code>，如果有 <code>i</code> 标志（immutable），用 <code>chattr -i {dir}/{binName}</code> 解除。</>,
+      <>检查 SELinux/AppArmor 状态：<code style={{background:"#fee2e2",padding:"0.1rem 0.3rem",borderRadius:3}}>getenforce</code> 或 <code>aa-status</code>。</>,
+      <>macOS 上检查 SIP（系统完整性保护）：二进制路径如果在受 SIP 保护的目录（如 <code>/System</code>、<code>/usr</code>）下，即使是 root 也无法写入。</>,
+    ];
+  } else {
+    diagnosis = <p>错误信息：<code>{info.can_write_error}</code></p>;
+    solutions = [
+      <>检查磁盘空间是否充足（<code>df -h {dir}</code>）。</>,
+      <>检查目录是否存在且可访问（<code>ls -la {dir}</code>）。</>,
+    ];
+  }
+
+  return (
+    <div style={{
+      marginTop: "0.5rem",
+      padding: "0.65rem 0.85rem",
+      background: "#fef2f2",
+      border: "1px solid #fecaca",
+      borderRadius: 6,
+      fontSize: "0.82rem",
+      color: "#991b1b",
+      lineHeight: 1.7,
+    }}>
+      <div style={{ fontWeight: 700, fontSize: "0.85rem", marginBottom: "0.35rem" }}>{title}</div>
+      {diagnosis}
+      {info.can_write_error && cat !== "other" && (
+        <div style={{ fontSize: "0.78rem", color: "#7f1d1d", marginTop: "0.25rem", fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }}>
+          系统错误: {info.can_write_error}
+        </div>
+      )}
+      {solutions.length > 0 && (
+        <div style={{ marginTop: "0.5rem" }}>
+          <div style={{ fontWeight: 600, marginBottom: "0.25rem", color: "#7f1d1d" }}>🔧 解决方法：</div>
+          <ul style={{ margin: 0, paddingLeft: "1.2rem" }}>
+            {solutions.map((s, i) => <li key={i} style={{ margin: "0.25rem 0" }}>{s}</li>)}
+          </ul>
+        </div>
+      )}
+      {(info.process_user || info.dir_permissions) && (
+        <div style={{ marginTop: "0.5rem", fontSize: "0.78rem", color: "#7f1d1d", borderTop: "1px solid #fecaca", paddingTop: "0.4rem" }}>
+          {info.process_user && <>进程用户: <code>{info.process_user}</code>{"　"}</>}
+          {info.dir_permissions && <>目录权限: <code>{info.dir_permissions}</code>{"　"}</>}
+          {info.mount_options && <>挂载选项: <code>{info.mount_options}</code></>}
+        </div>
+      )}
+    </div>
+  );
 }
 
 // ReleaseNotesHtml renders GitHub-flavored Markdown release notes to sanitized HTML.
@@ -277,30 +390,18 @@ export default function AdminUpdate() {
                   {info.can_write ? "✓ 可写" : "✗ 不可写"}
                 </span>
               )}
-              {info && !info.can_write && (info.can_write_error || info.process_user || info.dir_permissions) && (
-                <div style={{
-                  marginTop: "0.4rem",
-                  padding: "0.5rem 0.75rem",
-                  background: "#fef2f2",
-                  border: "1px solid #fecaca",
-                  borderRadius: 4,
-                  fontSize: "0.8rem",
-                  color: "#991b1b",
-                  lineHeight: 1.6,
-                }}>
-                  {info.can_write_error && (
-                    <div><strong>错误:</strong> {info.can_write_error}</div>
-                  )}
-                  {info.process_user && (
-                    <div><strong>进程用户:</strong> <code>{info.process_user}</code></div>
-                  )}
-                  {info.dir_permissions && (
-                    <div><strong>目录权限:</strong> <code>{info.dir_permissions}</code></div>
-                  )}
-                  <div style={{ marginTop: "0.3rem", color: "#b91c1c" }}>
-                    💡 解决方法: 确保运行进程的用户对二进制所在目录有写入权限，例如 <code style={{background:"#fee2e2",padding:"0.1rem 0.3rem",borderRadius:3}}>chmod 775 $(dirname {info.binary_path})</code> 或 <code style={{background:"#fee2e2",padding:"0.1rem 0.3rem",borderRadius:3}}>chown $USER $(dirname {info.binary_path})</code>
-                  </div>
-                </div>
+              {info?.in_container && (
+                <span style={{
+                  marginLeft: "0.5rem",
+                  fontSize: "0.75rem",
+                  padding: "0.1rem 0.4rem",
+                  borderRadius: 3,
+                  background: "#fef3c7",
+                  color: "#92400e",
+                }}>容器环境</span>
+              )}
+              {info && !info.can_write && (
+                <WriteErrorPanel info={info} />
               )}
             </div>
 

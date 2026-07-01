@@ -142,18 +142,95 @@ func detectBinPath() string {
 // in the directory containing `path` (i.e. it can replace the binary).
 // On Linux you can rename over a non-writable file if you have write perms
 // on the directory, so we test the directory, not the file itself.
-// Returns (true, "") on success; (false, reason) on failure so the caller
-// can surface the exact OS error (permission denied, read-only fs, etc.)
-// instead of the opaque "不可写" message.
-func canWriteDir(path string) (bool, string) {
+// Returns (true, "", "") on success; on failure returns (false, rawErr, category)
+// where category is a short machine-readable string for the frontend to pick
+// targeted advice:
+//
+//	"erofs"   - read-only file system (EROFS): mount option ro / systemd ProtectSystem
+//	"eacces"  - permission denied (EACCES): Unix DAC permissions / ACL
+//	"eperm"   - operation not permitted (EPERM): MAC / immutable flag / other LSM
+//	"other"   - anything else (ENOENT, ENOSPC, etc.)
+func canWriteDir(path string) (bool, string, string) {
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, ".gokych-write-test-")
 	if err != nil {
-		return false, err.Error()
+		return false, err.Error(), classifyWriteErr(err)
 	}
 	tmp.Close()
 	os.Remove(tmp.Name())
-	return true, ""
+	return true, "", ""
+}
+
+// classifyWriteErr maps an OS error to a machine-readable category.
+// Uses errors.Is with syscall errnos where available; falls back to
+// string matching on the error text for cross-platform safety.
+func classifyWriteErr(err error) string {
+	if err == nil {
+		return ""
+	}
+	// EROFS is the key one: syscall.EROFS exists on all Unix platforms.
+	if isEROFS(err) {
+		return "erofs"
+	}
+	if os.IsPermission(err) {
+		return "eacces"
+	}
+	msg := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(msg, "read-only"):
+		return "erofs"
+	case strings.Contains(msg, "permission denied"):
+		return "eacces"
+	case strings.Contains(msg, "operation not permitted"):
+		return "eperm"
+	default:
+		return "other"
+	}
+}
+
+// inContainer returns true if we appear to be running inside a Docker/containerd
+// container (checks for /.dockerenv and /run/.containerenv markers).
+func inContainer() bool {
+	if _, err := os.Stat("/.dockerenv"); err == nil {
+		return true
+	}
+	if _, err := os.Stat("/run/.containerenv"); err == nil {
+		return true
+	}
+	return false
+}
+
+// mountOptionsForPath (Linux only) reads /proc/mounts and returns the mount
+// options string (e.g. "ro,noatime") for the filesystem that contains `path`.
+// Returns "" on non-Linux platforms or if detection fails.
+func mountOptionsForPath(path string) string {
+	if runtime.GOOS != "linux" {
+		return ""
+	}
+	data, err := os.ReadFile("/proc/mounts")
+	if err != nil {
+		return ""
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return ""
+	}
+	// Find the longest mount point prefix that matches abs.
+	best := ""
+	bestOpts := ""
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 4 {
+			continue
+		}
+		mp := fields[1] // mount point
+		opts := fields[3]
+		if strings.HasPrefix(abs, mp) && len(mp) > len(best) {
+			best = mp
+			bestOpts = opts
+		}
+	}
+	return bestOpts
 }
 
 // compareVersions returns true when latest is "newer" than current.
@@ -213,29 +290,32 @@ func compareVersions(current, latest string) bool {
 
 // updateCheckResponse is the JSON body for GET /api/admin/update/check.
 type updateCheckResponse struct {
-	CurrentVersion  string `json:"current_version"`
-	LatestVersion   string `json:"latest_version"`
-	UpdateAvailable bool   `json:"update_available"`
-	Platform        string `json:"platform"`         // "linux/amd64", etc.
-	Arch            string `json:"arch"`
-	OS              string `json:"os"`
-	BinaryPath      string `json:"binary_path"`
-	CanWrite        bool   `json:"can_write"`        // binary dir is writable
-	CanWriteError   string `json:"can_write_error,omitempty"` // OS error when can_write=false
-	ProcessUser     string `json:"process_user,omitempty"`   // os user running the process
-	DirPermissions  string `json:"dir_permissions,omitempty"` // octal permissions of bin dir
-	PublishedAt     string `json:"published_at,omitempty"`
-	ReleaseURL      string `json:"release_url,omitempty"`
-	ReleaseNotes    string `json:"release_notes,omitempty"`
-	DownloadSize    int64  `json:"download_size,omitempty"`
-	Error           string `json:"error,omitempty"`  // non-fatal (e.g. GitHub unreachable)
+	CurrentVersion   string `json:"current_version"`
+	LatestVersion    string `json:"latest_version"`
+	UpdateAvailable  bool   `json:"update_available"`
+	Platform         string `json:"platform"`         // "linux/amd64", etc.
+	Arch             string `json:"arch"`
+	OS               string `json:"os"`
+	BinaryPath       string `json:"binary_path"`
+	CanWrite         bool   `json:"can_write"`         // binary dir is writable
+	CanWriteError    string `json:"can_write_error,omitempty"`    // OS error when can_write=false
+	WriteErrCategory string `json:"write_err_category,omitempty"` // "erofs"|"eacces"|"eperm"|"other"
+	ProcessUser      string `json:"process_user,omitempty"`       // os user running the process
+	DirPermissions   string `json:"dir_permissions,omitempty"`    // octal permissions of bin dir
+	InContainer      bool   `json:"in_container"`                 // running inside Docker/containerd
+	MountOptions     string `json:"mount_options,omitempty"`      // Linux: mount opts for bin dir
+	PublishedAt      string `json:"published_at,omitempty"`
+	ReleaseURL       string `json:"release_url,omitempty"`
+	ReleaseNotes     string `json:"release_notes,omitempty"`
+	DownloadSize     int64  `json:"download_size,omitempty"`
+	Error            string `json:"error,omitempty"`  // non-fatal (e.g. GitHub unreachable)
 }
 
 func (s *Server) checkUpdateHandler(c *gin.Context) {
 	goos, goarch := runtime.GOOS, runtime.GOARCH
 	binPath := detectBinPath()
 
-	canW, canWErr := canWriteDir(binPath)
+	canW, canWErr, errCategory := canWriteDir(binPath)
 
 	// Gather permission diagnostics so the admin can see *why* writes fail.
 	dir := filepath.Dir(binPath)
@@ -253,15 +333,18 @@ func (s *Server) checkUpdateHandler(c *gin.Context) {
 	}
 
 	resp := updateCheckResponse{
-		CurrentVersion: s.Version,
-		Platform:       goos + "/" + goarch,
-		OS:             goos,
-		Arch:           goarch,
-		BinaryPath:     binPath,
-		CanWrite:       canW,
-		CanWriteError:  canWErr,
-		ProcessUser:    procUser,
-		DirPermissions: dirPerms,
+		CurrentVersion:   s.Version,
+		Platform:         goos + "/" + goarch,
+		OS:               goos,
+		Arch:             goarch,
+		BinaryPath:       binPath,
+		CanWrite:         canW,
+		CanWriteError:    canWErr,
+		WriteErrCategory: errCategory,
+		ProcessUser:      procUser,
+		DirPermissions:   dirPerms,
+		InContainer:      inContainer(),
+		MountOptions:     mountOptionsForPath(binPath),
 	}
 
 	client := &http.Client{Timeout: 10 * time.Second}
@@ -317,7 +400,7 @@ func (s *Server) applyUpdateHandler(c *gin.Context) {
 	goos, goarch := runtime.GOOS, runtime.GOARCH
 	binPath := detectBinPath()
 
-	if ok, reason := canWriteDir(binPath); !ok {
+	if ok, reason, _ := canWriteDir(binPath); !ok {
 		c.JSON(http.StatusForbidden, gin.H{
 			"error": fmt.Sprintf("cannot write to %s: %s (process running as %s)",
 				filepath.Dir(binPath), reason, os.Getenv("USER")),

@@ -91,6 +91,14 @@ func sanitizeHTML(s string) string { return s }
 // surfaced as a "pending compile" placeholder, NOT a fallback compile,
 // because doing the compile here would defeat the whole point of the
 // performance optimisation.
+//
+// The returned HTML is already fully post-processed at compile time:
+// wrapped in <div class="typst-content" data-typst="1">, with data-line
+// numbers assigned to block elements, lazy attributes on images, and
+// external link attributes applied (see typst.postprocessTypedHTML).
+// The client-side hydration detects the data-typst marker and skips
+// DOMPurify/KaTeX/mermaid entirely — zero DOM mutations on the reader's
+// main thread.
 func renderTypst(articleID int, source string) string {
 	if !typst.Available() {
 		return `<p><em>Typst 编译器未安装,无法渲染本文。</em></p>`

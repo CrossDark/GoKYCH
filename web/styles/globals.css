@@ -592,6 +592,96 @@ hr {
     overflow: visible;
 }
 
+/* Typst compiler output wrapper.
+ * Typst HTML export uses a <style> block in <head> for math table
+ * alignment, but we extract only the <body> contents (see extractBody in
+ * internal/typst/typst.go), so the head CSS is lost. Re-provide the
+ * essential alignment rules that MathML tables need to display correctly. */
+.content-body .typst-content {
+    contain: layout style;
+}
+/* Heaviest rendering units in Typst output are display math and tables —
+ * these can contain hundreds of nested MathML elements. content-visibility
+ * lets the browser skip their paint until they scroll near the viewport.
+ * We do NOT apply content-visibility to the <p>/<h2>/etc. block wrappers
+ * because measureBubbleTops (line-comment positioning) needs accurate
+ * getBoundingClientRect values for every [data-line] element on the page;
+ * skipping layout for those would mis-position all comment bubbles. */
+.content-body .typst-content math[display="block"],
+.content-body .typst-content table {
+    content-visibility: auto;
+    contain-intrinsic-size: 1px 3em;
+}
+.content-body .typst-content img {
+    content-visibility: auto;
+    contain-intrinsic-size: 1px 200px;
+}
+/* Re-provide the math table alignment CSS that Typst normally emits in
+ * its <head><style> block (stripped by extractBody). Without these,
+ * matrices and multi-line equations misalign in Chromium/Firefox. */
+.content-body .typst-content mtable.right-align mtd,
+.content-body .typst-content mtable mtd.right-align,
+.content-body .typst-content mtable.left-align mtd.right-align,
+.content-body .typst-content mtable.aligned mtd:nth-child(odd) {
+    justify-items: end;
+    text-align: right;
+}
+.content-body .typst-content mtable.cases mtd,
+.content-body .typst-content mtable.left-align mtd,
+.content-body .typst-content mtable mtd.left-align,
+.content-body .typst-content mtable.aligned mtd:nth-child(even),
+.content-body .typst-content math:not([display]) > mtable.multiline-equation mtd {
+    justify-items: start;
+    text-align: left;
+}
+.content-body .typst-content mtable.cases mtd,
+.content-body .typst-content mtable.aligned mtd,
+.content-body .typst-content mtable mtd.flushed,
+.content-body .typst-content mtable mtd.left-flush {
+    padding-left: 0;
+}
+.content-body .typst-content mtable.cases mtd,
+.content-body .typst-content mtable.aligned mtd,
+.content-body .typst-content mtable mtd.flushed,
+.content-body .typst-content mtable mtd.right-flush {
+    padding-right: 0;
+}
+.content-body .typst-content mtable { math-style: inherit; }
+.content-body .typst-content mtd {
+    math-depth: auto-add;
+    math-style: compact;
+    math-shift: compact;
+}
+.content-body .typst-content mtable.multiline-equation mtd {
+    math-depth: inherit;
+    math-style: inherit;
+    math-shift: inherit;
+    padding: 0;
+}
+.content-body .typst-content math > mtable.multiline-equation mtr:not(:last-child) mtd {
+    padding-bottom: 0.5em;
+}
+.content-body .typst-content mfrac {
+    padding-inline: 0;
+    margin-inline: 0.1em;
+}
+.content-body .typst-content mover[accent="true" i] > :first-child {
+    font-feature-settings: "dtls";
+}
+.content-body .typst-content mover.dotted[accent="true" i] > :first-child {
+    font-feature-settings: "dtls" 0;
+}
+.content-body .typst-content munder > :nth-child(2),
+.content-body .typst-content munderover > :nth-child(2) {
+    math-shift: compact;
+}
+.content-body .typst-content munder[accentunder="true" i] > :not(:first-child),
+.content-body .typst-content mover[accent="true" i] > :not(:first-child) {
+    math-depth: inherit;
+    math-style: inherit;
+    math-shift: inherit;
+}
+
 .content-body pre {
     overflow-x: auto;
     max-width: 100%;
