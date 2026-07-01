@@ -350,6 +350,11 @@ func (s *Server) listAllPasskeys(c *gin.Context) {
 		}
 		out = append(out, r)
 	}
+	if err := rows.Err(); err != nil {
+		slog.Error("listAllPasskeys: iterate rows", "err", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载 Passkey 列表失败。"})
+		return
+	}
 	c.JSON(http.StatusOK, out)
 }
 

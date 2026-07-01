@@ -333,4 +333,23 @@ var allTables = [...]string{
 		INDEX idx_owner (owner_id),
 		INDEX idx_prefix (key_prefix)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
+	// ═══ 15. typst_compile_queue — async compilation job queue ═══
+	// Tracks the status of background typst compilation jobs. Articles are
+	// saved immediately on publish and compilation happens asynchronously;
+	// readers see a "compiling..." placeholder until the worker finishes.
+	// The same article cannot have multiple pending jobs — enqueue uses
+	// ON DUPLICATE KEY UPDATE to reset an existing failed/pending entry.
+	`CREATE TABLE IF NOT EXISTS typst_compile_queue (
+		id            INT AUTO_INCREMENT PRIMARY KEY,
+		article_id    INT NOT NULL UNIQUE,
+		status        ENUM('pending','compiling','success','failed') NOT NULL DEFAULT 'pending',
+		error_message TEXT DEFAULT NULL,
+		attempts      INT NOT NULL DEFAULT 0,
+		created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		updated_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+		compiled_at   DATETIME DEFAULT NULL,
+		FOREIGN KEY (article_id) REFERENCES articles(id) ON DELETE CASCADE,
+		INDEX idx_status (status, created_at)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 }

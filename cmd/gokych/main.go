@@ -98,6 +98,13 @@ func main() {
 	// "data/typst" which breaks when the binary isn't run from the project
 	// root (e.g. systemd, Docker, tests).
 	typst.SetWorkspaceDir(cfg.App.DataDir + "/typst")
+	// Start the async typst compilation worker pool (2 workers = up to 2
+	// concurrent compilations, further bounded by compileSem at 4 in the
+	// typst package itself). This decouples HTTP request latency from
+	// compilation time — articles are saved immediately and compiled in
+	// the background.
+	typst.StartWorker(db, 2)
+	defer typst.StopWorker()
 	srv := api.NewServer(db, sess, limiter, m, cfg.App.DataDir, cfg.App.TrustedProxies)
 	// PublicURL is the absolute base URL the backend is reachable at
 	// from the public internet — used to build absolute /uploads/*
@@ -228,6 +235,7 @@ func main() {
 				return
 			}
 			db.Close()
+			typst.StopWorker()
 			if err := syscall.Exec(exePath, os.Args, os.Environ()); err != nil {
 				slog.Error("update: exec failed", "err", err)
 			}
@@ -248,6 +256,9 @@ func main() {
 	<-quit
 
 	slog.Info("shutting down...")
+	// Stop the typst worker first so in-flight compilations finish or
+	// abort cleanly before we close the DB connection.
+	typst.StopWorker()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := httpSrv.Shutdown(ctx); err != nil {

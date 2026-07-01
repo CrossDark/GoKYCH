@@ -500,16 +500,31 @@ func InvalidateDependents(dbx *sql.DB, changedID int) error {
 		}
 	}
 	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("typst: iterate dependency rows: %w", err)
+	}
 
 	// BFS from changedID to find all transitively dependent articles.
+	// Start from articles that DIRECTLY depend on changedID — never
+	// add changedID itself to the invalidation set, otherwise a circular
+	// @import (A imports B, B imports A) would cause a newly-compiled
+	// article's cache to be immediately invalidated by its own dependent
+	// cascade.
 	visited := make(map[int]bool)
-	queue := []int{changedID}
+	var queue []int
 	var toInvalidate []int
+	for _, dep := range reverseDep[changedID] {
+		if !visited[dep] && dep != changedID {
+			visited[dep] = true
+			toInvalidate = append(toInvalidate, dep)
+			queue = append(queue, dep)
+		}
+	}
 	for len(queue) > 0 {
 		cur := queue[0]
 		queue = queue[1:]
 		for _, dep := range reverseDep[cur] {
-			if !visited[dep] {
+			if !visited[dep] && dep != changedID {
 				visited[dep] = true
 				toInvalidate = append(toInvalidate, dep)
 				queue = append(queue, dep)

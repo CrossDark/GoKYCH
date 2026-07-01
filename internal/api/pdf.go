@@ -53,13 +53,16 @@ func (s *Server) getArticlePDF(c *gin.Context) {
 	}
 	pdf, err := typst.CompilePDFCached(a.ID, a.Content)
 	if err != nil {
-		// Cache miss = no publish-time compile (yet). Don't 500 — the
-		// article exists, the cache just hasn't been seeded. 404 is
-		// honest; the operator can re-save the article to trigger
-		// precompile.
+		// Cache miss = compilation hasn't finished yet (async queue).
+		// Auto-enqueue for compilation and return a 503 so the client
+		// knows to retry, rather than 404 which implies the PDF is
+		// permanently unavailable.
 		if strings.Contains(err.Error(), "no cached PDF") {
-			slog.Info("getArticlePDF: cache miss", "article_id", a.ID)
-			c.JSON(http.StatusNotFound, gin.H{"error": "PDF 尚未生成,请重新发布文章后再试。"})
+			slog.Info("getArticlePDF: cache miss, enqueuing compile", "article_id", a.ID)
+			if qerr := typst.EnqueueCompile(s.DB, a.ID); qerr != nil {
+				slog.Warn("getArticlePDF: auto-enqueue failed", "article_id", a.ID, "err", qerr)
+			}
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "PDF 正在编译中，请稍后再试。"})
 			return
 		}
 		slog.Error("getArticlePDF: cache lookup", "article_id", a.ID, "err", err)

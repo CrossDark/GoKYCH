@@ -2,42 +2,51 @@ package api
 
 import "testing"
 
-// TestSlugRe locks in the Unicode-aware slug charset. The grammar must
-// accept CJK / Cyrillic / accented Latin display names so non-English
-// articles keep a readable URL ("/md/我第一篇笔记"), and reject everything
-// that would break URL paths, filesystem lookups, or Content-Disposition
-// headers (whitespace, control chars, path separators, the ". / .."
-// segments, quotes, brackets, emoji/punctuation).
+// TestSlugRe locks in the blacklist-based slug validation. The grammar accepts
+// ALL Unicode characters (including CJK, Cyrillic, accented Latin, emoji, spaces,
+// quotes, brackets, percent signs) and ONLY rejects characters that are dangerous
+// in URL paths or filenames:
+//   - ASCII control chars (0x00-0x1F, 0x7F)
+//   - Forward slash / (path separator)
+//   - Backslash \ (Windows path separator)
+//
+// slugRe is a NEGATIVE test: MatchString returning true means the slug contains
+// an INVALID character; false means it is acceptable. The "." and ".." segments
+// are handled separately by the handler (they are rejected there, not by the regex).
 func TestSlugRe(t *testing.T) {
 	cases := []struct {
 		name string
 		slug string
-		want bool
+		// want=true means the regex MATCHES → contains invalid char → rejected.
+		// want=false means the regex does NOT match → valid slug.
+		wantInvalid bool
 	}{
-		{"ascii letters digits ok", "hello-world_42", true},
-		{"dot allowed", "v0.1.2", true},
-		{"CJK ok", "我第一篇笔记", true},
-		{"Cyrillic ok", "Заметка_1", true},
-		{"accented Latin ok", "Café-Nouvelle", true},
-		{"empty rejected", "", false},
-		{"slash rejected", "a/b", false},
-		{"backslash rejected", `a\b`, false},
-		{"space rejected", "a b", false},
-		{"tab rejected", "a\tb", false},
-		{"angstrom-ish space rejected", "全角 空格", false},
-		{"dot-segment rejected (handled by caller, but regex still ok)", "..", true},
-		{"quoted rejected", `"a"`, false},
-		{"bracket rejected", "[tag]", false},
-		{"emoji rejected", "测试🚀rocket", false},
-		{"percent rejected", "100%-done", false},
-		{"leading dot ok", ".hidden", true},
-		{"trailing dot ok", "trailing.", true},
+		{"ascii letters digits ok", "hello-world_42", false},
+		{"dot allowed", "v0.1.2", false},
+		{"CJK ok", "我第一篇笔记", false},
+		{"Cyrillic ok", "Заметка_1", false},
+		{"accented Latin ok", "Café-Nouvelle", false},
+		{"emoji ok", "我的第一篇笔记😀", false},
+		{"space ok (allowed in new rules)", "my first note", false},
+		{"percent ok", "100%-done", false},
+		{"quote ok", `"note"`, false},
+		{"bracket ok", "[tag]", false},
+		{"dot-segment ok (rejected by handler, not regex)", "..", false},
+		{"leading dot ok", ".hidden", false},
+		{"trailing dot ok", "trailing.", false},
+		{"empty ok (rejected by empty-check, not regex)", "", false},
+		{"slash rejected", "a/b", true},
+		{"backslash rejected", `a\b`, true},
+		{"tab rejected (control char)", "a\tb", true},
+		{"null rejected (control char)", "a\x00b", true},
+		{"DEL rejected (0x7F)", "a\x7fb", true},
+		{"newline rejected (0x0A)", "a\nb", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got := slugRe.MatchString(tc.slug)
-			if got != tc.want {
-				t.Fatalf("slugRe.MatchString(%q) = %v; want %v", tc.slug, got, tc.want)
+			if got != tc.wantInvalid {
+				t.Fatalf("slugRe.MatchString(%q) = %v; wantInvalid=%v", tc.slug, got, tc.wantInvalid)
 			}
 		})
 	}
@@ -47,7 +56,7 @@ func TestSlugRe(t *testing.T) {
 // slug must be accepted (we round-trip the slug-re + length checks the way
 // createArticle does it), and a 129-rune slug must trip the length rejection.
 func TestSlugLengthCap(t *testing.T) {
-	if !slugRe.MatchString(strings_Repeat("字", 128)) {
+	if slugRe.MatchString(strings_Repeat("字", 128)) {
 		t.Fatal("128 CJK runes should be allowed by slugRe")
 	}
 	if len([]rune(strings_Repeat("字", 129))) <= maxSlugRunes {

@@ -47,6 +47,9 @@ func (s *Server) getSite(c *gin.Context) {
 				subLinks = append(subLinks, l)
 			}
 		}
+		if err := rows.Err(); err != nil {
+			slog.Warn("getSite: iterate subsite_links rows failed", "err", err)
+		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -91,6 +94,11 @@ func (s *Server) getHome(c *gin.Context) {
 			subLinks = append(subLinks, l)
 		}
 	}
+	if err := rows.Err(); err != nil {
+		slog.Error("getHome: iterate subsite_links rows", "err", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载子站点链接失败。"})
+		return
+	}
 
 	// Featured articles (with join to get title/type/slug).
 	type featuredArticle struct {
@@ -115,6 +123,11 @@ func (s *Server) getHome(c *gin.Context) {
 		if err := rows2.Scan(&f.ID, &f.Type, &f.Slug, &f.Title); err == nil {
 			featured = append(featured, f)
 		}
+	}
+	if err := rows2.Err(); err != nil {
+		slog.Error("getHome: iterate featured_articles rows", "err", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载推荐文章失败。"})
+		return
 	}
 
 	// Recent articles.
@@ -153,6 +166,11 @@ func (s *Server) getHome(c *gin.Context) {
 			notifs = append(notifs, n)
 		}
 	}
+	if err := rows3.Err(); err != nil {
+		slog.Error("getHome: iterate notifications rows", "err", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载通知失败。"})
+		return
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"subsite_links":     subLinks,
@@ -190,6 +208,11 @@ func (s *Server) listNotifications(c *gin.Context) {
 		n.IsImportant = imp == 1
 		n.ContentHTML = s.rewriteStaticAssetURLs(parsers.RenderSafeMarkdown(n.Content))
 		notifs = append(notifs, n)
+	}
+	if err := rows.Err(); err != nil {
+		slog.Error("listNotifications: iterate rows", "err", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载通知失败。"})
+		return
 	}
 	c.JSON(http.StatusOK, notifs)
 }

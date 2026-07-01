@@ -202,6 +202,11 @@ func (s *Server) listAdminTags(c *gin.Context) {
 			out = append(out, t)
 		}
 	}
+	if err := rows.Err(); err != nil {
+		slog.Error("listAdminTags: iterate rows", "err", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载标签失败。"})
+		return
+	}
 	c.JSON(http.StatusOK, out)
 }
 
@@ -349,6 +354,11 @@ func (s *Server) listAdminNotifications(c *gin.Context) {
 		n.IsActive = act == 1
 		n.ContentHTML = parsers.RenderSafeMarkdown(n.Content)
 		out = append(out, n)
+	}
+	if err := rows.Err(); err != nil {
+		slog.Error("listAdminNotifications: iterate rows", "err", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载通知失败。"})
+		return
 	}
 	c.JSON(http.StatusOK, out)
 }
@@ -528,6 +538,11 @@ func (s *Server) getAdminHome(c *gin.Context) {
 			links = append(links, l)
 		}
 	}
+	if err := rows.Err(); err != nil {
+		slog.Error("getAdminHome: iterate subsite_links rows", "err", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载子站点链接失败。"})
+		return
+	}
 
 	type featured struct {
 		ID        int    `json:"id"`
@@ -553,6 +568,11 @@ func (s *Server) getAdminHome(c *gin.Context) {
 		if err := rows2.Scan(&f.ID, &f.ArticleID, &f.Title, &f.Type, &f.Slug, &f.SortOrder); err == nil {
 			feat = append(feat, f)
 		}
+	}
+	if err := rows2.Err(); err != nil {
+		slog.Error("getAdminHome: iterate featured_articles rows", "err", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载推荐文章失败。"})
+		return
 	}
 	c.JSON(http.StatusOK, gin.H{"subsite_links": links, "featured_articles": feat})
 }
@@ -740,6 +760,11 @@ func (s *Server) listFiles(c *gin.Context) {
 		}
 		f.URL = s.publicAssetURL("/uploads/" + f.Filename)
 		out = append(out, f)
+	}
+	if err := rows.Err(); err != nil {
+		slog.Error("listFiles: iterate rows", "err", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载文件列表失败。"})
+		return
 	}
 	c.JSON(http.StatusOK, out)
 }

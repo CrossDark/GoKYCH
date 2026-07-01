@@ -2,12 +2,38 @@ package api
 
 import (
 	"log/slog"
+	"net/http"
 
 	"github.com/gin-gonic/gin"
 )
 
+const maxRequestBodyBytes = 10 << 20 // 10 MiB — generous for article content + file uploads
+
+// bodySizeLimitMiddleware caps request bodies to maxRequestBodyBytes to
+// prevent memory exhaustion from oversized POST/PUT bodies (e.g. a
+// malicious client sending a GiB-sized JSON payload). Uses http.MaxBytesReader
+// so the TCP connection is closed on overflow rather than reading the whole
+// body into memory.
+func bodySizeLimitMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if c.Request.ContentLength > maxRequestBodyBytes {
+			c.AbortWithStatusJSON(http.StatusRequestEntityTooLarge, gin.H{
+				"error": "请求体过大（最大 10MB）。",
+			})
+			return
+		}
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxRequestBodyBytes)
+		c.Next()
+	}
+}
+
 // Setup registers all API routes on the Gin engine.
 func (s *Server) Setup(r *gin.Engine) {
+	// Cap in-memory multipart form parsing to 10 MiB. File uploads use
+	// FormFile which streams to disk above this threshold, but we want
+	// a hard cap to avoid OOM from a malicious multipart payload.
+	r.MaxMultipartMemory = maxRequestBodyBytes
+
 	// Configure trusted proxies for c.ClientIP().
 	//  - TRUSTED_PROXIES unset/empty → trust NONE: gin uses RemoteAddr only,
 	//    so spoofed X-Forwarded-For can't bypass rate limiting / IP checks.
@@ -24,6 +50,7 @@ func (s *Server) Setup(r *gin.Engine) {
 	}
 
 	r.Use(securityHeaders())
+	r.Use(bodySizeLimitMiddleware())
 	r.Use(s.requestIDMiddleware())
 	// CORS runs BEFORE session/CSRF so an OPTIONS preflight short-circuits
 	// with 204 — CSRF would otherwise 403 the preflight (no session token
@@ -46,6 +73,9 @@ func (s *Server) Setup(r *gin.Engine) {
 		apiG.GET("/notifications", s.listNotifications)
 		apiG.GET("/articles", s.listArticles)
 		apiG.GET("/articles/:type/:slug", s.getArticle)
+		// Typst compile status polling (public — used by the editor/reader to
+		// show "compiling..." progress and auto-refresh when ready).
+		apiG.GET("/articles/:type/:slug/compile-status", s.getCompileStatus)
 		// Typst-only: download the compiled PDF. 404 if the article isn't
 		// a typst article or typst isn't installed.
 		apiG.GET("/articles/:type/:slug/pdf", s.getArticlePDF)
@@ -98,6 +128,7 @@ func (s *Server) Setup(r *gin.Engine) {
 				art.POST("", s.createArticle)
 				art.PUT("/:type/:slug", s.updateArticle)
 				art.DELETE("/:type/:slug", s.deleteArticle)
+				art.POST("/:type/:slug/recompile", s.recompileArticle)
 			}
 
 			// Admin management.

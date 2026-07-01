@@ -182,7 +182,12 @@ export function ArticleView({ data, articleType, articleSlug }: Props) {
     }).catch(() => {});
   }, []);
 
-  // Load line comments
+  // Initialise line-comment refs from server data. Runs once per data
+  // change (new article navigation). DO NOT include lineCounts/commentedLines
+  // in the big hydration effect's dep array — that would cause the whole
+  // DOMPurify + KaTeX pass to run twice (once for html, once when this
+  // effect sets commentedLines), doubling the time-to-content for long
+  // articles like the Typst syntax guide.
   useEffect(() => {
     setLineCounts(rawLineCounts ?? {});
     lineCountsRef.current = rawLineCounts ?? {};
@@ -220,157 +225,168 @@ export function ArticleView({ data, articleType, articleSlug }: Props) {
     return () => window.removeEventListener("resize", onResize);
   }, [measureBubbleTops]);
 
-  // Set innerHTML manually (avoids dangerouslySetInnerHTML wiping DOM on
-// re-renders). DOMPurify is loaded dynamically inside the effect so its
-// browser-only `window` dep never runs during SSR. useEffect (not
-// useLayoutEffect) is fine here — there's no DOM-write we need to land
-// before paint, and React 18 emits a deprecation warning for
-// useLayoutEffect during SSR.
-useEffect(() => {
-  const container = contentRef.current;
-  if (!container) return;
+  // Content hydration effect — runs once per article (html change only).
+  //
+  // CRITICAL PERFORMANCE NOTE:
+  // The content div is pre-populated via dangerouslySetInnerHTML on the
+  // FIRST render (both SSR and the initial client paint), so readers see
+  // article text immediately without waiting for JS to download, parse,
+  // and hydrate. This effect then:
+  //   1. Runs DOMPurify as defense-in-depth (backend already sanitises).
+  //   2. Rewrites YouTube placeholders → lazy <iframe>.
+  //   3. Wires up tabview click handlers.
+  //   4. Assigns data-line attributes for line-comment positioning.
+  //   5. Hydrates KaTeX math (async, yields to browser between blocks).
+  //   6. Hydrates mermaid diagrams (async, yields to browser).
+  //   7. Measures bubble positions.
+  //
+  // Deps are ONLY [html] — adding lineCounts/commentedLines here causes
+  // the ENTIRE heavy pass (DOMPurify + KaTeX over every text node) to
+  // run TWICE for long articles, which is the main reason Typst pages
+  // like the syntax guide appeared "extremely slow" — the user saw the
+  // server-rendered content immediately, but then React wiped it and
+  // re-processed the whole DOM a second time, blocking the main thread.
+  useEffect(() => {
+    const container = contentRef.current;
+    if (!container) return;
 
-  let cancelled = false;
-  (async () => {
-    const DOMPurify = (await import("dompurify")).default;
-    if (cancelled) return;
-    // Backend parsers (markdown / bbcode / wikidot / typst) already
-    // sanitise href/src/style; this is a defense-in-depth pass on the
-    // client. ALLOWED_TAGS mirrors the article content surface area;
-    // ALLOWED_URI_SCHEMES matches the backend's allowlist (bbcode +
-    // wikidot parsers).
-    const safe = DOMPurify.sanitize(html ?? "", {
-      ALLOWED_TAGS: [
-        "a", "abbr", "aside", "b", "blockquote", "br", "cite", "code",
-        "details", "div", "dl", "dt", "dd", "em", "figcaption", "figure",
-        "h1", "h2", "h3", "h4", "h5", "h6", "hr", "i", "img", "ins",
-        "kbd", "li", "mark", "ol", "p", "pre", "s", "section", "small",
-        "span", "strong", "sub", "summary", "sup", "table", "tbody",
-        "td", "th", "thead", "tr", "u", "ul",
-      ],
-      ALLOWED_ATTR: [
-        "href", "title", "alt", "src", "class", "style", "id", "target",
-        "rel", "colspan", "rowspan", "data-line", "data-tab-id",
-        "data-toggle", "data-source",
-      ],
-      // Wikidot's empty link (`[# text]`) renders to
-      // `href="javascript:;"` — a no-op anchor. Allow it
-      // specifically so DOMPurify doesn't strip the href
-      // (which would leave a useless `<a>text</a>`). The
-      // more dangerous `javascript:expr(...)` payloads are
-      // rejected by anchoring to end with `;` exactly.
-      ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto):|javascript:;$|[#/])/i,
-      FORBID_TAGS: ["script", "iframe", "object", "embed", "form"],
-      FORBID_ATTR: ["onerror", "onload", "onclick", "onmouseover", "onfocus", "onblur"],
-    });
-    container.innerHTML = safe;
+    let cancelled = false;
+    (async () => {
+      const DOMPurify = (await import("dompurify")).default;
+      if (cancelled) return;
+      const purifyCfg = {
+        ALLOWED_TAGS: [
+          "a", "abbr", "aside", "b", "blockquote", "br", "cite", "code",
+          "details", "div", "dl", "dt", "dd", "em", "figcaption", "figure",
+          "h1", "h2", "h3", "h4", "h5", "h6", "hr", "i", "img", "ins",
+          "kbd", "li", "mark", "ol", "p", "pre", "s", "section", "small",
+          "span", "strong", "sub", "summary", "sup", "table", "tbody",
+          "td", "th", "thead", "tr", "u", "ul",
+          // Typst HTML output uses inline SVG extensively for
+          // math glyphs, shapes, and decorated boxes. Without
+          // these, DOMPurify strips all SVG content and Typst
+          // pages render as broken/missing text.
+          "svg", "path", "g", "text", "rect", "circle", "ellipse", "line",
+          "polyline", "polygon", "defs", "clippath", "marker", "mask",
+          "pattern", "lineargradient", "radialgradient", "stop", "use",
+          "image", "foreignObject",
+        ],
+        ALLOWED_ATTR: [
+          "href", "title", "alt", "src", "class", "style", "id", "target",
+          "rel", "colspan", "rowspan", "data-line", "data-tab-id",
+          "data-toggle", "data-source",
+          // SVG attributes required by Typst output
+          "d", "fill", "stroke", "stroke-width", "viewBox", "width", "height",
+          "x", "y", "x1", "y1", "x2", "y2", "cx", "cy", "r", "rx", "ry",
+          "transform", "font-family", "font-size", "font-weight", "font-style",
+          "text-anchor", "dominant-baseline", "points",
+          "clip-path", "mask", "fill-opacity", "stroke-opacity", "stroke-linecap",
+          "stroke-linejoin", "stroke-dasharray", "offset", "stop-color", "stop-opacity",
+          "xmlns", "xmlns:xlink", "xlink:href", "data-math-rendered", "data-math-error",
+          "data-mermaid-rendered", "data-mermaid-error",
+        ],
+        ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto):|javascript:;$|[#/])/i,
+        FORBID_TAGS: ["script", "object", "embed", "form"],
+        FORBID_ATTR: ["onerror", "onload", "onclick", "onmouseover", "onfocus", "onblur"],
+        ADD_TAGS: ["iframe"],
+        ADD_ATTR: ["allowfullscreen", "frameborder", "referrerpolicy", "loading"],
+      };
+      const safe = DOMPurify.sanitize(html ?? "", purifyCfg);
+      // Only overwrite innerHTML if the sanitised output differs from
+      // what's already there (which is the server-rendered HTML). On the
+      // first client paint the div already contains the raw server HTML;
+      // if DOMPurify didn't strip anything, we skip the write to avoid
+      // a forced synchronous layout.
+      if (container.innerHTML !== safe) {
+        container.innerHTML = safe;
+      }
 
-    // Wikidot `[[youtube ID]]` emits a placeholder div (see
-    // RenderWikidot); DOMPurify strips <iframe> outright, so we swap
-    // the placeholder for a real iframe here, after sanitisation. The
-    // ID was regex-bounded to [A-Za-z0-9_-]{6,20} by the parser, so
-    // constructing the embed URL can't escape youtube.com.
-    container.querySelectorAll<HTMLElement>(".wikidot-youtube[data-youtube-id]").forEach((el) => {
-      const id = el.dataset.youtubeId;
-      if (!id) return;
-      const iframe = document.createElement("iframe");
-      iframe.src = `https://www.youtube.com/embed/${id}`;
-      iframe.loading = "lazy";
-      iframe.allowFullscreen = true;
-      iframe.setAttribute("frameborder", "0");
-      iframe.setAttribute("referrerpolicy", "strict-origin-when-cross-origin");
-      iframe.setAttribute("title", "YouTube video");
-      el.replaceChildren(iframe);
-    });
+      // Wikidot `[[youtube ID]]` emits a placeholder div; swap for iframe
+      // after sanitisation (we re-allowed iframe + its attrs above).
+      container.querySelectorAll<HTMLElement>(".wikidot-youtube[data-youtube-id]").forEach((el) => {
+        const id = el.dataset.youtubeId;
+        if (!id) return;
+        const iframe = document.createElement("iframe");
+        iframe.src = `https://www.youtube.com/embed/${id}`;
+        iframe.loading = "lazy";
+        iframe.allowFullscreen = true;
+        iframe.setAttribute("frameborder", "0");
+        iframe.setAttribute("referrerpolicy", "strict-origin-when-cross-origin");
+        iframe.setAttribute("title", "YouTube video");
+        el.replaceChildren(iframe);
+      });
 
-    // Wikidot `[[tabview]]…[[/tabview]]` — wire up the
-    // click-to-switch behaviour. The parser already
-    // marked the first tab as `.active`; we just need
-    // to swap the `.active` class on click. Each tab
-    // button has `data-tab-id="N"` matching the panel
-    // with the same id; we look up both within the
-    // same `.wikidot-tabview` container so multiple
-    // tabviews on one page are independent.
-    container.querySelectorAll<HTMLElement>(".wikidot-tabview").forEach((tv) => {
-      const tabs = tv.querySelectorAll<HTMLElement>(".wikidot-tab-tab");
-      const panels = tv.querySelectorAll<HTMLElement>(".wikidot-tab-panel");
-      tabs.forEach((tab) => {
-        tab.addEventListener("click", (e) => {
-          e.preventDefault();
-          const id = tab.dataset.tabId;
-          if (id === undefined) return;
-          tabs.forEach((t) => t.classList.remove("active"));
-          panels.forEach((p) => p.classList.remove("active"));
-          tab.classList.add("active");
-          const target = tv.querySelector<HTMLElement>(
-            `.wikidot-tab-panel[data-tab-id="${id}"]`,
-          );
-          if (target) target.classList.add("active");
+      // Wikidot [[tabview]] — wire up click-to-switch behaviour.
+      container.querySelectorAll<HTMLElement>(".wikidot-tabview").forEach((tv) => {
+        const tabs = tv.querySelectorAll<HTMLElement>(".wikidot-tab-tab");
+        const panels = tv.querySelectorAll<HTMLElement>(".wikidot-tab-panel");
+        tabs.forEach((tab) => {
+          tab.addEventListener("click", (e) => {
+            e.preventDefault();
+            const id = tab.dataset.tabId;
+            if (id === undefined) return;
+            tabs.forEach((t) => t.classList.remove("active"));
+            panels.forEach((p) => p.classList.remove("active"));
+            tab.classList.add("active");
+            const target = tv.querySelector<HTMLElement>(
+              `.wikidot-tab-panel[data-tab-id="${id}"]`,
+            );
+            if (target) target.classList.add("active");
+          });
         });
       });
-    });
 
-    // Assign line numbers to block elements
-    // Skip nested elements inside pre/li/table (already handled). Also skip
-    // descendants of auto-generated TOC — [[toc]] expands to a <div> with
-    // nested <ul>/<li> that don't map to source lines; only the TOC root
-    // <div> should consume one line number. Without this, every <li> inside
-    // the TOC increments ln and shifts all subsequent content off by the
-    // number of TOC entries.
-    const blocks = container.querySelectorAll("p, h1, h2, h3, h4, h5, h6, li, pre, blockquote, div, table");
-    let ln = 0;
-    blocks.forEach((block) => {
-      const el = block as HTMLElement;
-      if (el.closest("pre") && el.tagName !== "PRE") return;
-      if (el.tagName !== "LI" && el.closest("li") && el.closest("li") !== el) return;
-      if (el.tagName !== "TABLE" && el.closest("table")) return;
-      // Skip elements inside .wikidot-toc except the root div itself
-      const tocRoot = el.closest(".wikidot-toc");
-      if (tocRoot && tocRoot !== el) return;
-      // Skip tab nav <li> elements (auto-generated tab buttons from [[tab …]])
-      if (el.tagName === "LI" && el.closest(".wikidot-tab-nav")) return;
-      // Skip tabview wrapper divs (.wikidot-tab-panels, .wikidot-tab-panel) —
-      // these are layout containers, not source content; the real content
-      // lives inside them as <p>, <h2>, etc. which should still be counted.
-      if (el.classList.contains("wikidot-tab-panels") || el.classList.contains("wikidot-tab-panel")) return;
-      // Skip collapsible content wrapper div (auto-generated around
-      // [[collapsible]] bodies; the inner <p>s are the real lines).
-      if (el.classList.contains("collapsible-content")) return;
-      // Skip alignment wrapper divs (.wikidot-align from [[=]]/[[<]]/[[>]];
-      // the inner <p>s are the real content lines).
-      if (el.classList.contains("wikidot-align")) return;
-      // Skip footnotes section internals: the <ol> is auto-generated and
-      // footnote <li>s are moved from their original source position to the
-      // bottom of the page, so their line numbers don't map to source lines.
-      if (el.closest("section.footnotes") && el.tagName !== "SECTION") return;
-      ln++;
-      el.setAttribute("data-line", String(ln));
-    });
+      // Assign line numbers to block elements. Skip nested elements
+      // inside pre/li/table, auto-generated TOC, tab nav, etc.
+      const blocks = container.querySelectorAll("p, h1, h2, h3, h4, h5, h6, li, pre, blockquote, div, table");
+      let ln = 0;
+      blocks.forEach((block) => {
+        const el = block as HTMLElement;
+        if (el.closest("pre") && el.tagName !== "PRE") return;
+        if (el.tagName !== "LI" && el.closest("li") && el.closest("li") !== el) return;
+        if (el.tagName !== "TABLE" && el.closest("table")) return;
+        const tocRoot = el.closest(".wikidot-toc");
+        if (tocRoot && tocRoot !== el) return;
+        if (el.tagName === "LI" && el.closest(".wikidot-tab-nav")) return;
+        if (el.classList.contains("wikidot-tab-panels") || el.classList.contains("wikidot-tab-panel")) return;
+        if (el.classList.contains("collapsible-content")) return;
+        if (el.classList.contains("wikidot-align")) return;
+        if (el.closest("section.footnotes") && el.tagName !== "SECTION") return;
+        ln++;
+        el.setAttribute("data-line", String(ln));
+      });
 
-    // Apply comment markers (dot indicator via class)
-    const counts = lineCountsRef.current;
-    container.querySelectorAll("[data-line]").forEach((block) => {
-      const n = parseInt(block.getAttribute("data-line")!);
-      const count = counts[n] || 0;
-      block.classList.toggle("has-line-comments", count > 0);
-    });
+      // Apply comment marker dots.
+      const counts = lineCountsRef.current;
+      container.querySelectorAll("[data-line]").forEach((block) => {
+        const n = parseInt(block.getAttribute("data-line")!);
+        const count = counts[n] || 0;
+        block.classList.toggle("has-line-comments", count > 0);
+      });
 
-    // Hydrate KaTeX math + mermaid diagrams. Server-side Goldmark
-    // doesn't parse $…$ / $$…$$ / ```mermaid ```, so the HTML
-    // contains the raw patterns; this pass swaps them for rendered
-    // output. Must run after DOMPurify (above) — KaTeX HTML uses
-    // tags/classes that DOMPurify would strip.
-    await hydrateMarkdown(container);
-
-    // Measure bubble positions inline: we are guaranteed lines exist at this point.
-    // The async import has resolved, innerHTML is set, and data-line attributes are applied.
-    measureBubbleTops(container);
-  })();
-  return () => {
-    cancelled = true;
-  };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-}, [html, lineCounts, commentedLines]);
+      // Hydrate KaTeX + mermaid. Yield to the browser between sync/async
+      // phases so the user can scroll/interact while math renders in.
+      // requestIdleCallback (fallback to setTimeout) ensures long Typst
+      // articles don't block the main thread for hundreds of ms.
+      const schedule = (cb: () => void) => {
+        if ("requestIdleCallback" in window) {
+          (window as any).requestIdleCallback(() => { if (!cancelled) cb(); }, { timeout: 200 });
+        } else {
+          setTimeout(() => { if (!cancelled) cb(); }, 0);
+        }
+      };
+      schedule(() => {
+        if (cancelled || !container) return;
+        hydrateMarkdown(container).then(() => {
+          if (!cancelled) measureBubbleTops(container);
+        });
+      });
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [html]);
 
   const scrollToLine = useCallback((ln: number) => {
     const container = contentRef.current;
@@ -488,7 +504,19 @@ useEffect(() => {
           {can_edit && <Link href={`/admin/articles?editType=${article.type}&editSlug=${article.slug}`} className="edit-link">✏️ 编辑</Link>}</div>
       </header>
       <div className="article-content-wrap">
-        <div className="content-body" ref={contentRef} onClick={handleContentClick} />
+        <div
+          className="content-body"
+          ref={contentRef}
+          onClick={handleContentClick}
+          // Pre-populate with server-rendered HTML so content is visible
+          // in the SSR response AND on the first client paint — no blank
+          // wait for JS hydration. The useEffect above re-runs DOMPurify
+          // as defense-in-depth and only overwrites innerHTML if the
+          // sanitised output differs, so we avoid a redundant DOM write
+          // for the common case where server output is already clean.
+          dangerouslySetInnerHTML={{ __html: html ?? "" }}
+          suppressHydrationWarning
+        />
         {/* Line comment bubbles — outside the text area, aligned with each commented line */}
         <div className="line-bubble-layer" aria-hidden={false}>
           {commentedLines.map((ln) => {

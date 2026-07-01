@@ -3,6 +3,7 @@ package api
 import (
 	"database/sql"
 	"fmt"
+	htmlpkg "html"
 	"html/template"
 	"log/slog"
 	"net/http"
@@ -78,6 +79,7 @@ type ArticleDetail struct {
 	LineCommentCounts map[int]int            `json:"line_comment_counts"`
 	Rating            *content.RatingSummary `json:"rating"`
 	CanEdit           bool                   `json:"can_edit"`
+	CompileStatus     *typst.CompileStatus   `json:"compile_status,omitempty"`
 }
 
 // GET /api/articles/{type}/{slug}
@@ -168,6 +170,63 @@ func (s *Server) getArticle(c *gin.Context) {
 		Vars:        vars,
 		ArticleType: a.Type,
 	}
+	// For typst articles, check async compile status BEFORE rendering to
+	// avoid a redundant cache lookup (renderTypst calls CompileHTMLCached
+	// internally, but we need to know the status first to decide whether
+	// to auto-enqueue, show a placeholder, or use cached HTML).
+	//
+	// Flow:
+	//   1. If a queue row exists with pending/compiling → show "compiling…".
+	//   2. If a queue row exists with failed → show error.
+	//   3. If a queue row exists with success → render normally (cache hit).
+	//   4. If NO queue row exists, check whether the cache has HTML:
+	//      - cache hit → render normally (article was compiled before
+	//        the queue system existed, or was compiled via recompile API).
+	//      - cache miss → auto-enqueue the article for compilation and
+	//        show "compiling…" so the first visitor triggers the build
+	//        instead of staring at a permanent "not yet compiled" message.
+	var typstShowCompileMsg bool
+	var typstCompileErr string
+	var compileStatus *typst.CompileStatus
+	if atype == "typst" {
+		cs, cerr := typst.GetCompileStatus(s.DB, a.ID)
+		if cerr != nil {
+			slog.Error("getArticle: typst compile status", "article_id", a.ID, "err", cerr)
+		} else if cs != nil {
+			compileStatus = cs
+			switch cs.Status {
+			case "pending", "compiling":
+				typstShowCompileMsg = true
+			case "failed":
+				typstShowCompileMsg = true
+				typstCompileErr = cs.ErrorMessage
+			}
+			// cs != nil → queue record exists; do NOT auto-enqueue here
+			// (the worker is already handling it, or it permanently failed).
+		} else {
+			// cs == nil && cerr == nil: no queue record. Check whether the
+			// cache has HTML. If not, auto-enqueue so the first visitor
+			// triggers compilation instead of seeing a permanent
+			// "not yet compiled" placeholder.
+			if typst.Available() {
+				if _, cacheErr := typst.CompileHTMLCached(a.ID, ""); cacheErr != nil {
+					slog.Info("getArticle: typst cache miss with no queue, auto-enqueuing",
+						"article_id", a.ID)
+					if qerr := typst.EnqueueCompile(s.DB, a.ID); qerr != nil {
+						slog.Warn("getArticle: auto-enqueue failed", "article_id", a.ID, "err", qerr)
+					} else {
+						typstShowCompileMsg = true
+						// Re-fetch status after enqueuing so the response
+						// includes the fresh 'pending' record.
+						if freshCs, freshErr := typst.GetCompileStatus(s.DB, a.ID); freshErr == nil {
+							compileStatus = freshCs
+						}
+					}
+				}
+			}
+		}
+	}
+
 	html := parsers.RenderCtx(parsers.ArticleType(atype), a.ID, a.Content, renderCtx)
 	// Rewrite /uploads/ and /avatars/ relative paths to absolute URLs
 	// when PublicURL is set (cross-origin CDN deployments). Without
@@ -175,6 +234,17 @@ func (s *Server) getArticle(c *gin.Context) {
 	// would resolve against the CDN origin which doesn't serve those
 	// files (504/404). Dev (PublicURL="") passes through unchanged.
 	html = template.HTML(s.rewriteStaticAssetURLs(string(html)))
+
+	// Override HTML with compile-in-progress / error messages for typst
+	// articles that aren't ready yet.
+	if atype == "typst" && typstShowCompileMsg {
+		if typstCompileErr != "" {
+			errMsg := htmlpkg.EscapeString(typstCompileErr)
+			html = template.HTML(`<div class="typst-compile-failed" style="padding:2rem;border:1px solid #f56565;border-radius:8px;background:#fff5f5;color:#c53030;"><strong>❌ Typst 编译失败</strong><br><pre style="white-space:pre-wrap;margin-top:0.5rem;font-size:0.875rem;">` + errMsg + `</pre></div>`)
+		} else {
+			html = template.HTML(`<div class="typst-compiling" style="padding:2rem;text-align:center;color:#666;"><em>⏳ Typst 文档正在编译中，请稍后刷新页面查看...</em></div>`)
+		}
+	}
 
 	// Sub-query failures are now fail-fast: a partial response (article +
 	// half-broken comments) is worse than a 500, since the frontend can't
@@ -225,6 +295,7 @@ func (s *Server) getArticle(c *gin.Context) {
 		LineCommentCounts: lineCounts,
 		Rating:            rating,
 		CanEdit:           canEdit,
+		CompileStatus:     compileStatus,
 	})
 }
 
@@ -302,30 +373,20 @@ func (s *Server) createArticle(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "创建文章失败。"})
 		return
 	}
-	// Typst articles are precompiled at publish time: we fork the typst
-	// CLI here to produce both HTML and PDF and write them into
-	// typst_cache. Readers (the public article page, the PDF download
-	// endpoint) then hit the cache directly and never pay the compile
-	// cost. A compile failure here means the article won't be readable
-	// until the source is fixed — better to reject the publish than ship
-	// an article that renders as "pending compile" forever.
-	if atype == "typst" {
-		if cerr := typst.CompileAndCache(a.ID, in.Content); cerr != nil {
-			slog.Error("createArticle: typst precompile failed", "article_id", a.ID, "err", cerr)
-			// Roll back the article we just inserted so the slug is free
-			// for a corrected re-submit. Tag table is empty (we haven't
-			// attached tags yet) so no extra cleanup needed.
-			if _, derr := s.DB.Exec(`DELETE FROM articles WHERE id = ?`, a.ID); derr != nil {
-				slog.Error("createArticle: rollback after precompile failure", "article_id", a.ID, "err", derr)
-			}
-			c.JSON(http.StatusBadRequest, gin.H{
-				"error": "Typst 编译失败,文章未发布：" + cerr.Error() + "。请修正源文件后重新发布。",
-			})
-			return
-		}
-	}
+	// Typst articles are compiled asynchronously via the background worker
+	// (EnqueueCompile was already called inside content.CreateArticle). We
+	// return the article immediately with a compile_status of "pending" so
+	// the editor can show a "compiling..." indicator; the page will reflect
+	// the compiled output once the worker finishes.
 	if len(in.Tags) > 0 {
 		_ = content.SetArticleTags(s.DB, a.ID, in.Tags)
+	}
+	// Attach compile status for the response
+	if atype == "typst" {
+		if cs, err := typst.GetCompileStatus(s.DB, a.ID); err == nil && cs != nil {
+			c.JSON(http.StatusCreated, gin.H{"article": a, "compile_status": cs})
+			return
+		}
 	}
 	c.JSON(http.StatusCreated, a)
 }
@@ -367,35 +428,20 @@ func (s *Server) updateArticle(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "更新文章失败。"})
 		return
 	}
-	// Typst articles: refresh the precompiled cache after a successful
-	// source update. On failure we restore the previous title/content so
-	// the editor shows the article in the state the user last saw
-	// success — better than silently leaving a "no cache" state that
-	// renders as a placeholder. content.UpdateArticle has already
-	// invalidated typst_cache by deleting the row, so a failed compile
-	// here leaves the article in a clean "no cache" state and the
-	// precompile restoration brings the source back to its prior version.
-	if atype == "typst" {
-		if cerr := typst.CompileAndCache(a.ID, in.Content); cerr != nil {
-			slog.Error("updateArticle: typst precompile failed, reverting", "article_id", a.ID, "err", cerr)
-			if _, rerr := s.DB.Exec(
-				`UPDATE articles SET title = ?, content = ? WHERE id = ?`,
-				a.Title, a.Content, a.ID,
-			); rerr != nil {
-				// If the restore itself failed, we're in a bad spot: the
-				// article has the new content but no cache. Log loudly so
-				// the operator knows the source-vs-cache state is split.
-				slog.Error("updateArticle: revert UPDATE failed; article left in inconsistent state",
-					"article_id", a.ID, "revert_err", rerr)
-			}
-			c.JSON(http.StatusBadRequest, gin.H{
-				"error": "Typst 编译失败,内容已恢复为上次保存的版本：" + cerr.Error() + "。请修正源文件后重新保存。",
-			})
-			return
-		}
-	}
+	// Typst articles are re-compiled asynchronously by the background worker
+	// (EnqueueCompile was already called inside content.UpdateArticle). The
+	// old cache is deleted so readers see a "compiling..." placeholder
+	// instead of stale HTML until the worker finishes. No rollback on
+	// failure — compile errors are surfaced in the compile_status field
+	// and the admin UI shows them to the editor.
 	if in.Tags != nil {
 		_ = content.SetArticleTags(s.DB, a.ID, in.Tags)
+	}
+	if atype == "typst" {
+		if cs, err := typst.GetCompileStatus(s.DB, a.ID); err == nil && cs != nil {
+			c.JSON(http.StatusOK, gin.H{"article": a, "compile_status": cs})
+			return
+		}
 	}
 	c.JSON(http.StatusOK, a)
 }
@@ -456,4 +502,88 @@ func (s *Server) getLabelArticles(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, result)
+}
+
+// GET /api/articles/{type}/{slug}/compile-status
+// Returns the current async compilation status for typst articles. Used by
+// the frontend to poll for progress and auto-refresh when compilation finishes.
+func (s *Server) getCompileStatus(c *gin.Context) {
+	atype := c.Param("type")
+	slug := c.Param("slug")
+	if atype != "typst" {
+		c.JSON(http.StatusOK, gin.H{"status": "not_applicable"})
+		return
+	}
+	a, err := content.GetArticle(s.DB, atype, slug)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusNotFound, gin.H{"error": "文章不存在。"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载文章失败。"})
+		return
+	}
+	cs, err := typst.GetCompileStatus(s.DB, a.ID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询编译状态失败。"})
+		return
+	}
+	if cs == nil {
+		// No queue entry — check if cache exists (success state without queue row)
+		if _, err := typst.CompileHTMLCached(a.ID, ""); err == nil {
+			c.JSON(http.StatusOK, gin.H{"status": "success"})
+			return
+		}
+		// Enqueue for compilation if neither queue nor cache exists.
+		if !typst.Available() {
+			c.JSON(http.StatusOK, gin.H{"status": "failed", "error_message": "Typst 编译器未安装"})
+			return
+		}
+		if qerr := typst.EnqueueCompile(s.DB, a.ID); qerr != nil {
+			slog.Warn("getCompileStatus: auto-enqueue failed", "article_id", a.ID, "err", qerr)
+		}
+		c.JSON(http.StatusOK, gin.H{"status": "pending"})
+		return
+	}
+	c.JSON(http.StatusOK, cs)
+}
+
+// POST /api/articles/{type}/{slug}/recompile
+// Manually triggers a re-compile for a typst article (admin/owner or author).
+// Useful after fixing a syntax error, or to force a refresh after a dependency
+// update that the cascade missed.
+func (s *Server) recompileArticle(c *gin.Context) {
+	atype := c.Param("type")
+	slug := c.Param("slug")
+	if atype != "typst" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "只有 Typst 文章支持重新编译。"})
+		return
+	}
+	a, err := content.GetArticle(s.DB, atype, slug)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusNotFound, gin.H{"error": "文章不存在。"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载文章失败。"})
+		return
+	}
+	if !canModifyArticle(CurrentUserFromContext(c), a) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "您没有权限重新编译此文章。"})
+		return
+	}
+	if !typst.Available() {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Typst 编译器未安装。"})
+		return
+	}
+	// Delete old cache and enqueue fresh compilation.
+	if _, derr := s.DB.Exec(`DELETE FROM typst_cache WHERE article_id = ?`, a.ID); derr != nil {
+		slog.Warn("recompileArticle: failed to invalidate old cache", "article_id", a.ID, "err", derr)
+	}
+	if err := typst.EnqueueCompile(s.DB, a.ID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "提交编译任务失败：" + err.Error()})
+		return
+	}
+	cs, _ := typst.GetCompileStatus(s.DB, a.ID)
+	c.JSON(http.StatusOK, gin.H{"status": "ok", "compile_status": cs})
 }

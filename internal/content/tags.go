@@ -200,7 +200,7 @@ func GetArticlesByTag(db *sql.DB, tagName string, page, perPage int) (*ArticleLi
 		Page:       page,
 		PerPage:    perPage,
 		TotalPages: totalPages,
-	}, rows.Err()
+	}, nil
 }
 
 // placeholders returns a comma-separated "?,?,?" string.

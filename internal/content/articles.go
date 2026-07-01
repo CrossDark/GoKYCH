@@ -43,6 +43,34 @@ type ArticleListResult struct {
 	NextBefore int `json:"next_before,omitempty"`
 }
 
+// scanArticleWithUser scans an article row with LEFT JOINed user fields
+// (username, nickname, avatar). Used by both QueryRow and *sql.Rows scanners
+// to eliminate the 11-field Scan + 3 NullString assignments repeated across
+// ListArticles, GetArticle, ListRecentArticles, and SearchArticles.
+//
+// The scanner interface is satisfied by both *sql.Row and *sql.Rows so the
+// same helper works for single-row and multi-row result sets. The withContent
+// flag controls whether the content column is expected in the result (list
+// queries use LEFT(content, 200), GetArticle uses full content — the column
+// name alias is "content" in both cases so Scan still works).
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanArticleWithUser(s rowScanner, a *Article) error {
+	var username, nickname, avatar sql.NullString
+	if err := s.Scan(
+		&a.ID, &a.Type, &a.Slug, &a.Title, &a.Content, &a.AuthorID,
+		&username, &nickname, &avatar, &a.CreatedAt, &a.UpdatedAt,
+	); err != nil {
+		return err
+	}
+	a.AuthorName = username.String
+	a.AuthorNickname = nickname.String
+	a.AuthorAvatar = avatar.String
+	return nil
+}
+
 // ListArticles returns a page of articles, optionally filtered by type and/or
 // author. Pass atype="" and authorID=nil for "no filter". Pagination is
 // keyset-based: beforeID=0 returns the newest perPage rows, beforeID=N returns
@@ -125,14 +153,9 @@ func ListArticles(db *sql.DB, atype string, authorID *int, page, perPage, before
 	articles := make([]Article, 0)
 	for rows.Next() {
 		var a Article
-		var username, nickname, avatar sql.NullString
-		if err := rows.Scan(&a.ID, &a.Type, &a.Slug, &a.Title, &a.Content, &a.AuthorID,
-			&username, &nickname, &avatar, &a.CreatedAt, &a.UpdatedAt); err != nil {
+		if err := scanArticleWithUser(rows, &a); err != nil {
 			return nil, err
 		}
-		a.AuthorName = username.String
-		a.AuthorNickname = nickname.String
-		a.AuthorAvatar = avatar.String
 		articles = append(articles, a)
 	}
 	if err := rows.Err(); err != nil {
@@ -173,20 +196,15 @@ func ListArticles(db *sql.DB, atype string, authorID *int, page, perPage, before
 // GetArticle loads a single article by type and slug.
 func GetArticle(db *sql.DB, atype, slug string) (*Article, error) {
 	a := &Article{}
-	var username, nickname, avatar sql.NullString
-	err := db.QueryRow(
+	row := db.QueryRow(
 		`SELECT a.id, a.type, a.slug, a.title, a.content, a.author_id,
 		        u.username, u.nickname, u.avatar, a.created_at, a.updated_at
 		 FROM articles a LEFT JOIN users u ON u.id = a.author_id
 		 WHERE a.type = ? AND a.slug = ?`, atype, slug,
-	).Scan(&a.ID, &a.Type, &a.Slug, &a.Title, &a.Content, &a.AuthorID,
-		&username, &nickname, &avatar, &a.CreatedAt, &a.UpdatedAt)
-	if err != nil {
+	)
+	if err := scanArticleWithUser(row, a); err != nil {
 		return nil, err
 	}
-	a.AuthorName = username.String
-	a.AuthorNickname = nickname.String
-	a.AuthorAvatar = avatar.String
 	tags, err := GetTagsForArticle(db, a.ID)
 	if err != nil {
 		return nil, err
@@ -196,6 +214,9 @@ func GetArticle(db *sql.DB, atype, slug string) (*Article, error) {
 }
 
 // CreateArticle inserts a new article and returns it.
+// For typst articles, compilation is enqueued asynchronously instead of
+// blocking the request — readers will see a "compiling..." placeholder until
+// the background worker finishes.
 func CreateArticle(db *sql.DB, atype, slug, title, content string, authorID *int) (*Article, error) {
 	_, err := db.Exec(
 		`INSERT INTO articles (type, slug, title, content, author_id) VALUES (?, ?, ?, ?, ?)`,
@@ -204,10 +225,25 @@ func CreateArticle(db *sql.DB, atype, slug, title, content string, authorID *int
 	if err != nil {
 		return nil, err
 	}
-	return GetArticle(db, atype, slug)
+	a, err := GetArticle(db, atype, slug)
+	if err != nil {
+		return nil, err
+	}
+	// Enqueue async typst compilation (non-blocking; errors logged but don't
+	// fail the create — the queue row shows 'failed' with CLI-not-found msg
+	// if typst isn't installed).
+	if atype == "typst" {
+		if qerr := typst.EnqueueCompile(db, a.ID); qerr != nil {
+			slog.Warn("failed to enqueue typst compile on create", "article_id", a.ID, "err", qerr)
+		}
+	}
+	return a, nil
 }
 
 // UpdateArticle updates title and content. Returns the updated article.
+// For typst articles, the old cache is invalidated and a fresh async
+// compilation is enqueued; dependents are also re-queued so their compiled
+// output picks up the changes.
 func UpdateArticle(db *sql.DB, atype, slug, title, content string) (*Article, error) {
 	_, err := db.Exec(
 		`UPDATE articles SET title = ?, content = ? WHERE type = ? AND slug = ?`,
@@ -220,29 +256,31 @@ func UpdateArticle(db *sql.DB, atype, slug, title, content string) (*Article, er
 	if err != nil {
 		return nil, err
 	}
-	// Invalidate the typst cache: the source changed, so any cached HTML is
-	// stale. (Article deletion is handled by the ON DELETE CASCADE fk on
-	// typst_cache, so DeleteArticle needs no extra step.)
+	// Enqueue async re-compile for typst. The old cache is deleted so readers
+	// immediately see the "compiling..." placeholder instead of stale HTML.
 	if atype == "typst" {
 		if _, derr := db.Exec(`DELETE FROM typst_cache WHERE article_id = ?`, a.ID); derr != nil {
 			slog.Warn("failed to invalidate typst_cache", "article_id", a.ID, "err", derr)
 		}
+		if qerr := typst.EnqueueCompile(db, a.ID); qerr != nil {
+			slog.Warn("failed to enqueue typst compile on update", "article_id", a.ID, "err", qerr)
+		}
 		// Cascade: any article that @imports this one (directly or
-		// transitively) must also have its cache cleared so the next
-		// view doesn't show HTML compiled against the old content.
-		if ierr := typst.InvalidateDependents(db, a.ID); ierr != nil {
-			slog.Warn("failed to invalidate typst dependents", "article_id", a.ID, "err", ierr)
+		// transitively) must also be re-compiled against the new source.
+		if ierr := typst.EnqueueDependents(db, a.ID); ierr != nil {
+			slog.Warn("failed to enqueue typst dependents", "article_id", a.ID, "err", ierr)
 		}
 	}
 	return a, nil
 }
 
 // DeleteArticle removes an article and all associated data (CASCADE handles
-// comments, ratings, article_tags, typst_files, typst_cache, featured).
+// comments, ratings, article_tags, typst_files, typst_cache, featured, and
+// compile_queue entries).
 func DeleteArticle(db *sql.DB, atype, slug string) (bool, error) {
 	// Load the article first so we can cascade-invalidate typst dependents
 	// before the row is gone (CASCADE will delete typst_cache but not
-	// invalidate other articles' caches that depend on this one).
+	// invalidate or re-queue other articles' caches that depend on this one).
 	a, _ := GetArticle(db, atype, slug)
 	res, err := db.Exec(`DELETE FROM articles WHERE type = ? AND slug = ?`, atype, slug)
 	if err != nil {
@@ -250,10 +288,10 @@ func DeleteArticle(db *sql.DB, atype, slug string) (bool, error) {
 	}
 	n, _ := res.RowsAffected()
 	if n > 0 && a != nil && atype == "typst" {
-		// Invalidate any articles that imported this one. The deleted
-		// article's own cache is already gone via ON DELETE CASCADE.
-		if ierr := typst.InvalidateDependents(db, a.ID); ierr != nil {
-			slog.Warn("failed to invalidate typst dependents on delete", "article_id", a.ID, "err", ierr)
+		// Cascade: enqueue dependents for re-compilation (their cached HTML
+		// imported this article and now needs updating).
+		if ierr := typst.EnqueueDependents(db, a.ID); ierr != nil {
+			slog.Warn("failed to enqueue typst dependents on delete", "article_id", a.ID, "err", ierr)
 		}
 	}
 	return n > 0, nil
@@ -273,14 +311,9 @@ func ListRecentArticles(db *sql.DB, limit int) ([]Article, error) {
 	var articles = make([]Article, 0)
 	for rows.Next() {
 		var a Article
-		var username, nickname, avatar sql.NullString
-		if err := rows.Scan(&a.ID, &a.Type, &a.Slug, &a.Title, &a.Content, &a.AuthorID,
-			&username, &nickname, &avatar, &a.CreatedAt, &a.UpdatedAt); err != nil {
+		if err := scanArticleWithUser(rows, &a); err != nil {
 			return nil, err
 		}
-		a.AuthorName = username.String
-		a.AuthorNickname = nickname.String
-		a.AuthorAvatar = avatar.String
 		articles = append(articles, a)
 	}
 	if err := rows.Err(); err != nil {
@@ -344,14 +377,9 @@ func SearchArticles(db *sql.DB, q string, page, perPage int) (*ArticleListResult
 	articles := make([]Article, 0)
 	for rows.Next() {
 		var a Article
-		var username, nickname, avatar sql.NullString
-		if err := rows.Scan(&a.ID, &a.Type, &a.Slug, &a.Title, &a.Content, &a.AuthorID,
-			&username, &nickname, &avatar, &a.CreatedAt, &a.UpdatedAt); err != nil {
+		if err := scanArticleWithUser(rows, &a); err != nil {
 			return nil, err
 		}
-		a.AuthorName = username.String
-		a.AuthorNickname = nickname.String
-		a.AuthorAvatar = avatar.String
 		articles = append(articles, a)
 	}
 	if err := rows.Err(); err != nil {

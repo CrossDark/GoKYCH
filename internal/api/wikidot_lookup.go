@@ -2,6 +2,7 @@ package api
 
 import (
 	"database/sql"
+	"log/slog"
 	"strings"
 
 	"gokych/internal/content"
@@ -142,6 +143,9 @@ func (l *wikidotPageLookup) ListPages(category string, limit int, order string) 
 		e.AuthorName = username.String
 		e.AuthorNickname = nickname.String
 		out = append(out, e)
+	}
+	if err := rows.Err(); err != nil {
+		slog.Error("wikidot ListPages: iterate rows", "err", err)
 	}
 	return out
 }

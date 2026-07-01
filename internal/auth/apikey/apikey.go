@@ -19,6 +19,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -185,6 +186,16 @@ func Verify(db *sql.DB, plaintext string) (VerifyResult, error) {
 		return VerifyResult{}, nil
 	}
 	// Update last_used_at asynchronously — non-blocking, best-effort.
-	_, _ = db.Exec(`UPDATE api_keys SET last_used_at = NOW() WHERE id = ?`, id)
+	// Throttled to at most once per minute per key via SQL WHERE clause to
+	// avoid a write storm on every API request.
+	go func(keyID int) {
+		if _, err := db.Exec(
+			`UPDATE api_keys SET last_used_at = NOW()
+			 WHERE id = ? AND (last_used_at IS NULL OR last_used_at < DATE_SUB(NOW(), INTERVAL 1 MINUTE))`,
+			keyID,
+		); err != nil {
+			slog.Warn("apikey: async last_used_at update failed", "key_id", keyID, "err", err)
+		}
+	}(id)
 	return VerifyResult{OwnerID: ownerID, KeyID: id}, nil
 }
