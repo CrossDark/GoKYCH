@@ -41,9 +41,15 @@ func (s *Server) listUsers(c *gin.Context) {
 	for rows.Next() {
 		var u userSummary
 		if err := rows.Scan(&u.ID, &u.Username, &u.Nickname, &u.Role, &u.CreatedAt); err != nil {
+			slog.Error("listUsers: scan user row", "err", err)
 			continue
 		}
 		users = append(users, u)
+	}
+	if err := rows.Err(); err != nil {
+		slog.Error("listUsers: iterate rows", "err", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载用户失败。"})
+		return
 	}
 	c.JSON(http.StatusOK, users)
 }
@@ -135,10 +141,27 @@ func (s *Server) updateUserRole(c *gin.Context) {
 // DELETE /api/admin/users/:username
 func (s *Server) deleteUser(c *gin.Context) {
 	username := c.Param("username")
-	if username == "admin" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "不能删除默认管理员。"})
+	currentUser := CurrentUserFromContext(c)
+
+	// Prevent deleting yourself
+	if currentUser != nil && currentUser.Username == username {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "不能删除自己的账号。"})
 		return
 	}
+
+	// Load target user to check role
+	target, err := user.GetByUsername(s.DB, username)
+	if err != nil || target == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "用户不存在。"})
+		return
+	}
+
+	// Prevent deleting owner accounts
+	if user.IsOwner(target.Role) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "不能删除所有者账号。"})
+		return
+	}
+
 	ok, err := user.Delete(s.DB, username)
 	if err != nil || !ok {
 		c.JSON(http.StatusNotFound, gin.H{"error": "用户不存在。"})

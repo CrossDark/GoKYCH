@@ -198,9 +198,12 @@ func compileBoth(source string) (pdf []byte, html string, err error) {
 	// happen in the same nanosecond across forked workers (not currently
 	// possible but cheap insurance).
 	suffix := fmt.Sprintf("%d_%d", time.Now().UnixNano(), os.Getpid())
-	inputPath := filepath.Join(workspaceDir, ".input_"+suffix+".typ")
-	htmlPath := filepath.Join(workspaceDir, ".output_"+suffix+".html")
-	pdfPath := filepath.Join(workspaceDir, ".output_"+suffix+".pdf")
+	inputName := ".input_" + suffix + ".typ"
+	htmlName := ".output_" + suffix + ".html"
+	pdfName := ".output_" + suffix + ".pdf"
+	inputPath := filepath.Join(workspaceDir, inputName)
+	htmlPath := filepath.Join(workspaceDir, htmlName)
+	pdfPath := filepath.Join(workspaceDir, pdfName)
 	defer os.Remove(inputPath)
 	defer os.Remove(htmlPath)
 	defer os.Remove(pdfPath)
@@ -210,10 +213,12 @@ func compileBoth(source string) (pdf []byte, html string, err error) {
 	}
 
 	// Compile HTML.
+	// Note: cmd.Dir is set to workspaceDir, so we pass just the basename
+	// to typst to avoid path duplication (workspaceDir/workspaceDir/...).
 	cmd := exec.CommandContext(ctx, bin, "compile",
 		"--format", "html",
 		"--features", "html",
-		inputPath, htmlPath,
+		inputName, htmlName,
 	)
 	cmd.Env = envWhitelist()
 	cmd.Dir = workspaceDir
@@ -231,7 +236,7 @@ func compileBoth(source string) (pdf []byte, html string, err error) {
 
 	// Compile PDF. typst's default format IS pdf, so we just don't pass
 	// --format. The CLI will still pick up the timeout via ctx.
-	cmdPDF := exec.CommandContext(ctx, bin, "compile", inputPath, pdfPath)
+	cmdPDF := exec.CommandContext(ctx, bin, "compile", inputName, pdfName)
 	cmdPDF.Env = envWhitelist()
 	cmdPDF.Dir = workspaceDir
 	if output, err := cmdPDF.CombinedOutput(); err != nil {

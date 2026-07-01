@@ -1,6 +1,7 @@
 package parsers
 
 import (
+	"html"
 	"html/template"
 	"log/slog"
 	"strings"
@@ -104,7 +105,7 @@ func renderTypst(articleID int, source string) string {
 			return `<p><em>本文档尚未编译完成,请稍后再试,或联系管理员重新发布。</em></p>`
 		}
 		slog.Error("typst render", "article_id", articleID, "err", err)
-		return `<p><em>Typst 渲染失败:` + err.Error() + `</em></p>`
+		return `<p><em>Typst 渲染失败:` + html.EscapeString(err.Error()) + `</em></p>`
 	}
 	return body
 }
@@ -119,7 +120,7 @@ func renderTypstUncached(source string) string {
 	body, err := typst.CompileHTML(source)
 	if err != nil {
 		slog.Error("typst line compile", "err", err)
-		return "<p><em>Typst 编译失败：" + err.Error() + "</em></p>"
+		return "<p><em>Typst 编译失败：" + html.EscapeString(err.Error()) + "</em></p>"
 	}
 	return body
 }

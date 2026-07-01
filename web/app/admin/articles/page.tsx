@@ -209,13 +209,12 @@ function AdminArticlesInner() {
                     id="article-slug"
                     value={form.slug}
                     onChange={(e) => setForm({ ...form, slug: e.target.value })}
-                    placeholder="hello-world"
+                    placeholder="my-first-note / 我的第一篇笔记"
                     required
                     aria-describedby="article-slug-hint"
-                    pattern="[A-Za-z0-9-]+"
                   />
                   <div id="article-slug-hint" className="admin-form-hint">
-                    URL 中的标识符，只能用字母数字和短横线
+                    URL 中的标识符，支持任意 Unicode 字符，不能包含 / 或 \
                   </div>
                 </div>
               </div>

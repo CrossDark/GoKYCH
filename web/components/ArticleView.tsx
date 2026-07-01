@@ -78,8 +78,8 @@ function LineCommentBubble({
           >▾</button>
         </div>
         <div className="line-bubble-comment-list">
-          {sorted.map((c, i) => (
-            <div key={i} className="line-bubble-comment-item">
+          {sorted.map((c) => (
+            <div key={c.id} className="line-bubble-comment-item">
               <span className="line-bubble-avatar">{(c.author_name || "匿")[0]}</span>
               <span className="line-bubble-name">{c.author_name || "匿名"}</span>
               <span className="line-bubble-time">· {formatBubbleTime(c.created_at)}</span>
@@ -233,9 +233,8 @@ useEffect(() => {
       // specifically so DOMPurify doesn't strip the href
       // (which would leave a useless `<a>text</a>`). The
       // more dangerous `javascript:expr(...)` payloads are
-      // still rejected because the regex requires the full
-      // href to match exactly.
-      ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto|javascript):|[#/])/i,
+      // rejected by anchoring to end with `;` exactly.
+      ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto):|javascript:;$|[#/])/i,
       FORBID_TAGS: ["script", "iframe", "object", "embed", "form"],
       FORBID_ATTR: ["onerror", "onload", "onclick", "onmouseover", "onfocus", "onblur"],
     });
@@ -287,6 +286,12 @@ useEffect(() => {
     });
 
     // Assign line numbers to block elements
+    // Skip nested elements inside pre/li/table (already handled). Also skip
+    // descendants of auto-generated TOC — [[toc]] expands to a <div> with
+    // nested <ul>/<li> that don't map to source lines; only the TOC root
+    // <div> should consume one line number. Without this, every <li> inside
+    // the TOC increments ln and shifts all subsequent content off by the
+    // number of TOC entries.
     const blocks = container.querySelectorAll("p, h1, h2, h3, h4, h5, h6, li, pre, blockquote, div, table");
     let ln = 0;
     blocks.forEach((block) => {
@@ -294,6 +299,25 @@ useEffect(() => {
       if (el.closest("pre") && el.tagName !== "PRE") return;
       if (el.tagName !== "LI" && el.closest("li") && el.closest("li") !== el) return;
       if (el.tagName !== "TABLE" && el.closest("table")) return;
+      // Skip elements inside .wikidot-toc except the root div itself
+      const tocRoot = el.closest(".wikidot-toc");
+      if (tocRoot && tocRoot !== el) return;
+      // Skip tab nav <li> elements (auto-generated tab buttons from [[tab …]])
+      if (el.tagName === "LI" && el.closest(".wikidot-tab-nav")) return;
+      // Skip tabview wrapper divs (.wikidot-tab-panels, .wikidot-tab-panel) —
+      // these are layout containers, not source content; the real content
+      // lives inside them as <p>, <h2>, etc. which should still be counted.
+      if (el.classList.contains("wikidot-tab-panels") || el.classList.contains("wikidot-tab-panel")) return;
+      // Skip collapsible content wrapper div (auto-generated around
+      // [[collapsible]] bodies; the inner <p>s are the real lines).
+      if (el.classList.contains("collapsible-content")) return;
+      // Skip alignment wrapper divs (.wikidot-align from [[=]]/[[<]]/[[>]];
+      // the inner <p>s are the real content lines).
+      if (el.classList.contains("wikidot-align")) return;
+      // Skip footnotes section internals: the <ol> is auto-generated and
+      // footnote <li>s are moved from their original source position to the
+      // bottom of the page, so their line numbers don't map to source lines.
+      if (el.closest("section.footnotes") && el.tagName !== "SECTION") return;
       ln++;
       el.setAttribute("data-line", String(ln));
     });
@@ -512,7 +536,7 @@ useEffect(() => {
           <button className="line-comment-popup-close" onClick={closePopup}>×</button>
         </div>
         <div className="line-comment-popup-comments">{popupComments.length === 0 ? <div className="line-comment-popup-empty">暂无评论，来说两句吧</div> :
-          popupComments.map((c, i) => <div key={i} className="line-comment-popup-item"><div className="line-comment-popup-avatar">{(c.author_name || "匿")[0]}</div><div className="line-comment-popup-body"><div className="line-comment-popup-author">{c.author_name} · {new Date(c.created_at).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</div><div className="line-comment-popup-content"><SafeMarkdown html={c.content_html} text={c.content} /></div></div></div>)}</div>
+          popupComments.map((c) => <div key={c.id} className="line-comment-popup-item"><div className="line-comment-popup-avatar">{(c.author_name || "匿")[0]}</div><div className="line-comment-popup-body"><div className="line-comment-popup-author">{c.author_name} · {new Date(c.created_at).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</div><div className="line-comment-popup-content"><SafeMarkdown html={c.content_html} text={c.content} /></div></div></div>)}</div>
         {isLoggedIn ? <div className="line-comment-popup-form"><div className="line-comment-input-wrap"><input type="text" className="line-comment-input" maxLength={20} placeholder="输入短评（最多20字）..." value={popupInput} onChange={(e) => setPopupInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !submitting) handleLineCommentSubmit(); if (e.key === "Escape") closePopup(); }} disabled={submitting} /><span className={`line-comment-counter ${popupInput.length >= 20 ? "overlimit" : ""}`}>{popupInput.length}/20</span></div><button className="line-comment-submit" onClick={handleLineCommentSubmit} disabled={submitting || !popupInput.trim()}>{submitting ? "…" : "发送"}</button></div>
         : <div className="line-comment-popup-form"><div className="line-comment-login-hint"><Link href={`/auth/login?next=/${articleType}/${articleSlug}`}>登录</Link>后添加行评论</div></div>}
       </div>}

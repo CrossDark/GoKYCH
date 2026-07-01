@@ -979,10 +979,10 @@ func TestWikidotCenterLeftBlockForm(t *testing.T) {
 	// `[[<]]...[[/<]]` is the block form for left-align;
 	// mirrors `[[=]]` (center), `[[>]]` (right), `[[==]]`
 	// (justify).
-	if out := RenderWikidot(`[[<]]left[[/<]]`); !strings.Contains(out, `<div style="text-align:left">left</div>`) {
+	if out := RenderWikidot(`[[<]]left[[/<]]`); !strings.Contains(out, `<div class="wikidot-align" style="text-align:left">left</div>`) {
 		t.Errorf("expected left-align div, got %q", out)
 	}
-	if out := RenderWikidot(`[[=]]center[[/=]]`); !strings.Contains(out, `<div style="text-align:center">center</div>`) {
+	if out := RenderWikidot(`[[=]]center[[/=]]`); !strings.Contains(out, `<div class="wikidot-align" style="text-align:center">center</div>`) {
 		t.Errorf("expected center-align div, got %q", out)
 	}
 }
@@ -993,10 +993,10 @@ func TestWikidotCenterLeftLinePrefix(t *testing.T) {
 	// aligned paragraph. Useful for one-off centred
 	// subtitles without needing the `[[=]]` block
 	// form.
-	if out := RenderWikidot("= 居中文本"); !strings.Contains(out, `<div style="text-align:center">居中文本</div>`) {
+	if out := RenderWikidot("= 居中文本"); !strings.Contains(out, `<div class="wikidot-align" style="text-align:center">居中文本</div>`) {
 		t.Errorf("expected single-line center, got %q", out)
 	}
-	if out := RenderWikidot("< 左对齐文本"); !strings.Contains(out, `<div style="text-align:left">左对齐文本</div>`) {
+	if out := RenderWikidot("< 左对齐文本"); !strings.Contains(out, `<div class="wikidot-align" style="text-align:left">左对齐文本</div>`) {
 		t.Errorf("expected single-line left, got %q", out)
 	}
 	// Sanity: inline `=` (e.g. `x = y`) is NOT promoted

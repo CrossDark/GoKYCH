@@ -107,15 +107,20 @@ func (l *wikidotPageLookup) ListPages(category string, limit int, order string) 
 		// to filter by something more specific should add
 		// a category column to articles later; for now,
 		// the type column is the only stable filter.
+		// Normalize aliases: "markdown" -> "md" to match database storage.
+		dbType := category
 		switch category {
-		case "wikidot", "md", "markdown", "bbcode", "html", "typst":
-			whereClause = "WHERE a.type = ?"
-			args = append(args, category)
+		case "markdown":
+			dbType = "md"
+		case "wikidot", "md", "bbcode", "html", "typst":
+			// already valid
 		default:
 			// Unknown filter — treat as "no match" rather
 			// than risk a SQL error.
 			return nil
 		}
+		whereClause = "WHERE a.type = ?"
+		args = append(args, dbType)
 	}
 	q := `SELECT a.slug, a.title, u.username, u.nickname, a.created_at
 	      FROM articles a LEFT JOIN users u ON u.id = a.author_id
@@ -158,13 +163,18 @@ func (l *wikidotPageLookup) RandomPage(category string) *parsers.ListPageEntry {
 		args        []any
 	)
 	if category != "" && category != "*" {
+		// Normalize aliases: "markdown" -> "md" to match database storage
+		dbType := category
 		switch category {
-		case "wikidot", "md", "markdown", "bbcode", "html", "typst":
-			whereClause = "WHERE a.type = ?"
-			args = append(args, category)
+		case "markdown":
+			dbType = "md"
+		case "wikidot", "md", "bbcode", "html", "typst":
+			// already valid
 		default:
 			return nil
 		}
+		whereClause = "WHERE a.type = ?"
+		args = append(args, dbType)
 	}
 	q := `SELECT a.slug, a.title, u.username, u.nickname, a.created_at
 	      FROM articles a LEFT JOIN users u ON u.id = a.author_id

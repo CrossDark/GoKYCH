@@ -147,9 +147,10 @@ type VerifyResult struct {
 	KeyID   int
 }
 
-// Verify scans all (non-expired) keys and bcrypt-matches plaintext. Linear
-// scan is fine for the expected scale (a few keys per admin); if the table
-// grows large, the key_prefix index is enough to short-circuit most rows.
+// Verify uses the key_prefix index to narrow candidates to a single row before
+// doing the bcrypt comparison, turning O(n) bcrypt calls into O(1). The prefix
+// is the first 8 chars ("gky_xxxx") — enough to uniquely identify one key in
+// practice while staying short for index efficiency.
 //
 // Returns (result, nil) on hit, (zero, nil) on miss, (zero, err) on DB error.
 func Verify(db *sql.DB, plaintext string) (VerifyResult, error) {
@@ -157,39 +158,33 @@ func Verify(db *sql.DB, plaintext string) (VerifyResult, error) {
 	if plaintext == "" || !strings.HasPrefix(plaintext, KeyPrefix) {
 		return VerifyResult{}, nil
 	}
-	rows, err := db.Query(
-		`SELECT id, owner_id, key_hash, expires_at FROM api_keys
-		 WHERE expires_at IS NULL OR expires_at > NOW()`)
-	if err != nil {
-		return VerifyResult{}, err
+	// Extract visible prefix (first 8 chars: "gky_xxxx")
+	var prefix string
+	if len(plaintext) >= 8 {
+		prefix = plaintext[:8]
+	} else {
+		return VerifyResult{}, nil
 	}
-	defer rows.Close()
+	// Query only keys matching the prefix — typically 0 or 1 row
 	var (
-		matchID    int
-		matchOwner int
+		id      int
+		ownerID int
+		hash    string
 	)
-	hit := false
-	for rows.Next() {
-		var id, ownerID int
-		var hash string
-		var expiresAt sql.NullTime
-		if err := rows.Scan(&id, &ownerID, &hash, &expiresAt); err != nil {
-			return VerifyResult{}, err
+	err := db.QueryRow(
+		`SELECT id, owner_id, key_hash FROM api_keys
+		 WHERE key_prefix = ? AND (expires_at IS NULL OR expires_at > NOW())
+		 LIMIT 1`, prefix).Scan(&id, &ownerID, &hash)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return VerifyResult{}, nil
 		}
-		if bcrypt.CompareHashAndPassword([]byte(hash), []byte(plaintext)) == nil {
-			matchID = id
-			matchOwner = ownerID
-			hit = true
-			break
-		}
-	}
-	if err := rows.Err(); err != nil {
 		return VerifyResult{}, err
 	}
-	if !hit {
+	if bcrypt.CompareHashAndPassword([]byte(hash), []byte(plaintext)) != nil {
 		return VerifyResult{}, nil
 	}
 	// Update last_used_at asynchronously — non-blocking, best-effort.
-	_, _ = db.Exec(`UPDATE api_keys SET last_used_at = NOW() WHERE id = ?`, matchID)
-	return VerifyResult{OwnerID: matchOwner, KeyID: matchID}, nil
+	_, _ = db.Exec(`UPDATE api_keys SET last_used_at = NOW() WHERE id = ?`, id)
+	return VerifyResult{OwnerID: ownerID, KeyID: id}, nil
 }

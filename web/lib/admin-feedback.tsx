@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useContext, useState, useCallback, useEffect, ReactNode } from "react";
+import { createContext, useContext, useState, useCallback, useEffect, useRef, ReactNode } from "react";
 
 export type ToastKind = "success" | "error" | "warning" | "info";
 
@@ -34,9 +34,24 @@ let nextId = 1;
 
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([]);
+  const timerRefs = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map());
 
   const dismiss = useCallback((id: number) => {
     setToasts((prev) => prev.filter((t) => t.id !== id));
+    // Clear any pending auto-dismiss timer
+    const timer = timerRefs.current.get(id);
+    if (timer) {
+      clearTimeout(timer);
+      timerRefs.current.delete(id);
+    }
+  }, []);
+
+  // Cleanup all timers on unmount
+  useEffect(() => {
+    return () => {
+      timerRefs.current.forEach((timer) => clearTimeout(timer));
+      timerRefs.current.clear();
+    };
   }, []);
 
   const show = useCallback(
@@ -45,7 +60,8 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       const t: Toast = { id, kind, text, ttl: ttl ?? DEFAULT_TTL[kind] };
       setToasts((prev) => [...prev, t]);
       if (t.ttl > 0) {
-        setTimeout(() => dismiss(id), t.ttl);
+        const timer = setTimeout(() => dismiss(id), t.ttl);
+        timerRefs.current.set(id, timer);
       }
     },
     [dismiss]

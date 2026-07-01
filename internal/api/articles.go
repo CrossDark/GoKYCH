@@ -17,14 +17,15 @@ import (
 	"gokych/internal/typst"
 )
 
-// slugRe defines the charset an article slug may use. We allow any Unicode
-// letter or digit plus . _ - so users can title non-English articles
-// natively (e.g. "/md/我第一篇笔记"), but reject everything else —
-// whitespace, control chars, path separators (/ \), the segment "..",
-// quotes, brackets, and other "special" characters — because the slug
-// ends up in URL paths, Content-Disposition filenames, and is used as a
-// key for path-based lookups (gin.Param, Next.js dynamic routes).
-var slugRe = regexp.MustCompile(`^[\p{L}\p{N}._-]+$`)
+// slugRe defines INVALID characters that must NOT appear in a slug.
+// We use a blacklist approach to allow any Unicode characters
+// (including Chinese, Japanese, emoji, spaces, etc.) while only
+// rejecting characters that are dangerous in URL paths or filenames:
+//   - ASCII control chars (0x00-0x1F, 0x7F)
+//   - Forward slash / (path separator)
+//   - Backslash \ (Windows path separator)
+//   - Null byte \x00
+var slugRe = regexp.MustCompile(`[\x00-\x1F\x7F/\\]`)
 
 // maxSlugRunes caps slug length. MySQL utf8mb4 + VARCHAR(255) holds up to
 // 255 chars; we cap at 128 runes so the URL stays reasonably short and a
@@ -262,8 +263,8 @@ func (s *Server) createArticle(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "slug 和标题不能为空。"})
 		return
 	}
-	if !slugRe.MatchString(in.Slug) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "slug 只能包含字母、数字以及 . _ -。"})
+	if slugRe.MatchString(in.Slug) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "slug 不能包含路径分隔符（/、\\）或控制字符。"})
 		return
 	}
 	if len([]rune(in.Slug)) > maxSlugRunes {

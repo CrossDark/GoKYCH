@@ -6,6 +6,8 @@ import {
   preprocessMathBlocks,
   postprocessMathBlocks,
 } from "@/lib/markdown-hydrate";
+import { renderBBCode } from "@/lib/bbcode-render";
+import { renderWikidot } from "@/lib/wikidot-render";
 
 // MarkdownEditor — textarea + client-side preview
 // for the article admin editor.
@@ -40,15 +42,11 @@ import {
 // user has clicked into the editor form, so the
 // SSR-skip cost is negligible.
 //
-// For non-md types (wikidot / html / bbcode / typst)
-// the preview pane shows a notice explaining that
-// preview isn't supported client-side — those types
-// have specialised renderers (wikidot has its own
-// parser, typst compiles to PDF via the backend)
-// that don't fit the "render in the browser"
-// pattern. The author can still see what they typed
-// in edit mode and verify against the article view
-// after save.
+// For non-md types:
+//   - bbcode/wikidot: client-side renderers that mirror the Go backend
+//   - html: sanitised via DOMPurify and shown directly
+//   - typst: requires the typst CLI to compile (PDF + HTML), so preview
+//            is not supported client-side — the author can verify after save.
 
 type Mode = "edit" | "preview" | "split";
 
@@ -84,7 +82,9 @@ export function MarkdownEditor({
   required = false,
   className,
 }: Props) {
-  const supportsPreview = type === "md";
+  // md, bbcode, wikidot, html all support client-side preview.
+  // typst requires the native CLI binary — no browser preview.
+  const supportsPreview = type === "md" || type === "bbcode" || type === "wikidot" || type === "html";
   const [mode, setMode] = useState<Mode>("split");
   // Rendered HTML, populated by an async effect.
   // Lives in state (not the DOM) so React reconciles
@@ -108,17 +108,18 @@ export function MarkdownEditor({
   // when the rendered HTML actually changes.
   const hydratedKeyRef = useRef<string>("");
 
-  // Render the markdown source through `marked` and
-  // sanitise the output through DOMPurify. Re-runs
-  // whenever the source changes (debounced via the
-  // effect's setTimeout so a fast typist doesn't
-  // queue a parser pass per keystroke).
+  // Render the source to HTML. Re-runs whenever the source or type
+  // changes (debounced so a fast typist doesn't queue a parser pass
+  // per keystroke). Routes to the appropriate renderer:
+  //   - md: marked + DOMPurify + KaTeX/Mermaid hydration (existing path)
+  //   - bbcode: client-side BBCode renderer (mirrors Go backend)
+  //   - wikidot: client-side Wikidot renderer (core syntax; server
+  //             features like include/module show placeholders)
+  //   - html: DOMPurify sanitisation only — author-supplied HTML is
+  //           treated as already-formed markup
+  //   - typst: not supported client-side (requires native CLI)
   useEffect(() => {
     if (!supportsPreview || (mode === "edit" && value === "")) {
-      // No preview to compute (preview disabled or
-      // empty source) — leave the last render in
-      // place so the user sees the rendered output
-      // stay stable while clearing the source.
       return;
     }
     if (mode === "edit") {
@@ -128,70 +129,111 @@ export function MarkdownEditor({
     setRendering(true);
     const handle = setTimeout(async () => {
       try {
-        const { marked } = await import("marked");
-        // Configure marked once on first use; safe
-        // defaults (no raw HTML pass-through, GitHub-
-        // style line breaks, etc.).
-        marked.setOptions({
-          gfm: true,
-          breaks: true,
-          // Don't allow raw HTML through — anything
-          // looking like a tag is escaped. The
-          // DOMPurify pass below is the second line
-          // of defence; the marked escape is the
-          // first.
-        });
-        if (cancelled) return;
-        // Pre-extract block-math placeholders BEFORE marked. With
-        // `breaks: true`, marked turns the newlines inside `$$…$$`
-        // into `<br>` elements, which would split the block into
-        // separate text nodes and defeat any inline text-walker.
-        const { source: preSource, blocks } = preprocessMathBlocks(value || "");
-        const html = marked.parse(preSource) as string;
-        if (cancelled) return;
         const DOMPurify = (await import("dompurify")).default;
         if (cancelled) return;
-        const safe = DOMPurify.sanitize(html, {
-          ALLOWED_TAGS: [
-            "a", "b", "blockquote", "br", "code", "em", "h1", "h2", "h3",
-            "h4", "h5", "h6", "hr", "i", "img", "ins", "kbd", "li", "mark",
-            "ol", "p", "pre", "s", "small", "span", "strong", "sub", "sup",
-            "table", "tbody", "td", "th", "thead", "tr", "u", "ul", "del",
-            "figure", "figcaption", "details", "summary", "input",
-            "div",  // for math-block wrappers post-processed in below
-          ],
-          ALLOWED_ATTR: [
-            "href", "title", "alt", "src", "class", "target", "rel",
-            "checked", "type", "disabled",
-            "data-math-rendered",
-          ],
-          ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto):|[#/]|\.{1,2}\/)/i,
-        });
-        if (cancelled) return;
-        // Swap the placeholder strings for KaTeX HTML AFTER DOMPurify
-        // (so KaTeX's MathML tags survive untouched). DOMPurify sees
-        // the placeholders as plain text.
-        const finalHtml = postprocessMathBlocks(safe, blocks);
-        if (!cancelled) setRendered(finalHtml);
+
+        let html = "";
+
+        if (type === "md") {
+          const { marked } = await import("marked");
+          marked.setOptions({
+            gfm: true,
+            breaks: true,
+          });
+          const { source: preSource, blocks } = preprocessMathBlocks(value || "");
+          const rawHtml = marked.parse(preSource) as string;
+          const safe = DOMPurify.sanitize(rawHtml, {
+            ALLOWED_TAGS: [
+              "a", "b", "blockquote", "br", "code", "em", "h1", "h2", "h3",
+              "h4", "h5", "h6", "hr", "i", "img", "ins", "kbd", "li", "mark",
+              "ol", "p", "pre", "s", "small", "span", "strong", "sub", "sup",
+              "table", "tbody", "td", "th", "thead", "tr", "u", "ul", "del",
+              "figure", "figcaption", "details", "summary", "input",
+              "div", "cite",
+            ],
+            ALLOWED_ATTR: [
+              "href", "title", "alt", "src", "class", "target", "rel",
+              "checked", "type", "disabled", "style",
+              "data-math-rendered",
+            ],
+            ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto):|[#/]|\.{1,2}\/)/i,
+          });
+          html = postprocessMathBlocks(safe, blocks);
+        } else if (type === "bbcode") {
+          const rawHtml = renderBBCode(value || "");
+          html = DOMPurify.sanitize(rawHtml, {
+            ALLOWED_TAGS: [
+              "a", "b", "blockquote", "br", "code", "em", "h1", "h2", "h3",
+              "h4", "h5", "h6", "hr", "i", "img", "li", "ol", "p", "pre",
+              "s", "span", "strong", "sub", "sup", "table", "tbody", "td",
+              "th", "thead", "tr", "u", "ul", "del", "details", "summary",
+              "div", "cite", "video", "audio", "source",
+            ],
+            ALLOWED_ATTR: [
+              "href", "title", "alt", "src", "class", "target", "rel",
+              "style", "controls", "loading",
+            ],
+            ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto):|[#/]|\.{1,2}\/)/i,
+          });
+        } else if (type === "wikidot") {
+          const rawHtml = renderWikidot(value || "");
+          html = DOMPurify.sanitize(rawHtml, {
+            ALLOWED_TAGS: [
+              "a", "b", "blockquote", "br", "code", "em", "h1", "h2", "h3",
+              "h4", "h5", "h6", "hr", "i", "img", "li", "ol", "p", "pre",
+              "s", "span", "strong", "sub", "sup", "table", "tbody", "td",
+              "th", "thead", "tr", "u", "ul", "del", "details", "summary",
+              "div", "cite",
+            ],
+            ALLOWED_ATTR: [
+              "href", "title", "alt", "src", "class", "target", "rel",
+              "style", "loading",
+            ],
+            ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto):|[#/]|\.{1,2}\/)/i,
+          });
+        } else if (type === "html") {
+          // User-authored HTML: sanitize but allow a reasonable tag set.
+          // DOMPurify's default is already restrictive; we add a few
+          // structural tags that the article renderer supports.
+          html = DOMPurify.sanitize(value || "", {
+            ALLOWED_TAGS: [
+              "a", "b", "blockquote", "br", "code", "em", "h1", "h2", "h3",
+              "h4", "h5", "h6", "hr", "i", "img", "li", "ol", "p", "pre",
+              "s", "small", "span", "strong", "sub", "sup", "table",
+              "tbody", "td", "th", "thead", "tr", "u", "ul", "del",
+              "figure", "figcaption", "details", "summary", "div",
+              "article", "section", "header", "footer", "aside", "nav",
+            ],
+            ALLOWED_ATTR: [
+              "href", "title", "alt", "src", "class", "target", "rel",
+              "style", "loading",
+            ],
+            ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto):|[#/]|\.{1,2}\/)/i,
+          });
+        }
+
+        if (!cancelled) setRendered(html);
       } finally {
         if (!cancelled) setRendering(false);
       }
-    }, 120); // ~120ms debounce — fast enough to feel live, slow enough to skip during fast typing
+    }, 120);
     return () => {
       cancelled = true;
       clearTimeout(handle);
     };
-  }, [value, mode, supportsPreview]);
+  }, [value, mode, supportsPreview, type]);
 
   // After React commits the `rendered` HTML into the
   // preview pane, run hydrateMarkdown() to swap raw
   // `$...$` / `$$...$$` / ` ```math ` text into KaTeX
-  // and ` ```mermaid ` blocks into SVG. We key on a
-  // hash of the HTML so re-renders triggered by the
-  // sync-scroll effect (which doesn't change `rendered`)
-  // don't re-hydrate needlessly.
+  // and ` ```mermaid ` blocks into SVG. Only applies
+  // to markdown output (other renderers handle their
+  // own math/mermaid or don't support it). We key on
+  // a hash of the HTML so re-renders triggered by the
+  // sync-scroll effect don't re-hydrate needlessly.
   useEffect(() => {
     if (mode === "edit") return;
+    if (type !== "md") return; // KaTeX/Mermaid only for markdown
     const root = previewNode;
     if (!root || rendered === "") return;
     const key = `${rendered.length}|${rendered.slice(0, 64)}|${rendered.slice(-64)}`;
@@ -205,7 +247,7 @@ export function MarkdownEditor({
     return () => {
       cancelled = true;
     };
-  }, [rendered, mode, previewNode]);
+  }, [rendered, mode, previewNode, type]);
 
   // Sync-scroll in split mode: when the user scrolls
   // either pane, propagate the proportional scroll
@@ -285,7 +327,7 @@ export function MarkdownEditor({
           className={`markdown-editor-tab ${mode === "preview" ? "active" : ""}`}
           onClick={() => setMode("preview")}
           disabled={!supportsPreview}
-          title={supportsPreview ? "预览渲染结果" : "仅 Markdown 类型支持预览"}
+          title={supportsPreview ? "预览渲染结果" : "Typst 类型不支持客户端预览"}
         >
           👁 预览
         </button>
@@ -297,13 +339,28 @@ export function MarkdownEditor({
           className={`markdown-editor-tab ${mode === "split" ? "active" : ""}`}
           onClick={() => setMode("split")}
           disabled={!supportsPreview}
-          title={supportsPreview ? "编辑 + 预览并排,滚动同步" : "仅 Markdown 类型支持预览"}
+          title={supportsPreview ? "编辑 + 预览并排,滚动同步" : "Typst 类型不支持客户端预览"}
         >
           ⫶ 分屏
         </button>
-        {supportsPreview && (
+        {type === "md" && (
           <span className="markdown-editor-toolbar-hint">
             支持 <code>$…$</code> / <code>$$…$$</code> KaTeX 公式 + <code>```mermaid```</code> 图表
+          </span>
+        )}
+        {type === "bbcode" && (
+          <span className="markdown-editor-toolbar-hint">
+            BBCode 客户端预览 · 支持 <code>[b]</code>/<code>[i]</code>/<code>[url]</code>/<code>[img]</code> 等
+          </span>
+        )}
+        {type === "wikidot" && (
+          <span className="markdown-editor-toolbar-hint">
+            Wikidot 客户端预览 · 服务器功能(include/module)显示占位符
+          </span>
+        )}
+        {type === "html" && (
+          <span className="markdown-editor-toolbar-hint">
+            HTML 预览 · 经过 DOMPurify 安全过滤
           </span>
         )}
         {!supportsPreview && (
@@ -350,7 +407,10 @@ export function MarkdownEditor({
             <div className="markdown-editor-preview-empty">渲染中…</div>
           ) : value.trim() === "" ? (
             <div className="markdown-editor-preview-empty">
-              在左侧输入 Markdown,这里会显示渲染结果。
+              {type === "md" && <>在左侧输入 Markdown,这里会显示渲染结果。</>}
+              {type === "bbcode" && <>在左侧输入 BBCode,这里会显示渲染结果。</>}
+              {type === "wikidot" && <>在左侧输入 Wikidot,这里会显示渲染结果。</>}
+              {type === "html" && <>在左侧输入 HTML,这里会显示经过安全过滤的预览。</>}
             </div>
           ) : (
             <div

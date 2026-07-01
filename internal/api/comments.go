@@ -155,6 +155,10 @@ func (s *Server) addLineComment(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("行评论不能超过 %d 个字符。", lineCommentMaxLen)})
 		return
 	}
+	if in.LineNumber < 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "行号不能为负数。"})
+		return
+	}
 	var userID *int
 	authorName := in.AuthorName
 	if u := CurrentUserFromContext(c); u != nil {

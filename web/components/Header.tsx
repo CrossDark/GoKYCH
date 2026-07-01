@@ -66,6 +66,13 @@ export function Header() {
     document.body.style.overflow = "";
   }, []);
 
+  // Cleanup body overflow on unmount in case sidebar was open when navigating away
+  useEffect(() => {
+    return () => {
+      document.body.style.overflow = "";
+    };
+  }, []);
+
   return (
     <>
       <header className="site-header">
@@ -164,7 +171,7 @@ export function Header() {
             tags.map((tag) => (
               <Link
                 key={tag.id}
-                href={`/labels/${encodeURIComponent(tag.name)}`}
+                href={`/labels/${tag.name}`}
                 className="sidebar-tag"
                 onClick={closeSidebar}
               >

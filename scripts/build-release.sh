@@ -165,7 +165,7 @@ TAG_DISPLAY="v${VERSION#v}"
 # gokych ${VERSION}
 
 > 🇨🇳 **中文**:GoKYCH 后端的多平台预编译二进制 — 包含 SHA256 校验和。
-> 🇬🇳 **English**:Multi-platform prebuilt binaries for the GoKYCH backend — SHA256 sums included.
+> 🇬🇧 **English**:Multi-platform prebuilt binaries for the GoKYCH backend — SHA256 sums included.
 
 ---
 

@@ -46,6 +46,7 @@ data/settings/settings.yml
 # Editor/IDE
 .idea/
 .vscode/
+.mimocode/
 *.swp
 *.swo
 *~

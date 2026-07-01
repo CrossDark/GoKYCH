@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
 import { setRating, getRating, undoRating, getRatingDetails, getCsrf, getMe } from "@/lib/api";
 
@@ -93,10 +93,20 @@ export function RatingWidget({
     setSliderVal(initialUserScore ?? 0);
   }, [initialAvg, initialVoters, initialUserScore]);
 
+  const msgTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Cleanup timer on unmount
+  useEffect(() => {
+    return () => {
+      if (msgTimerRef.current) clearTimeout(msgTimerRef.current);
+    };
+  }, []);
+
   const showMsg = useCallback((msg: string, type: "" | "error" | "success" = "") => {
     setMessage(msg);
     setMessageType(type);
-    setTimeout(() => { setMessage(""); setMessageType(""); }, 3000);
+    if (msgTimerRef.current) clearTimeout(msgTimerRef.current);
+    msgTimerRef.current = setTimeout(() => { setMessage(""); setMessageType(""); }, 3000);
   }, []);
 
   const handleSliderChange = async () => {

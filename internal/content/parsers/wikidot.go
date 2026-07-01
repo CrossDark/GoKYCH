@@ -53,9 +53,12 @@ var (
 	// after the placeholder is restored in Phase 10).
 	reBlockMarkerInLine = regexp.MustCompile(`(.*?)(%%(?:BLOCK|WRAP_BLOCK)_\d+%%)(.*)`)
 
-	reWDDiv      = regexp.MustCompile(`(?is)\[\[div\s+class="([^"]*)"\]\](.*?)\[\[/div\]\]`)
-	reWDDivStyle = regexp.MustCompile(`(?is)\[\[div\s+style="([^"]*)"\]\](.*?)\[\[/div\]\]`)
-	reWDDivFloat = regexp.MustCompile(`(?is)\[\[float\s*=\s*(left|right)\s*\]\](.*?)\[\[/float\]\]`)
+	reWDDiv          = regexp.MustCompile(`(?is)\[\[div\s+class="([^"]*)"\]\](.*?)\[\[/div\]\]`)
+	reWDDivStyle     = regexp.MustCompile(`(?is)\[\[div\s+style="([^"]*)"\]\](.*?)\[\[/div\]\]`)
+	reWDDivFloat     = regexp.MustCompile(`(?is)\[\[float\s*=\s*(left|right)\s*\]\](.*?)\[\[/float\]\]`)
+	// reWDGenericAttr matches a single `key="value"` pair, shared by
+	// the generic [[div ...]]/[[span ...]] attribute parser.
+	reWDGenericAttr  = regexp.MustCompile(`([a-zA-Z][\w-]*)\s*=\s*"([^"]*)"`)
 	reWDTable    = regexp.MustCompile(`(?is)\[\[table\]\](.*?)\[\[/table\]\]`)
 	// Row-based table syntax: lines starting with `||` and ending with `||`.
 	// Each `||` is a cell separator; `||~ header ~||` denotes a header cell.
@@ -577,6 +580,11 @@ var (
 	// `$` anchors must match per-line, not just the start /
 	// end of the whole document.
 	reWDLineContinuation = regexp.MustCompile(`(?m)^([^\n]*[^\s]) _\r?\n`)
+	// reWDBackslashContinuation matches `X\\\nY` (backslash at end of line).
+	// Wikidot supports this as a line continuation: the backslash and
+	// newline are stripped, joining the two lines (used for wrapping
+	// long paragraphs in source without introducing <br> breaks).
+	reWDBackslashContinuation = regexp.MustCompile(`\\\r?\n`)
 
 	// ── Smart punctuation (Stage 2 + Stage 4 additions) ─────────
 	// Wikidot recognises the following typographic pairs /
@@ -1111,6 +1119,12 @@ func (p *wikidotParser) convertInternal(source string, appendFootnotes bool) str
 	// accidentally fold lines inside one.
 	out = reWDLineContinuation.ReplaceAllString(out, "$1 ")
 
+	// 1d.5b Backslash line continuation: end-of-line `\`
+	// joins the next line directly (no space inserted),
+	// per Wikidot spec (used inside blockquotes and
+	// long paragraphs for source wrapping).
+	out = reWDBackslashContinuation.ReplaceAllString(out, "")
+
 	// Smart-punct moved to AFTER Phase 8 (blockquote rendering) so a
 	// line-leading `>` / `>>` / `<<` is consumed as a blockquote
 	// marker before the smart-punct pass sees it. Otherwise the
@@ -1256,26 +1270,16 @@ func (p *wikidotParser) convertInternal(source string, appendFootnotes bool) str
 		return p.storeBlock(fmt.Sprintf(`<div style="float:%s">%s</div>`, side, inner))
 	})
 
-	// 1k. [[span class=…]] / [[span style=…]] — inline only, no block
-	// patterns or paragraph wrapping (span is inline; nesting <p> inside
-	// it is invalid HTML).
+	// 1k. [[span class=…]] / [[span style=…]] / [[span key="v" …]] —
+	// inline only, no block patterns or paragraph wrapping (span is
+	// inline; nesting <p> inside it is invalid HTML).
 	//
-	// The class-form uses a balanced matcher (renderBalancedSpanClass
-	// below) so nested `[[span class="ruby"]]...[[span class="rt"]]...
+	// Uses a balanced fixed-point matcher (renderBalancedSpans below)
+	// so nested `[[span class="ruby"]]...[[span class="rt"]]...
 	// [[/span]][[/span]]` constructs produce valid HTML5 `<ruby>` /
-	// `<rt>` elements, instead of the previous single-regex pass that
-	// emitted generic `<span class="ruby">` with the inner rt/text
-	// leak through verbatim. See renderBalancedSpanClass for the
-	// fixed-point loop strategy.
-	out = renderBalancedSpanClass(out)
-	out = reWDSpanStyle.ReplaceAllStringFunc(out, func(s string) string {
-		m := reWDSpanStyle.FindStringSubmatch(s)
-		inner := inlineOnly(m[2])
-		if css := sanitizeCSSValue(m[1]); css != "" {
-			return fmt.Sprintf(`<span style="%s">%s</span>`, css, inner)
-		}
-		return inner
-	})
+	// `<rt>` elements, and so [[span class="x" style="y"]] with
+	// multiple attributes is handled in one pass.
+	out = renderBalancedSpans(out)
 
 	// 1l. [[size]] / [[color]]
 	out = renderWikidotSizeBlocks(out)
@@ -1431,10 +1435,13 @@ func (p *wikidotParser) convertInternal(source string, appendFootnotes bool) str
 	out = renderWikidotTabviews(out, p)
 
 	// 1m. Alignment blocks ([[=]] / [[<]] / [[>]] / [[==]])
-	out = reWDCenter.ReplaceAllString(out, `<div style="text-align:center">$1</div>`)
-	out = reWDLeftBlock.ReplaceAllString(out, `<div style="text-align:left">$1</div>`)
-	out = reWDRight.ReplaceAllString(out, `<div style="text-align:right">$1</div>`)
-	out = reWDJustify.ReplaceAllString(out, `<div style="text-align:justify">$1</div>`)
+	// Add `wikidot-align` class so the front-end line-number
+	// allocator can skip the wrapper div itself (the inner
+	// <p> tags produced by Phase 11 are the real content lines).
+	out = reWDCenter.ReplaceAllString(out, `<div class="wikidot-align" style="text-align:center">$1</div>`)
+	out = reWDLeftBlock.ReplaceAllString(out, `<div class="wikidot-align" style="text-align:left">$1</div>`)
+	out = reWDRight.ReplaceAllString(out, `<div class="wikidot-align" style="text-align:right">$1</div>`)
+	out = reWDJustify.ReplaceAllString(out, `<div class="wikidot-align" style="text-align:justify">$1</div>`)
 
 	// 1m.5 Single-line alignment shortcuts. Runs after the
 	// block forms so a `[[<]]` opener on the same line as
@@ -1442,8 +1449,8 @@ func (p *wikidotParser) convertInternal(source string, appendFootnotes bool) str
 	// regex matches `=` / `<` followed by a space at the
 	// START of a line, so inline mentions of `=` (e.g.
 	// `x = y`) are not promoted into alignment divs.
-	out = reWDCenterLine.ReplaceAllString(out, `<div style="text-align:center">$1</div>`)
-	out = reWDLeftLine.ReplaceAllString(out, `<div style="text-align:left">$1</div>`)
+	out = reWDCenterLine.ReplaceAllString(out, `<div class="wikidot-align" style="text-align:center">$1</div>`)
+	out = reWDLeftLine.ReplaceAllString(out, `<div class="wikidot-align" style="text-align:left">$1</div>`)
 
 	// 1n. [[youtube ID]] — emit a placeholder div carrying the ID as
 	// a data attribute. The iframe itself is NOT emitted here because
@@ -1744,13 +1751,7 @@ func (p *wikidotParser) convertInternal(source string, appendFootnotes bool) str
 		m := reWDStarredTripleLink.FindStringSubmatch(s)
 		url := strings.TrimSpace(m[1])
 		text := strings.TrimSpace(m[2])
-		if text == "" {
-			text = url
-		}
-		if safe := sanitizeURLForAttr(url); safe != "" {
-			return fmt.Sprintf(`<a href="%s" rel="nofollow noopener" target="_blank">%s</a>`, safe, html.EscapeString(text))
-		}
-		return html.EscapeString(text)
+		return processWikidotLink("*"+url, text)
 	})
 
 	// 3c. Internal wiki link `[[[page]]]` / `[[[page|alias]]]`.
@@ -1758,18 +1759,9 @@ func (p *wikidotParser) convertInternal(source string, appendFootnotes bool) str
 	// marker is consumed by the new-window branch first.
 	out = reWDWikiLink.ReplaceAllStringFunc(out, func(s string) string {
 		m := reWDWikiLink.FindStringSubmatch(s)
-		href := m[1]
-		text := m[1]
-		if m[2] != "" {
-			text = m[2]
-		}
-		if !strings.HasPrefix(href, "/") && !strings.HasPrefix(href, "http://") && !strings.HasPrefix(href, "https://") {
-			href = "/wikidot/" + href
-		}
-		if safe := sanitizeURLForAttr(href); safe != "" {
-			return fmt.Sprintf(`<a href="%s">%s</a>`, safe, html.EscapeString(text))
-		}
-		return html.EscapeString(text)
+		target := strings.TrimSpace(m[1])
+		alias := strings.TrimSpace(m[2])
+		return processWikidotLink(target, alias)
 	})
 
 	// 3c.6 Relative-path single-bracket link `[/path text]`.
@@ -2156,6 +2148,28 @@ func (p *wikidotParser) convertInternal(source string, appendFootnotes bool) str
 		if !changed {
 			break
 		}
+	}
+
+	// ── Phase 10b: render inline formatting inside heading text ──────
+	//
+	// Heading text captured in Phase 4 (`p.headings[].Text`) is the
+	// RAW wikidot source at the time the heading regex matched —
+	// BEFORE Phase 2 (inline formatting) and Phase 3 (links/images)
+	// ran on the main `out` buffer. Phase 10 above restored block
+	// placeholders (`%%BLOCK_N%%` → stored HTML) inside the captured
+	// Text, but inline wikidot markup like `//italic//`, `**bold**`,
+	// `[[[link]]]`, `[[span …]]`, etc. is still raw source. If we
+	// feed that straight to the TOC builder (Phase 12) the markup
+	// gets html.EscapeString'd and shows up as literal text in the
+	// table of contents.
+	//
+	// Run the inline-only renderer on each heading's Text so the TOC
+	// sees proper HTML. We use renderWikidotHeadingInline which is a
+	// TOC/heading-safe subset of inlineOnly + balanced spans + size,
+	// deliberately skipping block constructs (no <p>, no <div>, no
+	// heading-inside-heading).
+	for i := range p.headings {
+		p.headings[i].Text = renderWikidotHeadingInline(p.headings[i].Text)
 	}
 
 	// ── Phase 11: paragraph wrapping ─────────────────────────────────
@@ -2861,9 +2875,13 @@ func renderTOCChildren(node *tocNode) string {
 		sb.WriteString(`<li class="toc-li toc-h`)
 		sb.WriteString(strconv.Itoa(h.Level))
 		sb.WriteString(`">`)
+		// h.Text is already rendered to safe HTML by Phase 10b
+		// (renderWikidotHeadingInline), so emit it verbatim —
+		// don't re-escape with html.EscapeString or inline
+		// markup shows up as literal source in the TOC.
 		sb.WriteString(fmt.Sprintf(
 			`<a href="#%s" class="toc-link toc-link-h%d"><span class="toc-text">%s</span></a>`,
-			h.ID, h.Level, html.EscapeString(h.Text)))
+			h.ID, h.Level, h.Text))
 		if len(child.children) > 0 {
 			sb.WriteString(`<ul>`)
 			sb.WriteString(renderTOCChildren(child))
@@ -4095,21 +4113,75 @@ func inlineOnly(text string) string {
 		}
 		return html.EscapeString(display)
 	})
+	text = reWDStarredTripleLink.ReplaceAllStringFunc(text, func(s string) string {
+		m := reWDStarredTripleLink.FindStringSubmatch(s)
+		url := strings.TrimSpace(m[1])
+		alias := strings.TrimSpace(m[2])
+		return processWikidotLink("*"+url, alias)
+	})
 	text = reWDWikiLink.ReplaceAllStringFunc(text, func(s string) string {
 		m := reWDWikiLink.FindStringSubmatch(s)
-		href := m[1]
-		text := m[1]
-		if m[2] != "" {
-			text = m[2]
-		}
-		if !strings.HasPrefix(href, "/") && !strings.HasPrefix(href, "http://") && !strings.HasPrefix(href, "https://") {
-			href = "/wikidot/" + href
-		}
-		if safe := sanitizeURLForAttr(href); safe != "" {
-			return fmt.Sprintf(`<a href="%s">%s</a>`, safe, html.EscapeString(text))
-		}
-		return html.EscapeString(text)
+		target := strings.TrimSpace(m[1])
+		alias := strings.TrimSpace(m[2])
+		return processWikidotLink(target, alias)
 	})
+	return text
+}
+
+// renderWikidotHeadingInline renders inline wikidot markup inside a
+// heading's captured Text so the TOC builder (Phase 12) sees proper
+// HTML instead of raw wikidot source.
+//
+// Heading content is always inline by definition (a heading can't
+// contain a paragraph, list, div, table, etc.), so we run a subset
+// of the inline passes: basic formatting (bold/italic/underline/
+// strikethrough/sup/sub/code/color), links (external, mailto,
+// triple-bracket wiki links including anchor + auto-slugify),
+// [[size …]]…[[/size]], and balanced [[span …]]…[[/span]] (ruby/
+// rt/rb/keycap + generic class/style/data spans).
+//
+// We deliberately skip:
+//   - Block constructs (code blocks, divs, tables, collapsibles, notes)
+//   - Paragraph wrapping (handled by Phase 11 on the main buffer)
+//   - Images (rare in headings and would require block-context)
+//   - Footnote refs (would produce dangling back-links in TOC)
+//   - Comment blocks [!-- --] (stripped)
+//   - Smart punctuation (already applied on main buffer; headings
+//     captured before Phase 8.5, but re-running here is harmless
+//     and keeps TOC typography consistent)
+//
+// The function runs inlineOnly first, then applies size/span passes
+// with a fixed-point loop so nested constructs resolve correctly.
+func renderWikidotHeadingInline(text string) string {
+	// Strip wikidot comments first so their content doesn't leak
+	// into the TOC.
+	text = reWDComment.ReplaceAllString(text, "")
+
+	// Run the core inline formatting + links pass.
+	text = inlineOnly(text)
+
+	// Apply [[size …]]…[[/size]] and balanced [[span …]]…[[/span]]
+	// using a fixed-point loop (same strategy as the main body's
+	// Phase 1k), since spans can nest and contain size, and size
+	// can contain spans.
+	prev := ""
+	for prev != text {
+		prev = text
+		// Size: [[size=120%]]…[[/size]] and [[size 120%]]…[[/size]]
+		// (single regex handles both = and space forms; value
+		// validated through resolveSizeCss).
+		text = reWDSize.ReplaceAllStringFunc(text, func(s string) string {
+			m := reWDSize.FindStringSubmatch(s)
+			css, ok := resolveSizeCss(m[1])
+			if !ok {
+				return m[2]
+			}
+			return fmt.Sprintf(`<span style="font-size:%s">%s</span>`, css, m[2])
+		})
+		// Balanced spans (class / style / multi-attr, including ruby/rt/rb/keycap)
+		text = renderBalancedSpans(text)
+	}
+
 	return text
 }
 
@@ -4204,22 +4276,7 @@ func renderWikidotCellInline(text string) string {
 	// renderBalancedSpanClass is a function (not a package-level
 	// regex) and internally does fixed-point expansion + mapSpanClassToElement;
 	// it's safe to call here.
-	text = renderBalancedSpanClass(text)
-
-	// Plain `[[span style=…]]…[[/span]]` form. Inner content runs
-	// through inlineOnly so `//italic//` etc. inside still work,
-	// but the size / class / anchor machinery does NOT recurse —
-	// those would either nest <span> inside <span> in confusing
-	// ways (CSS attribute elevation) or duplicate the work the
-	// outer pass will do.
-	text = reWDSpanStyle.ReplaceAllStringFunc(text, func(s string) string {
-		m := reWDSpanStyle.FindStringSubmatch(s)
-		inner := inlineOnly(m[2])
-		if css := sanitizeCSSValue(m[1]); css != "" {
-			return fmt.Sprintf(`<span style="%s">%s</span>`, css, inner)
-		}
-		return inner
-	})
+	text = renderBalancedSpans(text)
 
 	// `[[size X]]Y[[/size]]` → style on the inner span. The body
 	// version of this (renderWikidotSizeBlocks) is a *block-level*
@@ -5135,6 +5192,128 @@ func slugifyUsername(name string) string {
 	return out
 }
 
+// slugifyWikidotPageName converts a Wikidot page title to its URL slug,
+// following Wikidot conventions: lowercase, spaces and punctuation
+// collapse to hyphens, leading/trailing hyphens stripped. Category
+// prefix ("category:page") is preserved.
+func slugifyWikidotPageName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	// Handle category prefix (e.g., "category:page name")
+	catPrefix := ""
+	if idx := strings.Index(name, ":"); idx >= 0 {
+		// Check if this looks like a category prefix (no / before colon,
+		// and the part before colon looks like a category name)
+		before := name[:idx]
+		if !strings.Contains(before, "/") && !strings.Contains(before, " ") {
+			catPrefix = strings.ToLower(before) + ":"
+			name = name[idx+1:]
+		}
+	}
+	var b strings.Builder
+	lastDash := false
+	for _, r := range name {
+		switch {
+		case (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'):
+			b.WriteRune(r)
+			lastDash = false
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune(r + 32) // to lowercase
+			lastDash = false
+		case r == '-' || r == '_' || r == ' ' || r == '\t':
+			if !lastDash {
+				b.WriteRune('-')
+				lastDash = true
+			}
+		case r == '"' || r == '\'' || r == ';' || r == ',' || r == '.' || r == '!' || r == '?' || r == '(' || r == ')' || r == '[' || r == ']' || r == '{' || r == '}':
+			// Punctuation → hyphen
+			if !lastDash {
+				b.WriteRune('-')
+				lastDash = true
+			}
+		default:
+			// Other unicode letters/digits are preserved
+			// (matches our backend slug policy allowing Unicode)
+			b.WriteRune(r)
+			lastDash = false
+		}
+	}
+	out := strings.Trim(b.String(), "-")
+	if out == "" {
+		return catPrefix + "page"
+	}
+	return catPrefix + out
+}
+
+// processWikidotLink handles `[[[target|alias]]]` triple-bracket links.
+// Supports:
+//   - External URLs: [[[http(s)://...|text]]]
+//   - Relative paths: [[[/path|text]]]
+//   - Internal pages: [[[page-name|text]]] (auto-slugified)
+//   - Anchors: [[[page#anchor|text]]] or [[[#anchor|text]]]
+//   - New-tab links: [[[*http://...|text]]]
+//   - Empty alias: [[[page|]]] uses the page name as text
+func processWikidotLink(target, alias string) string {
+	// Check for new-tab marker * on external URLs
+	newTab := false
+	if strings.HasPrefix(target, "*http://") || strings.HasPrefix(target, "*https://") {
+		newTab = true
+		target = target[1:]
+	}
+	// Split off anchor fragment
+	anchor := ""
+	if idx := strings.Index(target, "#"); idx >= 0 {
+		anchor = target[idx:] // includes the #
+		target = target[:idx]
+	}
+	// Determine display text
+	text := alias
+	if text == "" {
+		text = target
+		// If no alias and no anchor, use the original target as text.
+		// But if target is empty (anchor-only like [[[#toc1|]]]), use the anchor.
+		if text == "" && anchor != "" {
+			text = anchor
+		}
+	}
+	// Build the href
+	var href string
+	if strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://") {
+		href = target
+	} else if strings.HasPrefix(target, "/") {
+		href = target
+	} else if target == "" && anchor != "" {
+		// Anchor-only link (same page)
+		href = anchor
+	} else if target != "" {
+		// Internal wiki page — auto-slugify
+		slug := slugifyWikidotPageName(target)
+		href = "/wikidot/" + slug
+	} else {
+		// Empty target with no anchor — treat as text only
+		return html.EscapeString(text)
+	}
+	href = href + anchor
+	safe := sanitizeURLForAttr(href)
+	if safe == "" {
+		return html.EscapeString(text)
+	}
+	attrs := ""
+	if newTab || strings.HasPrefix(safe, "http://") || strings.HasPrefix(safe, "https://") {
+		if strings.HasPrefix(safe, "/wikidot/") || strings.HasPrefix(safe, "#") {
+			// Internal links don't need new tab
+		} else {
+			attrs = ` rel="nofollow noopener" target="_blank"`
+		}
+	}
+	if newTab {
+		attrs = ` rel="nofollow noopener" target="_blank"`
+	}
+	return fmt.Sprintf(`<a href="%s"%s>%s</a>`, safe, attrs, html.EscapeString(text))
+}
+
 // renderWikidotDefList converts a run of `: term : definition`
 // lines (and their `:` continuations) into ONE
 // `<dl>...</dl>` HTML block. Consecutive `: term : def`
@@ -5655,6 +5834,10 @@ func (p *wikidotParser) renderDivBlocks(source string) string {
 			// name through unchanged so authors can use any valid
 			// `data-…` token (e.g. `data-toggle`, `data-id`, `data-spy`).
 			out = fmt.Sprintf(`<div %s>%s</div>`, attrValue, inner)
+		case "multi":
+			// attrValue is the full rendered attribute string
+			// (e.g. `class="x" style="y" data-foo="z"`).
+			out = fmt.Sprintf(`<div %s>%s</div>`, attrValue, inner)
 		}
 		sb.WriteString(p.storeBlock(out))
 		i = closeEnd
@@ -5662,99 +5845,154 @@ func (p *wikidotParser) renderDivBlocks(source string) string {
 	return sb.String()
 }
 
-// findNextDivOpen returns the index of the next `[[div class="`,
-// `[[div style="` or `[[div data-<name>="…"` open tag at or
-// after `from`, or -1. The data-* form is matched by finding every
-// `[[div data-` substring and taking the lowest index; the
-// attribute name + value pair are then captured by parseDivOpen.
+// findNextDivOpen returns the index of the next `[[div ` open tag
+// (followed by whitespace and attributes) at or after `from`, or -1.
+// The `[[divider]]` form is excluded because it has no space after `div`;
+// parseDivOpen validates that the tag is well-formed.
 func findNextDivOpen(source string, from int) int {
-	best := -1
-	for _, prefix := range []string{"[[div class=\"", "[[div style=\"", "[[div data-"} {
-		idx := strings.Index(source[from:], prefix)
-		if idx < 0 {
-			continue
-		}
-		abs := idx + from
-		if best < 0 || abs < best {
-			best = abs
-		}
+	// Search for `[[div ` (space after div excludes [[divider]]).
+	idx := strings.Index(source[from:], "[[div ")
+	if idx < 0 {
+		return -1
 	}
-	return best
+	return idx + from
 }
 
 // parseDivOpen inspects a div open tag at the start of `s` and
 // returns:
-//   - kind: "class" / "style" / "data"
-//   - attrValue: the attribute value (the quoted string, or for
-//                "data" the full `data-<name>="<value>"` token)
+//   - kind: "class" / "style" / "data" / "multi"
+//   - attrValue: for class/style/data — single attr value;
+//                for "multi" — the full rendered HTML attribute
+//                string (e.g. `class="x" style="y" data-foo="z"`)
 //   - contentStart: index (relative to s == source[idx:]) of
 //     the first content character
 //   - ok: true iff a valid open tag was found
 func parseDivOpen(s string) (kind, attrValue string, contentStart int, ok bool) {
+	// Generic multi-attribute form first: `[[div key="value" key="value" ...]]`
+	// Must start with `[[div ` (space after div excludes [[divider]]).
+	if strings.HasPrefix(s, "[[div ") {
+		// Skip "[[div " (6 chars) and parse attributes until "]]"
+		rest := s[6:]
+		// Find the closing "]]" — must be a proper close, not part of an attribute value
+		// Walk character by character to respect quoted strings
+		closeIdx := -1
+		for i := 0; i < len(rest); i++ {
+			if rest[i] == '"' {
+				// Skip quoted string
+				i++
+				for i < len(rest) && rest[i] != '"' {
+					if rest[i] == '\\' {
+						i++ // skip escaped char
+					}
+					i++
+				}
+				continue
+			}
+			if i+1 < len(rest) && rest[i] == ']' && rest[i+1] == ']' {
+				closeIdx = i
+				break
+			}
+		}
+		if closeIdx >= 0 {
+			attrStr := rest[:closeIdx]
+			// Try multi-attribute parsing
+			attrs := reWDGenericAttr.FindAllStringSubmatch(attrStr, -1)
+			if len(attrs) > 0 {
+				var rendered []string
+				consumed := 0
+				valid := true
+				for _, m := range attrs {
+					matchPos := strings.Index(attrStr[consumed:], m[0])
+					if matchPos < 0 {
+						valid = false
+						break
+					}
+					between := attrStr[consumed : consumed+matchPos]
+					for _, c := range between {
+						if c != ' ' && c != '\t' && c != '\n' {
+							valid = false
+							break
+						}
+					}
+					if !valid {
+						break
+					}
+					consumed += matchPos + len(m[0])
+					key := strings.ToLower(m[1])
+					val := m[2]
+					switch key {
+					case "class":
+						cls := sanitizeAnchorID(val)
+						if cls != "" {
+							rendered = append(rendered, fmt.Sprintf(`class="%s"`, cls))
+						}
+					case "style":
+						css := sanitizeCSSValue(val)
+						if css != "" {
+							rendered = append(rendered, fmt.Sprintf(`style="%s"`, css))
+						}
+					default:
+						if strings.HasPrefix(key, "data-") {
+							name := key[5:]
+							validName := true
+							for _, c := range name {
+								if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+									(c >= '0' && c <= '9') || c == '-' || c == '_') {
+									validName = false
+									break
+								}
+							}
+							if validName {
+								rendered = append(rendered, fmt.Sprintf(`%s="%s"`, key, html.EscapeString(val)))
+							}
+						}
+					}
+				}
+				tail := attrStr[consumed:]
+				allWhitespace := true
+				for _, c := range tail {
+					if c != ' ' && c != '\t' && c != '\n' {
+						allWhitespace = false
+						break
+					}
+				}
+				if valid && allWhitespace && len(rendered) > 0 {
+					fullAttrs := strings.Join(rendered, " ")
+					return "multi", fullAttrs, 6 + closeIdx + 2, true
+				}
+			}
+		}
+	}
+	// Legacy single-attribute forms (e.g. [[div class="x"]], [[div style="y"]])
 	if strings.HasPrefix(s, "[[div class=\"") {
 		rest := s[len("[[div class=\""):]
-		end := strings.Index(rest, "\"]]")
-		if end < 0 {
-			return "", "", 0, false
+		// Find closing "]] — but make sure " is immediately followed by ]]
+		// (not a space before ]], which would indicate multi-attr form that failed above)
+		end := -1
+		for i := 0; i < len(rest); i++ {
+			if rest[i] == '"' && i+2 <= len(rest) && rest[i+1] == ']' && rest[i+2] == ']' {
+				end = i
+				break
+			}
 		}
-		attr := rest[:end]
-		return "class", attr, len("[[div class=\"") + end + 3, true
+		if end >= 0 {
+			attr := rest[:end]
+			return "class", attr, len("[[div class=\"") + end + 3, true
+		}
 	}
 	if strings.HasPrefix(s, "[[div style=\"") {
 		rest := s[len("[[div style=\""):]
-		end := strings.Index(rest, "\"]]")
-		if end < 0 {
-			return "", "", 0, false
-		}
-		attr := rest[:end]
-		return "style", attr, len("[[div style=\"") + end + 3, true
-	}
-	// `[[div data-<name>="<value>"]]` form. The data- token
-	// is treated as a single attribute; the name is matched
-	// permissively (any non-] character other than the
-	// closing `]]` block) because html5 data-* accepts
-	// arbitrary names. The attribute name + value pair is
-	// emitted verbatim — `sanitizeURLForAttr` would over-
-	// restrict CSS content, so we route through
-	// `sanitizeDataAttrValue` (a narrower allow-list) for
-	// the value side only.
-	if strings.HasPrefix(s, "[[div data-") {
-		rest := s[len("[[div data-"):]
-		// Read attribute name (`name="…"`)
-		nameEnd := strings.Index(rest, "=\"")
-		if nameEnd < 0 {
-			return "", "", 0, false
-		}
-		name := rest[:nameEnd]
-		// Reject if name has whitespace / non-token chars
-		// (only letters / digits / dash / underscore).
-		for _, c := range name {
-			if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-				(c >= '0' && c <= '9') || c == '-' || c == '_') {
-				return "", "", 0, false
+		end := -1
+		for i := 0; i < len(rest); i++ {
+			if rest[i] == '"' && i+2 <= len(rest) && rest[i+1] == ']' && rest[i+2] == ']' {
+				end = i
+				break
 			}
 		}
-		// Find the closing `"]]` after the value's opening quote.
-		valStart := len("[[div data-") + nameEnd + 2
-		closeIdx := strings.Index(s[valStart:], "\"]]")
-		if closeIdx < 0 {
-			return "", "", 0, false
+		if end >= 0 {
+			attr := rest[:end]
+			return "style", attr, len("[[div style=\"") + end + 3, true
 		}
-		value := s[valStart : valStart+closeIdx]
-		// The value is HTML-escaped so any `"` / `<` / `>`
-		// in author-supplied text becomes an entity and
-		// cannot break out of the wrapping attribute.
-		// An empty (post-trim) value still produces a valid
-		// `data-<name>=""` attribute so the author can
-		// intentionally pass an empty data-* token.
-		safe := strings.TrimSpace(value)
-		if safe == "" {
-			safe = ""
-		} else {
-			safe = html.EscapeString(safe)
-		}
-		fullAttr := fmt.Sprintf(`data-%s="%s"`, name, safe)
-		return "data", fullAttr, valStart + closeIdx + 3, true
 	}
 	return "", "", 0, false
 }
@@ -5990,39 +6228,147 @@ var _ = slog.Default
 // match first. See renderBalancedSpanClass below for the loop.
 var reWDInnermostSpanClass = regexp.MustCompile(`(?is)\[\[span class="([^"]*)"\]\]([^[]*?)\[\[/span\]\]`)
 
+// reWDInnermostSpanStyle captures the innermost `[[span style="X"]]INNER[[/span]]`.
+var reWDInnermostSpanStyle = regexp.MustCompile(`(?is)\[\[span style="([^"]*)"\]\]([^[]*?)\[\[/span\]\]`)
+
+// reWDInnermostSpanGeneric captures the innermost multi-attribute span
+// `[[span key="value" key="value" ...]]INNER[[/span]]`.
+var reWDInnermostSpanGeneric = regexp.MustCompile(`(?is)\[\[span((?:\s+[a-zA-Z][\w-]*\s*=\s*"[^"]*")+)\s*\]\]([^[]*?)\[\[/span\]\]`)
+
 // renderBalancedSpanClass replaces balanced
-// `[[span class="X"]]...[[/span]]` constructs in `s` with their
-// HTML5 equivalents. See the doc-comment above the regex
-// declaration for the loop strategy.
+// `[[span class="X"]]...[[/span]]`, `[[span style="X"]]...[[/span]]`,
+// and multi-attribute `[[span key="v" ...]]...[[/span]]` constructs
+// in `s` with their HTML5 equivalents.
 //
-// Mapping:
+// Mapping for class-only spans:
 //   - `class="keycap"`         → `<kbd>…</kbd>`
 //   - `class="ruby"`           → `<ruby>…</ruby>`
 //   - `class="rt"`             → `<rt>…</rt>`     (used nested inside ruby)
 //   - `class="rb"`             → `<rb>…</rb>`     (used nested inside ruby)
 //   - `class="foo bar"`        → `<span class="foo bar">…</span>`
-//     (multi-class; each token must be `[A-Za-z0-9_-]+`)
 //   - any class with an invalid token → wrapper dropped, inner kept verbatim
 //   - empty class                       → wrapper dropped, inner kept verbatim
 //
-// This is the substitution function used by Phase 1k. We replaced
-// the previous single-pass regex with this loop so the nested
-// ruby/rt/rb case produces valid `<ruby>` HTML — the old code
-// would emit a generic `<span class="ruby">…</span>` with the inner
-// rt construct still inside the source text.
-func renderBalancedSpanClass(s string) string {
-	if !strings.Contains(s, `[[span class="`) {
+// Style-only spans become `<span style="…">…</span>` (CSS sanitized).
+// Multi-attribute spans combine class and style into one `<span>` tag.
+//
+// This is the substitution function used by Phase 1k. It replaces the
+// previous single-pass regex (and the separate reWDSpanStyle pass)
+// with a fixed-point loop that handles all three forms, including
+// nested ruby/rt/rb cases.
+func renderBalancedSpans(s string) string {
+	if !strings.Contains(s, "[[span ") {
 		return s
 	}
 	prev := ""
 	for prev != s {
 		prev = s
+		// Generic multi-attribute first (longest match)
+		s = reWDInnermostSpanGeneric.ReplaceAllStringFunc(s, func(full string) string {
+			m := reWDInnermostSpanGeneric.FindStringSubmatch(full)
+			return mapSpanAttrsToElement(m[1], m[2])
+		})
+		// Then class-only
 		s = reWDInnermostSpanClass.ReplaceAllStringFunc(s, func(full string) string {
 			m := reWDInnermostSpanClass.FindStringSubmatch(full)
 			return mapSpanClassToElement(m[1], m[2])
 		})
+		// Then style-only
+		s = reWDInnermostSpanStyle.ReplaceAllStringFunc(s, func(full string) string {
+			m := reWDInnermostSpanStyle.FindStringSubmatch(full)
+			if css := sanitizeCSSValue(m[1]); css != "" {
+				return fmt.Sprintf(`<span style="%s">%s</span>`, css, m[2])
+			}
+			return m[2]
+		})
 	}
 	return s
+}
+
+// mapSpanAttrsToElement handles the multi-attribute span form.
+func mapSpanAttrsToElement(attrStr, inner string) string {
+	attrs := reWDGenericAttr.FindAllStringSubmatch(attrStr, -1)
+	if len(attrs) == 0 {
+		return inner
+	}
+	var classVal, styleVal string
+	var dataAttrs []string
+	for _, a := range attrs {
+		key := strings.ToLower(strings.TrimSpace(a[1]))
+		val := a[2]
+		switch key {
+		case "class":
+			classVal = val
+		case "style":
+			if css := sanitizeCSSValue(val); css != "" {
+				styleVal = css
+			}
+		default:
+			if strings.HasPrefix(key, "data-") {
+				name := key[5:]
+				valid := true
+				for _, c := range name {
+					if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+						(c >= '0' && c <= '9') || c == '-' || c == '_') {
+						valid = false
+						break
+					}
+				}
+				if valid {
+					dataAttrs = append(dataAttrs, fmt.Sprintf(`%s="%s"`, key, html.EscapeString(val)))
+				}
+			}
+		}
+	}
+	// Collect non-class attributes that should be preserved even on semantic elements
+	var extraAttrs []string
+	if styleVal != "" {
+		extraAttrs = append(extraAttrs, fmt.Sprintf(`style="%s"`, styleVal))
+	}
+	extraAttrs = append(extraAttrs, dataAttrs...)
+	extraAttrStr := ""
+	if len(extraAttrs) > 0 {
+		extraAttrStr = " " + strings.Join(extraAttrs, " ")
+	}
+	// Handle special semantic classes (ruby/rt/rb/keycap)
+	if classVal != "" {
+		switch strings.ToLower(strings.TrimSpace(classVal)) {
+		case "keycap":
+			return fmt.Sprintf(`<kbd%s>%s</kbd>`, extraAttrStr, inner)
+		case "ruby":
+			return fmt.Sprintf(`<ruby%s>%s</ruby>`, extraAttrStr, inner)
+		case "rt":
+			return fmt.Sprintf(`<rt%s>%s</rt>`, extraAttrStr, inner)
+		case "rb":
+			return fmt.Sprintf(`<rb%s>%s</rb>`, extraAttrStr, inner)
+		}
+	}
+	// Build the <span> tag
+	var attrParts []string
+	if classVal != "" {
+		// Validate class tokens
+		parts := strings.Fields(classVal)
+		cleaned := make([]string, 0, len(parts))
+		valid := true
+		for _, p := range parts {
+			if p == "" || !isValidClassName(p) {
+				valid = false
+				break
+			}
+			cleaned = append(cleaned, p)
+		}
+		if valid && len(cleaned) > 0 {
+			attrParts = append(attrParts, fmt.Sprintf(`class="%s"`, strings.Join(cleaned, " ")))
+		}
+	}
+	if styleVal != "" {
+		attrParts = append(attrParts, fmt.Sprintf(`style="%s"`, styleVal))
+	}
+	attrParts = append(attrParts, dataAttrs...)
+	if len(attrParts) == 0 {
+		return inner
+	}
+	return fmt.Sprintf(`<span %s>%s</span>`, strings.Join(attrParts, " "), inner)
 }
 
 // mapSpanClassToElement translates one balanced [[span class="X"]]pair[[/span]]
