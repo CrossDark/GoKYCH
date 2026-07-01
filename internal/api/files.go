@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -60,6 +61,45 @@ func (s *Server) publicAssetURL(relPath string) string {
 	// relPath is always already absolute-style (starts with "/"),
 	// so we just concatenate.
 	return base + relPath
+}
+
+// staticAssetPathRe matches site-relative asset paths in HTML attribute
+// values. It matches both src="/uploads/..." and href="/uploads/..."
+// (and /avatars/...) so that rendered wikidot/markdown/bbcode images
+// and anchor links to uploads resolve correctly when the frontend is
+// hosted on a different origin (e.g. EdgeOne Pages at eo.kych.net vs
+// the Go API at api.kych.net).
+//
+// The regex is conservative: it requires the attribute to be followed
+// by =" and a leading slash, and only rewrites paths that start with
+// /uploads/ or /avatars/ — other same-origin links (e.g. /wikidot/foo)
+// are left alone because they are routes handled by the frontend.
+var staticAssetPathRe = regexp.MustCompile(`(src|href)="/(uploads|avatars)/([^"]+)"`)
+
+// rewriteStaticAssetURLs rewrites site-relative /uploads/... and
+// /avatars/... paths in HTML to absolute URLs using PublicURL. This is
+// needed in cross-origin deployments (frontend on CDN, backend on a
+// separate host) because a relative <img src="/uploads/foo.png"> in
+// rendered article HTML would resolve against the CDN origin, which
+// doesn't serve those files and returns a 504/404. When PublicURL is
+// empty (dev) the HTML is returned unchanged.
+func (s *Server) rewriteStaticAssetURLs(html string) string {
+	if s.PublicURL == "" {
+		return html
+	}
+	base := strings.TrimRight(s.PublicURL, "/")
+	return staticAssetPathRe.ReplaceAllStringFunc(html, func(match string) string {
+		// match looks like `src="/uploads/foo.png"` — rebuild it with
+		// the base URL prepended to the path.
+		sub := staticAssetPathRe.FindStringSubmatch(match)
+		if len(sub) != 4 {
+			return match
+		}
+		attr := sub[1]
+		dir := sub[2]
+		file := sub[3]
+		return fmt.Sprintf(`%s="%s/%s/%s"`, attr, base, dir, file)
+	})
 }
 
 // extFromMIME returns a sensible file extension for a MIME type, falling back

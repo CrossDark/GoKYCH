@@ -3,6 +3,7 @@ package api
 import (
 	"database/sql"
 	"fmt"
+	"html/template"
 	"log/slog"
 	"net/http"
 	"regexp"
@@ -168,6 +169,12 @@ func (s *Server) getArticle(c *gin.Context) {
 		ArticleType: a.Type,
 	}
 	html := parsers.RenderCtx(parsers.ArticleType(atype), a.ID, a.Content, renderCtx)
+	// Rewrite /uploads/ and /avatars/ relative paths to absolute URLs
+	// when PublicURL is set (cross-origin CDN deployments). Without
+	// this, <img src="/uploads/foo.png"> in rendered article HTML
+	// would resolve against the CDN origin which doesn't serve those
+	// files (504/404). Dev (PublicURL="") passes through unchanged.
+	html = template.HTML(s.rewriteStaticAssetURLs(string(html)))
 
 	// Sub-query failures are now fail-fast: a partial response (article +
 	// half-broken comments) is worse than a 500, since the frontend can't
@@ -178,14 +185,14 @@ func (s *Server) getArticle(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载评论失败。"})
 		return
 	}
-	renderCommentHTML(comments)
+	s.renderCommentHTML(comments)
 	lineComments, err := content.GetLineComments(s.DB, a.ID)
 	if err != nil {
 		slog.Error("getArticle: load line comments", "article_id", a.ID, "err", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载行评论失败。"})
 		return
 	}
-	renderCommentHTML(lineComments)
+	s.renderCommentHTML(lineComments)
 	lineCounts, err := content.GetLineCommentCounts(s.DB, a.ID)
 	if err != nil {
 		slog.Error("getArticle: load line comment counts", "article_id", a.ID, "err", err)

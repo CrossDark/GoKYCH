@@ -3,7 +3,9 @@ import type { HomeData } from "@/lib/types";
 import Link from "next/link";
 import { SafeMarkdown } from "@/components/SafeMarkdown";
 
-export const dynamic = "force-dynamic";
+// ISR: revalidate homepage data every 60s so newly published/edited
+// articles surface quickly while CDN caches the HTML for fast TTFB.
+export const revalidate = 60;
 
 export default async function HomePage() {
   const home: HomeData = await getHome().catch(() => ({

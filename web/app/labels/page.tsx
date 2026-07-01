@@ -2,7 +2,7 @@ import { listLabels } from "@/lib/api";
 import Link from "next/link";
 import type { Metadata } from "next";
 
-export const dynamic = "force-dynamic";
+export const revalidate = 120; // tag cloud changes less frequently
 
 export const metadata: Metadata = { title: "标签 — 跨越晨昏" };
 

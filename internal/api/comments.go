@@ -37,7 +37,7 @@ func (s *Server) listComments(c *gin.Context) {
 	if comments == nil {
 		comments = []content.Comment{}
 	}
-	renderCommentHTML(comments)
+	s.renderCommentHTML(comments)
 	c.JSON(http.StatusOK, comments)
 }
 
@@ -84,7 +84,7 @@ func (s *Server) addComment(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "添加评论失败。"})
 		return
 	}
-	cm.ContentHTML = parsers.RenderSafeMarkdown(cm.Content)
+	cm.ContentHTML = s.rewriteStaticAssetURLs(parsers.RenderSafeMarkdown(cm.Content))
 	c.JSON(http.StatusCreated, cm)
 }
 
@@ -110,7 +110,7 @@ func (s *Server) listLineComments(c *gin.Context) {
 		if comments == nil {
 			comments = []content.Comment{}
 		}
-		renderCommentHTML(comments)
+		s.renderCommentHTML(comments)
 		c.JSON(http.StatusOK, comments)
 		return
 	}
@@ -122,7 +122,7 @@ func (s *Server) listLineComments(c *gin.Context) {
 	if comments == nil {
 		comments = []content.Comment{}
 	}
-	renderCommentHTML(comments)
+	s.renderCommentHTML(comments)
 	c.JSON(http.StatusOK, comments)
 }
 
@@ -171,15 +171,22 @@ func (s *Server) addLineComment(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "添加行评论失败。"})
 		return
 	}
-	cm.ContentHTML = parsers.RenderSafeMarkdown(cm.Content)
+	cm.ContentHTML = s.rewriteStaticAssetURLs(parsers.RenderSafeMarkdown(cm.Content))
 	c.JSON(http.StatusCreated, cm)
 }
 
 // renderCommentHTML populates ContentHTML on every comment in the slice.
 // Modifies the slice in place. Safe to call with nil/empty input.
-func renderCommentHTML(comments []content.Comment) {
+// When s is non-nil (cross-origin CDN deployment with PublicURL set),
+// /uploads/ and /avatars/ relative paths in rendered markdown are
+// rewritten to absolute URLs so images resolve correctly from the CDN.
+func (s *Server) renderCommentHTML(comments []content.Comment) {
 	for i := range comments {
-		comments[i].ContentHTML = parsers.RenderSafeMarkdown(comments[i].Content)
+		html := parsers.RenderSafeMarkdown(comments[i].Content)
+		if s != nil {
+			html = s.rewriteStaticAssetURLs(html)
+		}
+		comments[i].ContentHTML = html
 	}
 }
 

@@ -13,6 +13,22 @@ const BASE =
   process.env.NEXT_PUBLIC_API_BASE_URL ||
   (typeof window === "undefined" ? process.env.API_BASE_URL || "http://localhost:8000" : "");
 
+// Per-request timeout for SSR fetches, in milliseconds. Without a timeout,
+// a slow or unreachable backend can tie up an EdgeOne edge function for
+// Node's default socket timeout (typically 2 minutes), exhausting the
+// function concurrency pool and causing cascading 504s at the CDN layer.
+const SSR_FETCH_TIMEOUT_MS = 8000;
+
+// ISR revalidation interval (seconds). Article content / lists / site
+// config are revalidated in the background after this many seconds; the
+// CDN serves a stale copy while Next.js regenerates, so users never
+// wait on a cold SSR. Comments/rating/user-* endpoints are NOT cached
+// (user-specific, must always be fresh) — see the per-function opts below.
+const DEFAULT_REVALIDATE = 60;
+
+// isSSR is true when running on the server (Edge Function / Node).
+const isSSR = typeof window === "undefined";
+
 /**
  * Build the absolute URL for a backend endpoint.
  *
@@ -44,23 +60,65 @@ export function apiUrl(path: string): string {
  * MUST go through this so the cookie is attached — otherwise every
  * owner-gated endpoint 401s with no obvious cause (the request leaves
  * the browser without a Cookie header, the server sees no session, and
- * `requireOwner` aborts with 401). See web/app/admin/passkeys/page.tsx
- * for the canonical bug this guard exists to prevent.
+ * `requireOwner` aborts with 401).
  *
- * `request()` already uses this internally; page components should
- * prefer `request()` (it parses JSON + throws ApiError), and reach for
- * `apiFetch()` only when the response shape is unusual (e.g. webauthn
- * flows where the JSON body is consumed inline rather than returned).
+ * On the server this also injects an AbortController timeout so a hung
+ * backend can't pin an edge function indefinitely, and attaches
+ * `next: { revalidate }` to make GET responses eligible for Next's data
+ * cache + ISR.
  */
-export function apiFetch(input: string, init?: RequestInit): Promise<Response> {
+export function apiFetch(
+  input: string,
+  init?: RequestInit & { next?: { revalidate?: number; tags?: string[] }; timeoutMs?: number }
+): Promise<Response> {
+  const { timeoutMs, next: nextOpts, ...rest } = init || {};
+
+  if (isSSR) {
+    // Build an AbortController that fires after timeoutMs so a slow
+    // backend doesn't hang the edge function. If the caller already
+    // supplied a signal, we chain both signals.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs || SSR_FETCH_TIMEOUT_MS);
+    let signal: AbortSignal = controller.signal;
+    if (rest.signal) {
+      // Chain the user-supplied signal too.
+      const userSignal = rest.signal;
+      if (userSignal.aborted) {
+        controller.abort();
+      } else {
+        userSignal.addEventListener("abort", () => controller.abort(), { once: true });
+      }
+    }
+
+    // Next.js 15 extends fetch with a `next` option for data caching.
+    // Cast through unknown because the TS lib dom types don't know
+    // about Next's extension, but the runtime does.
+    const nextCfg: any = {};
+    if (nextOpts?.revalidate !== undefined) {
+      nextCfg.revalidate = nextOpts.revalidate;
+    } else if (!rest.method || rest.method === "GET") {
+      // Default GET caching (ISR). Mutating methods (POST/PUT/DELETE)
+      // go through uncached.
+      nextCfg.revalidate = DEFAULT_REVALIDATE;
+    }
+    if (nextOpts?.tags) nextCfg.tags = nextOpts.tags;
+
+    return fetch(input, {
+      ...rest,
+      signal,
+      next: nextCfg,
+    } as any).finally(() => clearTimeout(timer)) as Promise<Response>;
+  }
+
+  // Browser: attach credentials for cross-origin cookie flow.
   return fetch(input, {
-    ...(typeof window !== "undefined" ? { credentials: "include" } : {}),
-    ...init,
+    credentials: "include",
+    ...rest,
   });
 }
 
 async function getServerCookies(): Promise<string> {
-  if (typeof window !== "undefined") return "";
+  if (!isSSR) return "";
   try {
     const { cookies } = await import("next/headers");
     const jar = await cookies();
@@ -72,15 +130,22 @@ async function getServerCookies(): Promise<string> {
 
 async function request<T>(
   path: string,
-  options?: RequestInit
+  options?: RequestInit & { next?: { revalidate?: number; tags?: string[] }; timeoutMs?: number; anon?: boolean }
 ): Promise<T> {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     ...(options?.headers as Record<string, string>),
   };
 
-  // Forward session cookie on server-side so Go API can identify the user
-  if (typeof window === "undefined") {
+  // Forward session cookie on server-side so Go API can identify the user.
+  // Skip for public/anon requests (article content, lists, site config,
+  // labels) — these must NOT carry the session cookie because they are
+  // cached by ISR, and serving user A's personalised response (with
+  // can_edit=true, their own rating, etc.) from cache to user B would
+  // leak identity data. Client-side calls (water) always use
+  // credentials:include so personalisation happens after hydration
+  // without poisoning the shared HTML cache.
+  if (isSSR && !options?.anon) {
     const cookieStr = await getServerCookies();
     if (cookieStr) headers["Cookie"] = cookieStr;
   }
@@ -103,13 +168,70 @@ export class ApiError extends Error {
   }
 }
 
-// ── Auth ──────────────────────────────────────────────────────────
-export function getMe() {
-  return request<{ user: import("./types").User | null }>("/auth/me");
+// ── React.cache-based SSR deduplication ────────────────────────────
+//
+// Wrap every read-only data fetcher in React.cache so that calling the
+// same function with the same arguments multiple times during a single
+// render (e.g. generateMetadata + the page component, or nested server
+// components) de-duplicates to one real network request. This is
+// critical on EdgeOne where each SSR hop to api.kych.net costs
+// hundreds of ms in TLS handshake + cross-region latency.
+//
+// React.cache only deduplicates within a single request tree, so there
+// is no cross-user leakage risk. It's a no-op on the client (React
+// doesn't invoke it outside render), where we handle deduplication
+// separately via in-flight Promise tracking below.
+
+import { cache } from "react";
+
+// ── Client-side in-flight de-duplication ───────────────────────────
+//
+// On the client, multiple components (Header, Footer, ArticleView,
+// RatingWidget, CommentSection) all call getMe()/getCsrf()/getSite()
+// on mount. Without dedup that's 4+ concurrent identical requests to
+// the backend for the same data. We track in-flight Promises at module
+// scope so concurrent callers await the same network round-trip.
+type InFlight<T> = Promise<T>;
+const inFlight = new Map<string, InFlight<any>>();
+
+function dedupClient<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  if (isSSR) return fn(); // SSR uses React.cache, not this map
+  const existing = inFlight.get(key);
+  if (existing) return existing as Promise<T>;
+  const p = fn().finally(() => inFlight.delete(key));
+  inFlight.set(key, p);
+  return p;
 }
 
+// ── Auth ──────────────────────────────────────────────────────────
+
+// getMe is called from Header, ArticleView, RatingWidget, CommentSection.
+// On the client we dedup concurrent mount-time calls; on the server we
+// use React.cache. We intentionally do NOT cache across requests (no
+// revalidate) because the response depends on the session cookie.
+const _getMeSSR = cache(() =>
+  request<{ user: import("./types").User | null }>("/auth/me", {
+    next: { revalidate: 0 }, // never cache auth
+  })
+);
+export function getMe() {
+  if (isSSR) return _getMeSSR();
+  return dedupClient("me", () =>
+    request<{ user: import("./types").User | null }>("/auth/me")
+  );
+}
+
+// getCsrf is called from every interactive component; same dedup story.
+const _getCsrfSSR = cache(() =>
+  request<import("./types").CaptchaResponse>("/auth/csrf", {
+    next: { revalidate: 0 },
+  })
+);
 export function getCsrf() {
-  return request<import("./types").CaptchaResponse>("/auth/csrf");
+  if (isSSR) return _getCsrfSSR();
+  return dedupClient("csrf", () =>
+    request<import("./types").CaptchaResponse>("/auth/csrf")
+  );
 }
 
 export function login(body: {
@@ -144,15 +266,28 @@ export function listArticles(
   if (type) q.set("type", type);
   if (authorId) q.set("author_id", String(authorId));
   q.set("page", String(page));
+  // Article lists are public, ISR-cacheable for 60s. Anon = no cookie
+  // forwarding so the cached HTML is identical for all visitors.
+  const opts: any = { anon: true };
+  if (authorId) {
+    // "My articles" is user-specific; don't cache, forward cookie.
+    opts.anon = false;
+    opts.next = { revalidate: 0 };
+  }
   return request<import("./types").ArticleListResult>(
-    `/articles?${q.toString()}`
+    `/articles?${q.toString()}`, opts
   );
 }
 
+// getArticle is the hottest SSR call (generateMetadata + page component
+// both call it for every article view). Wrap in React.cache so the two
+// callsites share one network round-trip. Anon = ISR-safe.
+const _getArticleSSR = cache((type: string, slug: string) =>
+  request<import("./types").ArticleDetail>(`/articles/${type}/${slug}`, { anon: true })
+);
 export function getArticle(type: string, slug: string) {
-  return request<import("./types").ArticleDetail>(
-    `/articles/${type}/${slug}`
-  );
+  if (isSSR) return _getArticleSSR(type, slug);
+  return request<import("./types").ArticleDetail>(`/articles/${type}/${slug}`);
 }
 
 export function createArticle(
@@ -234,8 +369,11 @@ export function addLineComment(
 
 // ── Rating ────────────────────────────────────────────────────────
 export function getRating(type: string, slug: string) {
+  // Rating includes user_score which is session-dependent; don't cache
+  // on the server (different users see different values).
   return request<import("./types").RatingSummary>(
-    `/articles/${type}/${slug}/rating`
+    `/articles/${type}/${slug}/rating`,
+    isSSR ? { next: { revalidate: 0 } } : undefined
   );
 }
 
@@ -269,7 +407,11 @@ export function getRatingDetails(type: string, slug: string) {
 }
 
 // ── Home ──────────────────────────────────────────────────────────
+// getHome is called once per homepage render. React-cache + ISR means
+// it's cheap; cache it at the request level too. Anon = ISR-safe.
+const _getHomeSSR = cache(() => request<import("./types").HomeData>("/home", { anon: true }));
 export function getHome() {
+  if (isSSR) return _getHomeSSR();
   return request<import("./types").HomeData>("/home");
 }
 
@@ -277,32 +419,44 @@ export function getHome() {
 //
 // One-shot read of title/subtitle/theme/ICP/subsite_links, used by the
 // global Header and LayoutWrapper footer. Public endpoint, no auth.
+// This is called from BOTH Header and Footer (client components), and
+// we dedup client-side via the inflight map above. On the server the
+// header/footer are client components so they don't run during SSR,
+// but we still cache for any server-side callers. Anon = ISR-safe.
+const _getSiteSSR = cache(() => request<import("./types").SiteConfig>("/site", { anon: true }));
 export function getSite() {
-  return request<import("./types").SiteConfig>("/site");
+  if (isSSR) return _getSiteSSR();
+  return dedupClient("site", () => request<import("./types").SiteConfig>("/site"));
 }
 
 // Public theme list — names + meta + has_css. Used by the admin settings
 // page to populate the theme dropdown. Theme CSS itself is fetched
 // directly from /api/themes/:name.css (text/css, no JSON wrapping).
 export function listThemes() {
-  return request<import("./types").Theme[]>("/themes");
+  return request<import("./types").Theme[]>("/themes", { anon: true });
 }
 
 // ── Labels ────────────────────────────────────────────────────────
+const _listLabelsSSR = cache(() => request<import("./types").TagWithCount[]>("/labels", { anon: true }));
 export function listLabels() {
-  return request<import("./types").TagWithCount[]>("/labels");
+  if (isSSR) return _listLabelsSSR();
+  return dedupClient("labels", () => request<import("./types").TagWithCount[]>("/labels"));
 }
 
 export function getLabelArticles(tag: string, page = 1) {
   return request<import("./types").ArticleListResult>(
-    `/labels/${encodeURIComponent(tag)}?page=${page}`
+    `/labels/${encodeURIComponent(tag)}?page=${page}`,
+    { anon: true }
   );
 }
 
 // ── Search ────────────────────────────────────────────────────────
 export function search(q: string, page = 1) {
+  // Search results are user-query-specific; use a shorter revalidate
+  // (30s) so repeated queries are fast but fresh edits surface quickly.
   return request<import("./types").ArticleListResult>(
-    `/search?q=${encodeURIComponent(q)}&page=${page}`
+    `/search?q=${encodeURIComponent(q)}&page=${page}`,
+    isSSR ? { next: { revalidate: 30 }, anon: true } : undefined
   );
 }
 
@@ -310,6 +464,7 @@ export function search(q: string, page = 1) {
 export function listUsers(csrf: string) {
   return request<import("./types").User[]>("/admin/users", {
     headers: { "X-CSRF-Token": csrf },
+    next: { revalidate: 0 },
   });
 }
 
@@ -340,6 +495,7 @@ export function deleteUser(csrf: string, username: string) {
 export function listNotifications(csrf: string) {
   return request<import("./types").Notification[]>("/admin/notifications", {
     headers: { "X-CSRF-Token": csrf },
+    next: { revalidate: 0 },
   });
 }
 
@@ -370,6 +526,7 @@ export function deleteNotification(csrf: string, id: number) {
 export function getSettings(csrf: string) {
   return request<Record<string, any>>("/admin/settings", {
     headers: { "X-CSRF-Token": csrf },
+    next: { revalidate: 0 },
   });
 }
 
@@ -388,6 +545,7 @@ export function getAdminHome(csrf: string) {
     featured_articles: import("./types").FeaturedArticle[];
   }>("/admin/home", {
     headers: { "X-CSRF-Token": csrf },
+    next: { revalidate: 0 },
   });
 }
 
@@ -425,6 +583,7 @@ export function deleteFeatured(csrf: string, id: number) {
 export function getProfile(csrf: string) {
   return request<import("./types").User>("/admin/profile", {
     headers: { "X-CSRF-Token": csrf },
+    next: { revalidate: 0 },
   });
 }
 
@@ -460,6 +619,7 @@ export function changeMyPassword(csrf: string, body: { old_password: string; new
 export function listAdminTags(csrf: string) {
   return request<import("./types").AdminTag[]>("/admin/tags", {
     headers: { "X-CSRF-Token": csrf },
+    next: { revalidate: 0 },
   });
 }
 
@@ -496,7 +656,7 @@ export function uploadFile(csrf: string, file: File) {
   // with boundary — passing "Content-Type: application/json" from `request`
   // would break the upload, so we build the fetch manually.
   const headers: Record<string, string> = { "X-CSRF-Token": csrf };
-  if (typeof window === "undefined") {
+  if (isSSR) {
     // Server-side upload isn't expected in this UI, but keep the path working
     // if it ever is.
     return import("next/headers").then(async ({ cookies }) => {
@@ -538,5 +698,6 @@ export function deleteAdminFile(csrf: string, id: number) {
 export function listAdminFiles(csrf: string) {
   return request<import("./types").AdminFile[]>("/admin/files", {
     headers: { "X-CSRF-Token": csrf },
+    next: { revalidate: 0 },
   });
 }

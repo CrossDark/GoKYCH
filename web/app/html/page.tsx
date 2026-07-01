@@ -1,7 +1,7 @@
 import ArticleList from "@/components/ArticleList";
 import type { Metadata } from "next";
 
-export const dynamic = "force-dynamic";
+export const revalidate = 60;
 
 export const metadata: Metadata = { title: "HTML 文章 — 跨越晨昏" };
 

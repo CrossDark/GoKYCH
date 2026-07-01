@@ -149,7 +149,7 @@ func (s *Server) getHome(c *gin.Context) {
 		var imp int
 		if err := rows3.Scan(&n.ID, &n.Title, &n.Content, &imp, &n.UpdatedAt); err == nil {
 			n.IsImportant = imp == 1
-			n.ContentHTML = parsers.RenderSafeMarkdown(n.Content)
+			n.ContentHTML = s.rewriteStaticAssetURLs(parsers.RenderSafeMarkdown(n.Content))
 			notifs = append(notifs, n)
 		}
 	}
@@ -188,7 +188,7 @@ func (s *Server) listNotifications(c *gin.Context) {
 			continue
 		}
 		n.IsImportant = imp == 1
-		n.ContentHTML = parsers.RenderSafeMarkdown(n.Content)
+		n.ContentHTML = s.rewriteStaticAssetURLs(parsers.RenderSafeMarkdown(n.Content))
 		notifs = append(notifs, n)
 	}
 	c.JSON(http.StatusOK, notifs)

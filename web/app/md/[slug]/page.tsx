@@ -1,10 +1,11 @@
 import { getArticle } from "@/lib/api";
 import { renderArticleDetailError } from "@/components/ArticleDetailError";
 import { ArticleView } from "@/components/ArticleView";
-import { cookies } from "next/headers";
 import type { Metadata } from "next";
 
-export const dynamic = "force-dynamic";
+// ISR: revalidate article content every 60s. Comments/ratings are fetched
+// client-side after hydration, so cached HTML stays fresh enough.
+export const revalidate = 60;
 
 interface Props {
   params: Promise<{ slug: string }>;
@@ -13,14 +14,11 @@ interface Props {
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const { slug } = await params;
   try {
+    // React.cache in api.ts deduplicates this with the page component's
+    // getArticle() call — only one real network request is made.
     const d = await getArticle("md", slug);
     return { title: `${d.article.title} — 跨越晨昏` };
   } catch (err) {
-    // generateMetadata only sets <title>; the main page below is the
-    // one the reader sees, and it shares the same `getArticle()` call.
-    // We log here so a broken backend config (e.g. missing
-    // NEXT_PUBLIC_API_BASE_URL on EdgeOne) surfaces in the SSR log
-    // even when the title fallback hides it from the reader.
     console.error(
       `[md/${slug}] generateMetadata fetch failed`,
       err instanceof Error ? err.message : err
@@ -33,7 +31,6 @@ export default async function DetailPage({ params }: Props) {
   const { slug } = await params;
   try {
     const data = await getArticle("md", slug);
-    // Extract CSRF token from cookies for the client components.
     return <ArticleView data={data} articleType="md" articleSlug={slug} />;
   } catch (err) {
     return renderArticleDetailError(err, { type: "md", slug });

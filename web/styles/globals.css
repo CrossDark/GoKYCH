@@ -5198,3 +5198,55 @@ body.admin-modal-open { overflow: hidden; }
     white-space: pre-wrap;
 }
 
+/* ── Route loading skeleton (app/loading.tsx) ───────────────────
+ * Shown by Next.js while a page segment streams in. Minimal CSS so
+ * it paints from the first HTML chunk without JS. The shimmer uses
+ * a pure-CSS gradient animation (no JS, no layout shift). */
+.page-loading {
+    padding: 2rem 0;
+    max-width: 760px;
+    margin: 0 auto;
+}
+.loading-skeleton {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+.skeleton {
+    background: linear-gradient(
+        90deg,
+        var(--surface-2, #f0f0f0) 25%,
+        var(--surface-1, #e8e8e8) 50%,
+        var(--surface-2, #f0f0f0) 75%
+    );
+    background-size: 200% 100%;
+    border-radius: 4px;
+    animation: skeleton-shimmer 1.4s ease-in-out infinite;
+}
+.skeleton-title {
+    height: 2rem;
+    width: 60%;
+    margin-bottom: 0.5rem;
+}
+.skeleton-line {
+    height: 1rem;
+    width: 100%;
+}
+.skeleton-line-1 { width: 100%; }
+.skeleton-line-2 { width: 92%; }
+.skeleton-line-3 { width: 96%; }
+.skeleton-line-short { width: 40%; }
+[data-theme="dark"] .skeleton {
+    background: linear-gradient(
+        90deg,
+        #1e293b 25%,
+        #334155 50%,
+        #1e293b 75%
+    );
+    background-size: 200% 100%;
+}
+@keyframes skeleton-shimmer {
+    0%   { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+}
+
