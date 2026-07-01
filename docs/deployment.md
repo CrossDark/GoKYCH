@@ -576,12 +576,18 @@ RPID 用了 `localhost` — 这只在 `APP_DOMAIN=localhost:3000` 时发生。
 仓库里有两条脚本，覆盖"打 release"和"装 release"两件事：
 
 **`scripts/build-release.sh`** — 维护者打 release 时跑。打 4 个平台
-二进制到 `dist/`，生成 `SHA256SUMS`，可选 `--upload` 直接 `gh release create`：
+二进制到 `dist/`，生成 `SHA256SUMS`，可选 `--upload` 直接 `gh release create`。
+版本号通过命令行输入（`vX.Y.Z` 或 `X.Y.Z`，可带 `-rc1` 等后缀）：
 
 ```bash
-VERSION=v0.1.0 ./scripts/build-release.sh
-VERSION=v0.1.0 ./scripts/build-release.sh --upload   # 自动创建 GitHub Release
+./scripts/build-release.sh v0.1.0                       # 位置参数
+./scripts/build-release.sh --version v0.1.0 --upload    # 长 flag + 直接上传
+./scripts/build-release.sh -v 0.2.0-rc1                 # 短 flag + pre-release
+./scripts/build-release.sh                              # 不指定 → git describe
+VERSION=v0.1.0 ./scripts/build-release.sh               # 环境变量（兼容旧用法）
 ```
+
+`--upload` 禁止 `dev` / `*-dirty` 之类的非正式版本号。
 
 **`scripts/install-backend.sh`** — 任何机器（包括目标 Ubuntu VM 自身）
 从 GitHub / GitCode Release 拉对应平台的二进制，校验 hash，装到
