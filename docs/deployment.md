@@ -613,6 +613,46 @@ git clone https://gitcode.com/CrossDark/GoKych.git /tmp/gokych
 GOKYCH_HOST=gitcode sudo bash /tmp/gokych/scripts/install-backend.sh
 ```
 
+**`scripts/install-all.sh`** — **新 VM 首次部署的首选**。在目标
+Ubuntu VM 上 `curl | sudo bash` 跑一次，自动完成 *所有* 后端初始化
+（系统包 → 二进制下载+校验 → MySQL 建库建用户 → 写 .env
+随机密钥 → systemd 单元 → nginx HTTP-only 配置 → certbot 签证书
+→ 健康检查 → 写 MySQL 备份脚本），**不负责前端** —— 前端仍然
+走 EdgeOne Makers 自动构建。脚本跑完会打印前端需要的环境变量和
+DNS 解析记录。
+
+> `install-all.sh` = `install-backend.sh`（装二进制）+ `deploy-backend.sh`
+> （初始化）合并的"一站式"版本，区别是它设计成在 VM 本机跑、零依赖
+> （不需要 Go、不需要 SSH、不需要本地克隆仓库 —— 二进制从
+> GitHub/GitCode Release 拉）。**只支持 Ubuntu 22.04/24.04**。
+> 详见 `--help`。
+
+```bash
+# 在全新的 Ubuntu VM 上：先 DNS 把 api.kych.net / kych.net 指过来，
+# 然后一行搞定（--yes 跳过确认；生产建议去掉，自己看一遍再回车）
+curl -fsSL https://raw.githubusercontent.com/CrossDark/GoKYCH/main/scripts/install-all.sh | \
+  sudo bash -s -- \
+    --site-name "我的网站" \
+    --api-domain "api.kych.net" \
+    --main-domain "kych.net" \
+    --frontend-domain "eo.kych.net" \
+    --email "admin@example.com" \
+    --admin-password "ChangeMe-Strong-Pwd" \
+    --yes
+
+# 装特定版本（默认 GitHub latest）
+curl -fsSL https://raw.githubusercontent.com/CrossDark/GoKYCH/main/scripts/install-all.sh | \
+  sudo bash -s -- --release v0.2.0 --yes
+
+# 二进制从 gitcode 拉（先 clone 绕开 gitcode 没 raw 的问题）
+git clone https://gitcode.com/CrossDark/GoKych.git /tmp/gokych
+sudo bash /tmp/gokych/scripts/install-all.sh --host gitcode --yes
+
+# 卸载（保留 /var/lib/mysql；想清干净加 --purge-data）
+sudo bash /tmp/gokych/scripts/install-all.sh --uninstall
+sudo bash /tmp/gokych/scripts/install-all.sh --uninstall --purge-data
+```
+
 **`scripts/deploy-backend.sh`** — 跨平台编译后推到目标 VM，初始化
 systemd / nginx / MySQL / TLS（首次部署 + `--update` 后续更新都支持）。
 **不负责前端** —— 前端走 EdgeOne Makers 自动构建，跟本脚本无关。
@@ -649,10 +689,11 @@ systemd / nginx / MySQL / TLS（首次部署 + `--update` 后续更新都支持�
 GOARCH=arm64 ./scripts/deploy-backend.sh
 ```
 
-三个脚本的职责切分：
+四个脚本的职责切分：
 - `build-release.sh`    → 多平台二进制 + 哈希
 - `install-backend.sh`  → 单机装（适合 macOS 本地、临时测试、容器）
-- `deploy-backend.sh`   → 远程 VM 后端整套（适合生产）
+- `install-all.sh`      → **Ubuntu VM 一键完整后端初始化（推荐）**
+- `deploy-backend.sh`   → 远程 VM 后端整套（适合生产；操作机驱动）
 
 **前端发布走 EdgeOne Makers，没有专门的 deploy 脚本 —— `git push main`
 就够了。**
@@ -663,6 +704,7 @@ GOARCH=arm64 ./scripts/deploy-backend.sh
 
 | commit    | 主题                                                         |
 |-----------|--------------------------------------------------------------|
+| *new*     | feat(deploy): scripts/install-all.sh — Ubuntu 一键后端初始化 (curl\|sudo bash) |
 | `0baf836` | docs(deploy): clarify deploy-backend.sh runs on operator machine, not on the VM |
 | `9441bee` | docs(deploy): rewrite deployment.md for EdgeOne Makers; tick done items in TODO |
 | `59cbe67` | chore(deploy): drop deploy-frontend.sh + trim backend deploy for EdgeOne Makers |
