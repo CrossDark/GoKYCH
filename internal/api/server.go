@@ -27,6 +27,12 @@ type Server struct {
 	DataDir        string   // filesystem path to the runtime data directory
 	trustedProxies []string // trusted reverse-proxy CIDRs/IPs; empty = trust none
 
+	// Version is the build version string (e.g. "v0.1.0"), injected from
+	// main via -ldflags "-X main.version=...". Defaults to "dev" for
+	// untagged builds. Exposed via GET /api/admin/update/check so the
+	// admin panel can show "current version".
+	Version string
+
 	// PublicURL is the absolute base URL the backend is reachable at
 	// from the public internet (e.g. "https://api.example.com"). It
 	// prefixes paths returned in API responses — currently only
@@ -127,3 +133,16 @@ func (s *Server) webAuthnInstance() (*webauthn.WebAuthn, error) {
 	})
 	return s.webAuthn, s.webAuthnErr
 }
+
+// SetRestartFunc sets the function invoked after a successful self-update
+// to trigger a binary restart. The function should return immediately and
+// perform the actual restart asynchronously (so the HTTP response can be
+// flushed to the client before shutdown). Called from main during startup.
+func SetRestartFunc(fn func() error) {
+	restartFn = fn
+}
+
+// restartFn is the package-level restart hook set by SetRestartFunc. We
+// keep it at package scope (not on the Server struct) so updater.go can
+// call it without threading *Server through every helper.
+var restartFn func() error

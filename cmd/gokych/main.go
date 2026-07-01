@@ -28,6 +28,10 @@ import (
 	"gokych/internal/typst"
 )
 
+// version is populated at build time via -ldflags "-X main.version=vX.Y.Z".
+// A dev build (go run / go install without ldflags) leaves it as "dev".
+var version = "dev"
+
 func main() {
 	// 0. Load configuration.
 	cfg := config.Load()
@@ -36,6 +40,7 @@ func main() {
 	// subsequent startup diagnostics go through it.
 	logging.Init(cfg.App.GinMode)
 	slog.Info("config loaded",
+		"version", version,
 		"db_host", cfg.MySQL.Host,
 		"db_port", cfg.MySQL.Port,
 		"db_name", cfg.MySQL.Database,
@@ -99,6 +104,8 @@ func main() {
 	// responses for cross-origin frontends (Cloudflare Pages). Empty in
 	// dev, where Next.js rewrites /uploads/* → backend.
 	srv.PublicURL = cfg.App.PublicURL
+	// Inject build version for admin panel display / self-update checks.
+	srv.Version = version
 	// CORS allowlist: comma-separated env, empty in dev. When empty the
 	// CORS middleware is a no-op and only same-origin requests succeed —
 	// fine for the dev shell, but production must set this or the CF
@@ -196,6 +203,37 @@ func main() {
 		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
+
+	// Inject the self-update restart hook. Must happen AFTER httpSrv is
+	// declared (the closure captures it) and BEFORE the server starts
+	// accepting requests (so an admin hitting /api/admin/update/apply
+	// immediately after boot finds the hook in place).
+	api.SetRestartFunc(func() error {
+		// Called from the update handler after the new binary is in
+		// place. We return immediately and schedule the actual restart
+		// 2s later so the HTTP response can flush to the client first.
+		time.AfterFunc(2*time.Second, func() {
+			slog.Info("update: restarting service...")
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := httpSrv.Shutdown(ctx); err != nil {
+				slog.Error("update: graceful shutdown error, forcing restart", "err", err)
+			}
+			// Re-exec the binary at the same path with the same args/env.
+			// syscall.Exec replaces the current process image; PID stays
+			// the same so systemd tracks it as the continuous main PID.
+			exePath, err := os.Executable()
+			if err != nil {
+				slog.Error("update: cannot find executable path", "err", err)
+				return
+			}
+			db.Close()
+			if err := syscall.Exec(exePath, os.Args, os.Environ()); err != nil {
+				slog.Error("update: exec failed", "err", err)
+			}
+		})
+		return nil
+	})
 
 	go func() {
 		slog.Info("server starting", "addr", addr)

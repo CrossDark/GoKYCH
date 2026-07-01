@@ -22,6 +22,7 @@ const BREADCRUMB: { match: (p: string) => boolean; label: string; parent?: strin
   { match: (p) => p.startsWith("/admin/settings"), label: "站点设置", parent: "设置" },
   { match: (p) => p.startsWith("/admin/api-keys"), label: "API Key", parent: "管理" },
   { match: (p) => p.startsWith("/admin/passkeys"), label: "Passkey", parent: "管理" },
+  { match: (p) => p.startsWith("/admin/update"), label: "系统更新", parent: "设置" },
   { match: (p) => p.startsWith("/admin/profile"), label: "个人资料", parent: "设置" },
 ];
 
@@ -195,6 +196,9 @@ function AdminLayoutInner({ children }: { children: React.ReactNode }) {
           label: "设置",
           items: [
             { href: "/admin/settings", label: "站点设置", icon: "⚙️" },
+            ...(user.role === "owner"
+              ? [{ href: "/admin/update", label: "系统更新", icon: "🔄" }]
+              : []),
             { href: "/admin/profile", label: "个人资料", icon: "👤" },
           ],
         },

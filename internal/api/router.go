@@ -156,6 +156,11 @@ func (s *Server) Setup(r *gin.Engine) {
 				// page's admin section.
 				adminG.GET("/passkeys", requireOwner, s.listAllPasskeys)
 				adminG.DELETE("/passkeys/:id", requireOwner, s.deleteAnyPasskey)
+
+				// Self-update: check for new GitHub release and apply it.
+				// Owner-only because this replaces the running binary.
+				adminG.GET("/update/check", requireOwner, s.checkUpdateHandler)
+				adminG.POST("/update/apply", requireOwner, s.applyUpdateHandler)
 			}
 		}
 	}
