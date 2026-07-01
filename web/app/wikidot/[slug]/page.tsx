@@ -15,7 +15,16 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   try {
     const d = await getArticle("wikidot", slug);
     return { title: `${d.article.title} — 跨越晨昏` };
-  } catch {
+  } catch (err) {
+    // generateMetadata only sets <title>; the main page below is the
+    // one the reader sees, and it shares the same `getArticle()` call.
+    // We log here so a broken backend config (e.g. missing
+    // NEXT_PUBLIC_API_BASE_URL on EdgeOne) surfaces in the SSR log
+    // even when the title fallback hides it from the reader.
+    console.error(
+      `[wikidot/${slug}] generateMetadata fetch failed`,
+      err instanceof Error ? err.message : err
+    );
     return { title: "文章 — 跨越晨昏" };
   }
 }
