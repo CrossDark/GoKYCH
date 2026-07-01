@@ -113,6 +113,17 @@ func (s *Server) updateUserRole(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的角色。"})
 		return
 	}
+	// Refuse to change the role of an existing owner — demoting the only
+	// owner would lock the system out of owner-level operations.
+	target, err := user.GetByUsername(s.DB, username)
+	if err != nil || target == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "用户不存在。"})
+		return
+	}
+	if user.IsOwner(target.Role) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "不能更改 owner 的角色。"})
+		return
+	}
 	ok, err := user.UpdateInfo(s.DB, username, "", in.Role)
 	if err != nil || !ok {
 		c.JSON(http.StatusNotFound, gin.H{"error": "用户不存在。"})

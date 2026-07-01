@@ -161,17 +161,23 @@ func (s *Server) uploadFile(c *gin.Context) {
 
 	// Only write if not already present — keeps the storage deterministic for
 	// duplicate uploads (and lets the DB UNIQUE catch concurrent writes).
-	if _, statErr := os.Stat(filePath); statErr != nil {
-		if _, err := file.Seek(0, io.SeekStart); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "文件读取失败。"})
-			return
-		}
-		out, err := os.OpenFile(filePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
-		if err != nil {
+	// O_EXCL atomically fails if the file already exists, eliminating the
+	// TOCTOU race between the old Stat + OpenFile pattern.
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "文件读取失败。"})
+		return
+	}
+	out, err := os.OpenFile(filePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		if os.IsExist(err) {
+			// File already exists (concurrent duplicate upload) — skip write,
+			// the DB UNIQUE constraint will catch the duplicate below.
+		} else {
 			slog.Error("uploadFile: open dst", "path", filePath, "err", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "保存文件失败。"})
 			return
 		}
+	} else {
 		if _, err := io.Copy(out, file); err != nil {
 			_ = out.Close()
 			slog.Error("uploadFile: write", "path", filePath, "err", err)

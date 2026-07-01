@@ -17,14 +17,20 @@ type TagWithCount struct {
 	Count int `json:"count"`
 }
 
+// Querier is satisfied by both *sql.DB and *sql.Tx.
+type Querier interface {
+	QueryRow(query string, args ...any) *sql.Row
+	Exec(query string, args ...any) (sql.Result, error)
+}
+
 // GetOrCreateTag ensures a tag exists and returns its ID.
-func GetOrCreateTag(db *sql.DB, name string) (int, error) {
+func GetOrCreateTag(q Querier, name string) (int, error) {
 	var id int
-	err := db.QueryRow(`SELECT id FROM tags WHERE name = ?`, name).Scan(&id)
+	err := q.QueryRow(`SELECT id FROM tags WHERE name = ?`, name).Scan(&id)
 	if err == nil {
 		return id, nil
 	}
-	res, err := db.Exec(`INSERT INTO tags (name) VALUES (?)`, name)
+	res, err := q.Exec(`INSERT INTO tags (name) VALUES (?)`, name)
 	if err != nil {
 		return 0, err
 	}
@@ -120,7 +126,7 @@ func SetArticleTags(db *sql.DB, articleID int, tagNames []string) error {
 		return err
 	}
 	for _, name := range tagNames {
-		tagID, err := GetOrCreateTag(db, name)
+		tagID, err := GetOrCreateTag(tx, name)
 		if err != nil {
 			return err
 		}

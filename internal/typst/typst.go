@@ -308,7 +308,7 @@ func CompileAndCache(articleID int, source string) error {
 // would re-fork typst on every request).
 func CompileHTMLCached(articleID int, source string) (string, error) {
 	if db == nil || articleID <= 0 {
-		return "", fmt.Errorf("typst: cache unavailable (db=%v, articleID=%d)", db, articleID)
+		return "", fmt.Errorf("typst: cache unavailable (db configured=%t, articleID=%d)", db != nil, articleID)
 	}
 	var html string
 	err := db.QueryRow(
@@ -333,7 +333,7 @@ func CompileHTMLCached(articleID int, source string) (string, error) {
 // 503/404 with a "PDF not yet generated" message.
 func CompilePDFCached(articleID int, source string) ([]byte, error) {
 	if db == nil || articleID <= 0 {
-		return nil, fmt.Errorf("typst: cache unavailable (db=%v, articleID=%d)", db, articleID)
+		return nil, fmt.Errorf("typst: cache unavailable (db configured=%t, articleID=%d)", db != nil, articleID)
 	}
 	var pdf []byte
 	err := db.QueryRow(
@@ -368,20 +368,28 @@ func extractBody(html string) string {
 
 // cleanupLeakedInputs removes any `.input_*.typ` / `.output_*.html` /
 // `.output_*.pdf` files left over from a previous crash (process kill,
-// OOM, etc.). Best-effort — missing files are fine.
+// OOM, etc.). Logs the outcome so stale files don't go unnoticed.
 func cleanupLeakedInputs(dir string) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return
 	}
+	var cleaned, failed int
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
 		}
 		name := e.Name()
 		if strings.HasPrefix(name, ".input_") || strings.HasPrefix(name, ".output_") {
-			os.Remove(filepath.Join(dir, name))
+			if err := os.Remove(filepath.Join(dir, name)); err != nil {
+				failed++
+			} else {
+				cleaned++
+			}
 		}
+	}
+	if cleaned > 0 || failed > 0 {
+		slog.Info("typst: cleaned leaked temp files", "cleaned", cleaned, "failed", failed)
 	}
 }
 
