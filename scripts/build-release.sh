@@ -21,8 +21,8 @@
 #   scripts/build-release.sh                       # 不指定版本 → git describe
 #   VERSION=v0.1.0 scripts/build-release.sh        # 环境变量（兼容旧用法）
 #
-# --upload 模式：若版本未定（dev / *-dirty），
-#   交互式 TTY → 主动 read 询问输入；
+# --upload 模式：若未通过 --version / -v / VERSION env 显式指定版本，
+#   交互式 TTY → 主动 read 询问输入（git describe 拿到合法 tag 时可回车确认）；
 #   非 TTY (CI / pipe) → 直接 die 并提示用 --version / -v 显式传。
 #
 # 前置：
@@ -44,15 +44,18 @@ die()  { printf "${RED}✗${NC} %s\n" "$*" >&2; exit 1; }
 
 # ── 校验 semver-ish 字符串 ──
 # 接受: v0.1.0, 0.1.0, 0.1.0-rc1, 0.1.0-alpha.1, 1.2.3+build.5
+# is_valid_version: return 0/1, 不 die
+is_valid_version() {
+  local v="$1"
+  [[ -z "$v" ]] && return 1
+  local body="${v#v}"
+  [[ "$body" =~ ^[0-9]+(\.[0-9]+){1,2}([-+][A-Za-z0-9.-]+)?$ ]]
+}
+
+# validate_version: 不合法则 die
 validate_version() {
   local v="$1"
-  # 空 — 由调用方决定是否回退
-  [[ -z "$v" ]] && return 0
-  # 可选 'v' 前缀, 然后 X.Y.Z（1-3 段数字）, 可选 pre-release / build
-  local body="${v#v}"
-  if ! [[ "$body" =~ ^[0-9]+(\.[0-9]+){1,2}([-+][A-Za-z0-9.-]+)?$ ]]; then
-    die "VERSION='$v' 不是合法 semver (e.g. v0.1.0, 0.1.0, 0.1.0-rc1)"
-  fi
+  is_valid_version "$v" || die "VERSION='$v' 不是合法 semver (e.g. v0.1.0, 0.1.0, 0.1.0-rc1)"
 }
 
 # ── 解析参数 ──
@@ -76,32 +79,45 @@ while [[ $# -gt 0 ]]; do
 done
 
 # ── 1. 推断版本（优先级: CLI 参数 > VERSION 环境变量 > git describe > dev） ──
+VERSION_EXPLICIT=0
 if [[ -n "$VERSION_ARG" ]]; then
   validate_version "$VERSION_ARG"
   VERSION="$VERSION_ARG"
+  VERSION_EXPLICIT=1
 elif [[ -n "${VERSION:-}" ]]; then
   validate_version "$VERSION"
+  VERSION_EXPLICIT=1
 elif VERSION=$(git -C "$REPO_ROOT" describe --tags --always --dirty 2>/dev/null); then
-  :  # git describe 拿到的不一定合法 semver,留待 upload 阶段拒绝 dev/dirty
+  :  # git describe 拿到的不一定合法 semver（可能是 commit hash），留待后续检查
 else
   VERSION="dev"
 fi
 
-# ── 1.5 --upload 模式: 若版本未定,要求明确输入 ──
-# dev / *-dirty (无 tag 或有未提交改动) 都不能直接上传
-# 交互式 TTY 走 read 询问;非 TTY (CI / curl|bash) 直接 die 给出明确指引
-if [[ "$UPLOAD" -eq 1 && ( "$VERSION" == "dev" || "$VERSION" == *-dirty ) ]]; then
+# ── 1.5 --upload 模式: 若版本不是合法 semver，要求明确输入 ──
+# dev、*-dirty、纯 commit hash 等都不能直接上传
+# 交互式 TTY 走 read 询问（带当前值作为默认）；非 TTY (CI / pipe) 直接 die
+if [[ "$UPLOAD" -eq 1 && "$VERSION_EXPLICIT" -eq 0 ]]; then
   echo
-  printf "${YEL}==>${NC} --upload 需要明确版本号,目前解析为: ${YEL}%s${NC}\n" "$VERSION"
+  if is_valid_version "$VERSION"; then
+    # git describe 给出了合法 tag，询问是否确认
+    printf "${YEL}==>${NC} --upload 检测到版本: ${GRN}%s${NC}  (按回车确认,或输入新版本号)\n" "$VERSION"
+    DEFAULT_VER="$VERSION"
+  else
+    printf "${YEL}==>${NC} --upload 需要明确版本号,当前自动推断为: ${YEL}%s${NC}\n" "$VERSION"
+    DEFAULT_VER=""
+  fi
   if [[ -t 0 ]]; then
     while :; do
-      if ! read -r -p "$(printf '%s==>%s 输入版本号 (e.g. v0.1.0, 0.1.0-rc1): ' "${BLU}" "${NC}")" INPUT_VER; then
+      if ! read -r -p "$(printf '%s==>%s 输入版本号 (e.g. v0.1.0, 0.1.0-rc1)%s: ' "${BLU}" "${NC}" "${DEFAULT_VER:+ [默认: $DEFAULT_VER]}")" INPUT_VER; then
         die "stdin EOF,无法询问版本号(用 --version=v0.1.0 或 VERSION=v0.1.0 env 传)"
       fi
+      # 用户直接回车 → 使用默认值（如果有）
+      [[ -z "$INPUT_VER" && -n "$DEFAULT_VER" ]] && INPUT_VER="$DEFAULT_VER"
       [[ -z "$INPUT_VER" ]] && { printf '  %s版本号不能为空,重新输入 (Ctrl-C 取消)%s\n' "${YEL}" "${NC}"; continue; }
-      if validate_version "$INPUT_VER" 2>/dev/null; then
-        # validate_version 成功会 return 0,失败会 die;这里都返回了说明 OK
+      if is_valid_version "$INPUT_VER"; then
         break
+      else
+        printf '  %s%q 不是合法 semver,重新输入 (e.g. v0.1.0, 0.1.0-rc1)%s\n' "${YEL}" "$INPUT_VER" "${NC}"
       fi
     done
     VERSION="$INPUT_VER"
@@ -247,9 +263,7 @@ if [[ "$UPLOAD" -eq 1 ]]; then
   fi
   TAG="v${VERSION#v}"  # 把 v0.1.0 标准化
   # 防御性二次检查:第 1.5 步 --upload 已 prompt 过,这里再卡一次
-  if [[ "$VERSION" == "dev" || "$VERSION" == *-dirty ]]; then
-    die "VERSION=$VERSION 仍不能上传 — 用 --version v0.1.0 / -v v0.1.0 / VERSION=v0.1.0 env 显式传"
-  fi
+  is_valid_version "$VERSION" || die "VERSION=$VERSION 仍不是合法 semver — 用 --version v0.1.0 / -v v0.1.0 / VERSION=v0.1.0 env 显式传"
   log "create/update release ${TAG}…"
   if gh release view "$TAG" >/dev/null 2>&1; then
     log "release 已存在，上传新资产…"
