@@ -138,21 +138,22 @@ func detectBinPath() string {
 	return defaultBinPath
 }
 
-// canWriteFile returns true if the process has permission to replace
-// the file at path (i.e. the directory is writable and we can create/
-// remove files in it). We test by touching a temp file in the same
-// directory rather than checking the file itself — on Linux you can
-// rename over a non-writable file if you have write permission on the
-// directory.
-func canWriteDir(path string) bool {
+// canWriteDir tests whether the process can create and remove a temp file
+// in the directory containing `path` (i.e. it can replace the binary).
+// On Linux you can rename over a non-writable file if you have write perms
+// on the directory, so we test the directory, not the file itself.
+// Returns (true, "") on success; (false, reason) on failure so the caller
+// can surface the exact OS error (permission denied, read-only fs, etc.)
+// instead of the opaque "不可写" message.
+func canWriteDir(path string) (bool, string) {
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, ".gokych-write-test-")
 	if err != nil {
-		return false
+		return false, err.Error()
 	}
 	tmp.Close()
 	os.Remove(tmp.Name())
-	return true
+	return true, ""
 }
 
 // compareVersions returns true when latest is "newer" than current.
@@ -220,6 +221,9 @@ type updateCheckResponse struct {
 	OS              string `json:"os"`
 	BinaryPath      string `json:"binary_path"`
 	CanWrite        bool   `json:"can_write"`        // binary dir is writable
+	CanWriteError   string `json:"can_write_error,omitempty"` // OS error when can_write=false
+	ProcessUser     string `json:"process_user,omitempty"`   // os user running the process
+	DirPermissions  string `json:"dir_permissions,omitempty"` // octal permissions of bin dir
 	PublishedAt     string `json:"published_at,omitempty"`
 	ReleaseURL      string `json:"release_url,omitempty"`
 	ReleaseNotes    string `json:"release_notes,omitempty"`
@@ -230,13 +234,34 @@ type updateCheckResponse struct {
 func (s *Server) checkUpdateHandler(c *gin.Context) {
 	goos, goarch := runtime.GOOS, runtime.GOARCH
 	binPath := detectBinPath()
+
+	canW, canWErr := canWriteDir(binPath)
+
+	// Gather permission diagnostics so the admin can see *why* writes fail.
+	dir := filepath.Dir(binPath)
+	var dirPerms string
+	if fi, err := os.Stat(dir); err == nil {
+		dirPerms = fmt.Sprintf("%04o", fi.Mode().Perm())
+	}
+
+	procUser := os.Getenv("USER")
+	if procUser == "" {
+		procUser = os.Getenv("LOGNAME")
+	}
+	if procUser == "" {
+		procUser = fmt.Sprintf("pid=%d", os.Getpid())
+	}
+
 	resp := updateCheckResponse{
 		CurrentVersion: s.Version,
 		Platform:       goos + "/" + goarch,
 		OS:             goos,
 		Arch:           goarch,
 		BinaryPath:     binPath,
-		CanWrite:       canWriteDir(binPath),
+		CanWrite:       canW,
+		CanWriteError:  canWErr,
+		ProcessUser:    procUser,
+		DirPermissions: dirPerms,
 	}
 
 	client := &http.Client{Timeout: 10 * time.Second}
@@ -292,10 +317,10 @@ func (s *Server) applyUpdateHandler(c *gin.Context) {
 	goos, goarch := runtime.GOOS, runtime.GOARCH
 	binPath := detectBinPath()
 
-	if !canWriteDir(binPath) {
+	if ok, reason := canWriteDir(binPath); !ok {
 		c.JSON(http.StatusForbidden, gin.H{
-			"error": fmt.Sprintf("cannot write to %s; check permissions (process running as %s)",
-				filepath.Dir(binPath), os.Getenv("USER")),
+			"error": fmt.Sprintf("cannot write to %s: %s (process running as %s)",
+				filepath.Dir(binPath), reason, os.Getenv("USER")),
 		})
 		return
 	}

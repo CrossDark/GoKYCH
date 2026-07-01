@@ -5291,3 +5291,56 @@ body.admin-modal-open { overflow: hidden; }
     100% { background-position: -200% 0; }
 }
 
+/* ── Admin: Release Notes Markdown ─────────────────────────────────── */
+.release-notes-md h1 { font-size: 1.25rem; font-weight: 700; margin: 0.8rem 0 0.4rem; }
+.release-notes-md h2 { font-size: 1.1rem; font-weight: 700; margin: 0.7rem 0 0.35rem; border-bottom: 1px solid var(--border); padding-bottom: 0.2rem; }
+.release-notes-md h3 { font-size: 1rem; font-weight: 600; margin: 0.6rem 0 0.3rem; }
+.release-notes-md h4 { font-size: 0.95rem; font-weight: 600; margin: 0.5rem 0 0.25rem; }
+.release-notes-md p  { margin: 0.4rem 0; }
+.release-notes-md ul, .release-notes-md ol { margin: 0.4rem 0; padding-left: 1.5rem; }
+.release-notes-md li { margin: 0.15rem 0; }
+.release-notes-md a  { color: var(--accent); text-decoration: none; }
+.release-notes-md a:hover { text-decoration: underline; }
+.release-notes-md code {
+    background: rgba(127,127,127,0.15);
+    padding: 0.1rem 0.35rem;
+    border-radius: 3px;
+    font-size: 0.85em;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.release-notes-md pre {
+    background: rgba(0,0,0,0.06);
+    padding: 0.6rem 0.8rem;
+    border-radius: 4px;
+    overflow-x: auto;
+    margin: 0.5rem 0;
+    font-size: 0.82rem;
+}
+.release-notes-md pre code {
+    background: none;
+    padding: 0;
+    border-radius: 0;
+    font-size: inherit;
+}
+.release-notes-md blockquote {
+    border-left: 3px solid var(--accent);
+    margin: 0.5rem 0;
+    padding: 0.2rem 0 0.2rem 0.8rem;
+    color: var(--text-muted);
+}
+.release-notes-md table {
+    border-collapse: collapse;
+    margin: 0.5rem 0;
+    font-size: 0.85rem;
+}
+.release-notes-md th, .release-notes-md td {
+    border: 1px solid var(--border);
+    padding: 0.3rem 0.6rem;
+    text-align: left;
+}
+.release-notes-md th { background: rgba(127,127,127,0.1); font-weight: 600; }
+.release-notes-md hr { border: none; border-top: 1px solid var(--border); margin: 0.8rem 0; }
+.release-notes-md img { max-width: 100%; border-radius: 4px; }
+.release-notes-md input[type="checkbox"] { margin-right: 0.3rem; }
+[data-theme="dark"] .release-notes-md pre { background: rgba(255,255,255,0.06); }
+

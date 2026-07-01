@@ -13,6 +13,9 @@ interface UpdateCheckInfo {
   arch: string;
   binary_path: string;
   can_write: boolean;
+  can_write_error?: string;
+  process_user?: string;
+  dir_permissions?: string;
   published_at?: string;
   release_url?: string;
   release_notes?: string;
@@ -32,6 +35,76 @@ function formatBytes(bytes: number): string {
   if (bytes < 1024) return bytes + " B";
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
   return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+}
+
+// ReleaseNotesHtml renders GitHub-flavored Markdown release notes to sanitized HTML.
+// Uses marked + DOMPurify (same deps as the article editor) loaded lazily so the
+// admin page initial bundle isn't burdened with them when no update is available.
+function ReleaseNotesHtml({ markdown }: { markdown: string }) {
+  const [html, setHtml] = useState<string>("");
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const [{ marked }, DOMPurify] = await Promise.all([
+        import("marked"),
+        import("dompurify").then(m => m.default),
+      ]);
+      if (cancelled) return;
+      marked.setOptions({ gfm: true, breaks: false });
+      const raw = marked.parse(markdown) as string;
+      const safe = DOMPurify.sanitize(raw, {
+        ALLOWED_TAGS: [
+          "a", "b", "blockquote", "br", "code", "em", "h1", "h2", "h3",
+          "h4", "h5", "h6", "hr", "i", "img", "li", "ol", "p", "pre",
+          "s", "span", "strong", "sub", "sup", "table", "tbody", "td",
+          "th", "thead", "tr", "u", "ul", "del", "details", "summary",
+          "input", "div", "cite", "kbd", "mark", "small",
+        ],
+        ALLOWED_ATTR: [
+          "href", "title", "alt", "src", "class", "target", "rel",
+          "checked", "type", "disabled", "id", "align",
+        ],
+        ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto):|[#/])/i,
+      });
+      if (!cancelled) setHtml(safe);
+    })();
+    return () => { cancelled = true; };
+  }, [markdown]);
+
+  if (!html) {
+    return (
+      <pre style={{
+        background: "var(--surface-2)",
+        padding: "0.75rem 1rem",
+        borderRadius: 6,
+        fontSize: "0.82rem",
+        maxHeight: 300,
+        overflow: "auto",
+        whiteSpace: "pre-wrap",
+        wordBreak: "break-word",
+        margin: 0,
+        fontFamily: "inherit",
+        lineHeight: 1.5,
+      }}>{markdown}</pre>
+    );
+  }
+
+  return (
+    <div
+      className="release-notes-md"
+      style={{
+        background: "var(--surface-2)",
+        padding: "0.75rem 1rem",
+        borderRadius: 6,
+        fontSize: "0.85rem",
+        maxHeight: 400,
+        overflow: "auto",
+        lineHeight: 1.6,
+      }}
+      dangerouslySetInnerHTML={{ __html: html }}
+    />
+  );
 }
 
 export default function AdminUpdate() {
@@ -201,8 +274,33 @@ export default function AdminUpdate() {
                   fontSize: "0.8rem",
                   color: info.can_write ? "#22c55e" : "#ef4444",
                 }}>
-                  {info.can_write ? "✓ 可写" : "✗ 不可写（权限不足）"}
+                  {info.can_write ? "✓ 可写" : "✗ 不可写"}
                 </span>
+              )}
+              {info && !info.can_write && (info.can_write_error || info.process_user || info.dir_permissions) && (
+                <div style={{
+                  marginTop: "0.4rem",
+                  padding: "0.5rem 0.75rem",
+                  background: "#fef2f2",
+                  border: "1px solid #fecaca",
+                  borderRadius: 4,
+                  fontSize: "0.8rem",
+                  color: "#991b1b",
+                  lineHeight: 1.6,
+                }}>
+                  {info.can_write_error && (
+                    <div><strong>错误:</strong> {info.can_write_error}</div>
+                  )}
+                  {info.process_user && (
+                    <div><strong>进程用户:</strong> <code>{info.process_user}</code></div>
+                  )}
+                  {info.dir_permissions && (
+                    <div><strong>目录权限:</strong> <code>{info.dir_permissions}</code></div>
+                  )}
+                  <div style={{ marginTop: "0.3rem", color: "#b91c1c" }}>
+                    💡 解决方法: 确保运行进程的用户对二进制所在目录有写入权限，例如 <code style={{background:"#fee2e2",padding:"0.1rem 0.3rem",borderRadius:3}}>chmod 775 $(dirname {info.binary_path})</code> 或 <code style={{background:"#fee2e2",padding:"0.1rem 0.3rem",borderRadius:3}}>chown $USER $(dirname {info.binary_path})</code>
+                  </div>
+                </div>
               )}
             </div>
 
@@ -221,25 +319,13 @@ export default function AdminUpdate() {
             ) : null}
           </div>
 
-          {/* Release notes */}
+          {/* Release notes — rendered as Markdown via marked + DOMPurify */}
           {info?.release_notes && info.update_available && (
             <div>
               <div style={{ fontWeight: 600, marginBottom: "0.4rem", fontSize: "0.9rem" }}>
                 Release Notes
               </div>
-              <pre style={{
-                background: "var(--surface-2)",
-                padding: "0.75rem 1rem",
-                borderRadius: 6,
-                fontSize: "0.82rem",
-                maxHeight: 200,
-                overflow: "auto",
-                whiteSpace: "pre-wrap",
-                wordBreak: "break-word",
-                margin: 0,
-                fontFamily: "inherit",
-                lineHeight: 1.5,
-              }}>{info.release_notes}</pre>
+              <ReleaseNotesHtml markdown={info.release_notes} />
               {info.release_url && (
                 <a href={info.release_url} target="_blank" rel="noopener noreferrer"
                    style={{ fontSize: "0.8rem", color: "var(--accent)" }}>
