@@ -866,6 +866,88 @@ func TestWikidotLiteralEscapePreservesMarkup(t *testing.T) {
 	}
 }
 
+// TestWikidotLiteralEscapeSingleLine verifies that the `@@...@@`
+// regex does NOT span line or block boundaries. Before this guard
+// the regex used `[^@]+?` which happily consumed everything
+// between a stray `@@` in body prose and the next `@@` two
+// paragraphs down — destroying the blockquote / def-list /
+// `[!-- ...]` sections in between.
+func TestWikidotLiteralEscapeSingleLine(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		// Substrings that MUST appear in the rendered output.
+		// If `@@...@@` over-matches, the structure between
+		// the stray opener and the next closer is consumed
+		// and these strings disappear.
+		mustContain []string
+	}{
+		{
+			name: "stray single @@ in body prose",
+			in: `第一段用@@作为示例。
+
++ [[# headings]]标题
+
+> 引用文字
+> 第二行引用
+
+[[code]]
+示例代码
+[[/code]]
+
+@@正式的字面块@@`,
+			mustContain: []string{
+				"<blockquote>",
+				"引用文字",
+				"<pre",
+				"示例代码",
+				"正式的字面块",
+			},
+		},
+		{
+			name: "spec-source description line with one @@ pair",
+			in: `如果想直接显示语法而不是解析它，用两个@@包围它。
+
+[[code]]
+@@这段//字//没**解析**。@@
+[[/code]]`,
+			mustContain: []string{
+				"用两个@@包围它",
+				"<pre",
+				"@@这段//字//没**解析**。@@", // verbatim inside <code>
+			},
+		},
+		{
+			name: "def list after stray @@",
+			in: `上一段用@@作为示例。
+
+: 事项1 : Something
+: 事项2 : Something else
+
+[[code]]
+@@正式的字面块@@
+[[/code]]`,
+			mustContain: []string{
+				"<dl",
+				"<dt>事项1</dt>",
+				"<dd>Something",
+				"<pre",
+				"正式的字面块",
+			},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			out := RenderWikidot(c.in)
+			for _, want := range c.mustContain {
+				if !strings.Contains(out, want) {
+					t.Errorf("input:\n%s\n\nmissing %q in output:\n%s", c.in, want, out)
+				}
+			}
+		})
+	}
+}
+
 func TestWikidotInlineColorHexValue(t *testing.T) {
 	// `##hex|text##` — the colour can be a 3/4/6/8-digit
 	// hex code, not just a name from the colourNames map.
@@ -1396,6 +1478,35 @@ func TestWikidotAdvancedListOrdered(t *testing.T) {
 	}
 	if !strings.Contains(out, "</ol>") {
 		t.Errorf("expected </ol>, got %q", out)
+	}
+}
+
+// TestWikidotAdvancedListDataAttributes verifies that
+// `data-*` attributes on `[[ul]]` / `[[ol]]` / `[[li]]`
+// are forwarded as in-tag HTML attributes. Wikidot's
+// reference page uses `data-toggle="data1"` to bind JS
+// hooks to specific list items, so this attribute must
+// survive the round-trip — earlier revisions parsed the
+// attribute but only forwarded `class` / `style`.
+func TestWikidotAdvancedListDataAttributes(t *testing.T) {
+	in := `[[ul]]
+ [[li class="item1" data-toggle="data1"]]Item1[[/li]]
+ [[li style="color: red;"]]Item 2[[/li]]
+[[/ul]]
+`
+	out := RenderWikidot(in)
+	if !strings.Contains(out, `<li class="item1" data-toggle="data1">`) {
+		t.Errorf("expected data-toggle on <li>, got %q", out)
+	}
+	if !strings.Contains(out, `<li style="color: red;">`) {
+		t.Errorf("expected style on <li>, got %q", out)
+	}
+	// data-* on [[ul]] / [[ol]] too
+	in2 := `[[ol data-source="rule-wiki"]][[li]]x[[/li]][[/ol]]
+`
+	out2 := RenderWikidot(in2)
+	if !strings.Contains(out2, `<ol data-source="rule-wiki">`) {
+		t.Errorf("expected data-source on <ol>, got %q", out2)
 	}
 }
 

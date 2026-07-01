@@ -397,7 +397,18 @@ var (
 	// wrapper). Wikidot's actual spec uses `@@...@@` for
 	// literal escape; monospace wikidot text is a separate
 	// feature (`{{...}}`, also still supported).
-	reWDLiteral = regexp.MustCompile(`@@([^@]+?)@@`)
+	// reWDLiteral — `@@...@@` is the Wikidot literal-escape
+	// construct. Earlier revisions used `@@([^@]+?)@@` which
+	// happily matched across line and block boundaries: a stray
+	// `@@` in body prose (e.g. the spec-source description line
+	// "...用两个@@包围它") would consume every line — including
+	// intervening `[[code]]` blocks and paragraphs — until it
+	// found the next `@@` two paragraphs down. That destroyed
+	// the blockquote, def-list and `[!-- ...]` sections in
+	// between. Restrict the inner capture to a single line so
+	// the regex only matches an actual literal escape that's
+	// fully written on one source line.
+	reWDLiteral = regexp.MustCompile(`@@([^@\n]+?)@@`)
 	reWDBold    = regexp.MustCompile(`\*\*(.+?)\*\*`)
 	// Italic `//x//` — the opening `//` must NOT be preceded by `:`,
 	// so URLs like `https://example.com` (which contain `://`) don't
@@ -949,13 +960,33 @@ func (p *wikidotParser) convertInternal(source string, appendFootnotes bool) str
 	// ── Phase 0.5: %%var%% substitution ────────────────────────────
 	out = p.replaceVars(out)
 
+	// ── Phase 0.55: stash [[code]] blocks early ───────────────────
+	// `@@...@@` is a literal escape, but it lives next to
+	// `[[code]]...[[/code]]` in source — and Wikidot
+	// semantics say both should be verbatim. Running
+	// `@@...@@` BEFORE the code stash would let a stray
+	// `@@` inside a `[[code]]` block get consumed. We
+	// therefore stash code blocks FIRST as opaque
+	// placeholders, run the literal pass on the remainder,
+	// then re-stash the code placeholders into the parser
+	// block map under their original key so Phase 10
+	// restores them exactly once.
+	codeBlocks := []string{}
+	out = reWDCode.ReplaceAllStringFunc(out, func(s string) string {
+		m := reWDCode.FindStringSubmatch(s)
+		codeBlocks = append(codeBlocks, renderCodeBlock(m[2], m[1]))
+		// Use a marker that contains `@` so the literal
+		// regex cannot accidentally match across it.
+		return fmt.Sprintf("\x00CODEBLOCK_%d\x00", len(codeBlocks)-1)
+	})
+
 	// ── Phase 0.6: literal escape @@...@@ ─────────────────────────
 	// Runs AFTER %%var%% (so vars are still substituted
-	// outside `@@...@@`) and AFTER the var pass, but BEFORE
-	// Phase 1's block-stash pass — that way `[[code]]`, div
-	// tags, and every other block construct inside `@@...@@`
-	// is left alone (the literal construct protects the
-	// inner text from any further interpretation).
+	// outside `@@...@@`) and AFTER the code-block stash
+	// (so a `@@` inside a `[[code]]` block is preserved
+	// verbatim). The block-stash pass at Phase 1c will
+	// later no-op on these placeholders, but we restore
+	// the stashed code-block HTML directly below.
 	out = reWDLiteral.ReplaceAllStringFunc(out, func(s string) string {
 		m := reWDLiteral.FindStringSubmatch(s)
 		// HTML-escape the inner text BEFORE stashing so the
@@ -963,6 +994,13 @@ func (p *wikidotParser) convertInternal(source string, appendFootnotes bool) str
 		// without re-running the entity-encoding pass.
 		return p.storeBlock(html.EscapeString(m[1]))
 	})
+
+	// Restore code-block placeholders to real block markers
+	// so Phase 10 finds them as separate stash entries (one
+	// per code block, in source order).
+	for i, htmlBlock := range codeBlocks {
+		out = strings.ReplaceAll(out, fmt.Sprintf("\x00CODEBLOCK_%d\x00", i), p.storeBlock(htmlBlock))
+	}
 
 	// ── Phase 0.65: HTML comments [!-- ... --] ────────────────────
 	// Drop entirely. Comments are stripped (Wikidot's own
@@ -4384,6 +4422,7 @@ func renderWikidotAdvancedLists(text string) string {
 			if style != "" {
 				extra += " style=\"" + style + "\""
 			}
+			extra += extraAttrsFromAttrs(attrs)
 			sb.WriteString("<")
 			sb.WriteString(t.kind)
 			sb.WriteString(">")
@@ -4432,6 +4471,7 @@ func renderWikidotAdvancedLists(text string) string {
 			if style != "" {
 				extra += " style=\"" + style + "\""
 			}
+			extra += extraAttrsFromAttrs(attrs)
 			sb.WriteString("<li")
 			sb.WriteString(extra)
 			sb.WriteString(">")
@@ -4567,6 +4607,39 @@ func classFromAttrs(attrs map[string]string) string {
 		return ""
 	}
 	return sanitizeAnchorID(c)
+}
+
+// extraAttrsFromAttrs serialises every attribute key that
+// isn't a special collapsible/list key (`show`, `hide`,
+// `folded`, `hideLocation`, `class`, `style`) into a
+// stable HTML-attribute tail. This is what surfaces
+// `data-toggle="data1"`, `id="…"`, `role="…"`, etc. on
+// advanced-list open tags. Keys are HTML-escaped (the
+// value was already escaped when the regex captured it,
+// but we run EscapeString again as a defence in depth).
+func extraAttrsFromAttrs(attrs map[string]string) string {
+	skip := map[string]bool{
+		"show": true, "hide": true,
+		"folded": true, "hideLocation": true,
+		"class": true, "style": true,
+	}
+	keys := make([]string, 0, len(attrs))
+	for k := range attrs {
+		if skip[k] {
+			continue
+		}
+		keys = append(keys, k)
+	}
+	sort.Strings(keys) // deterministic output for tests
+	var sb strings.Builder
+	for _, k := range keys {
+		sb.WriteString(" ")
+		sb.WriteString(k)
+		sb.WriteString(`="`)
+		sb.WriteString(html.EscapeString(attrs[k]))
+		sb.WriteString(`"`)
+	}
+	return sb.String()
 }
 
 // slugifyUsername converts a wikidot user-mention name

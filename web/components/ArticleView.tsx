@@ -216,17 +216,26 @@ useEffect(() => {
     // wikidot parsers).
     const safe = DOMPurify.sanitize(html ?? "", {
       ALLOWED_TAGS: [
-        "a", "abbr", "b", "blockquote", "br", "cite", "code", "details",
-        "div", "em", "figcaption", "figure", "h1", "h2", "h3", "h4", "h5",
-        "h6", "hr", "i", "img", "ins", "kbd", "li", "mark", "ol", "p",
-        "pre", "s", "small", "span", "strong", "sub", "summary", "sup",
-        "table", "tbody", "td", "th", "thead", "tr", "u", "ul",
+        "a", "abbr", "aside", "b", "blockquote", "br", "cite", "code",
+        "details", "div", "dl", "dt", "dd", "em", "figcaption", "figure",
+        "h1", "h2", "h3", "h4", "h5", "h6", "hr", "i", "img", "ins",
+        "kbd", "li", "mark", "ol", "p", "pre", "s", "section", "small",
+        "span", "strong", "sub", "summary", "sup", "table", "tbody",
+        "td", "th", "thead", "tr", "u", "ul",
       ],
       ALLOWED_ATTR: [
         "href", "title", "alt", "src", "class", "style", "id", "target",
         "rel", "colspan", "rowspan", "data-line", "data-tab-id",
+        "data-toggle", "data-source",
       ],
-      ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto):|[#/])/i,
+      // Wikidot's empty link (`[# text]`) renders to
+      // `href="javascript:;"` — a no-op anchor. Allow it
+      // specifically so DOMPurify doesn't strip the href
+      // (which would leave a useless `<a>text</a>`). The
+      // more dangerous `javascript:expr(...)` payloads are
+      // still rejected because the regex requires the full
+      // href to match exactly.
+      ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto|javascript):|[#/])/i,
       FORBID_TAGS: ["script", "iframe", "object", "embed", "form"],
       FORBID_ATTR: ["onerror", "onload", "onclick", "onmouseover", "onfocus", "onblur"],
     });

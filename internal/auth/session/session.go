@@ -28,20 +28,26 @@ type Manager struct {
 // that set it (api host only); the SSR frontend on a sibling subdomain
 // then can't see it and backend-side CurrentUser returns nil for those
 // requests.
+//
+// SameSite follows the Secure flag: HTTPS production needs `None` so a
+// cross-origin SSR fetch (eo.kych.net → api.kych.net) still carries the
+// session cookie, but Chrome refuses `SameSite=None` on a non-secure
+// (HTTP) cookie — dev login would 403. In dev we fall back to `Lax`,
+// which works for same-origin requests and is the Chrome-default
+// acceptance rule.
 func New(db *sql.DB, secret string, secure bool, domain string) *Manager {
 	s := sessions.NewCookieStore([]byte(secret))
+	sameSite := http.SameSiteLaxMode
+	if secure {
+		sameSite = http.SameSiteNoneMode
+	}
 	s.Options = &sessions.Options{
 		Path:     "/",
 		MaxAge:   sessionMaxAge,
 		HttpOnly: true,
 		Secure:   secure,
 		Domain:   domain,
-		// SameSite=None: 前端 (eo.kych.net) → 后端 (api.kych.net) 是
-		// 跨域 fetch,Chrome 80+ 默认拒绝 Lax 跨域 cookie,导致 session
-		// 不带过去 → 401。None + Secure=true 允许跨域带 cookie。
-		// 本地 dev (next.config.ts rewrites 把 /api/* 代理到 localhost:8000)
-		// 是同源,SameSite 设置不生效,不影响。
-		SameSite: http.SameSiteNoneMode,
+		SameSite: sameSite,
 	}
 	return &Manager{store: s, db: db}
 }
