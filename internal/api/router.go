@@ -192,6 +192,7 @@ func (s *Server) Setup(r *gin.Engine) {
 				// Owner-only because this replaces the running binary.
 				adminG.GET("/update/check", requireOwner, s.checkUpdateHandler)
 				adminG.POST("/update/apply", requireOwner, s.applyUpdateHandler)
+				adminG.GET("/update/status", requireOwner, s.updateStatusHandler)
 			}
 		}
 	}

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, type ReactNode } from "react";
+import { useState, useEffect, useCallback, useRef, type ReactNode } from "react";
 import { getCsrf, apiUrl, apiFetch } from "@/lib/api";
 import { useToast } from "@/lib/admin-feedback";
 
@@ -29,9 +29,17 @@ interface UpdateCheckInfo {
 interface ApplyResult {
   success: boolean;
   message: string;
+}
+
+interface UpdateStatus {
+  status: "idle" | "downloading" | "verifying" | "replacing" | "restarting" | "done" | "error";
   version?: string;
-  old_backup?: string;
-  restarting: boolean;
+  message: string;
+  error?: string;
+  backup?: string;
+  progress: number;
+  total: number;
+  elapsed_sec: number;
 }
 
 function formatBytes(bytes: number): string {
@@ -40,14 +48,6 @@ function formatBytes(bytes: number): string {
   return (bytes / (1024 * 1024)).toFixed(1) + " MB";
 }
 
-// WriteErrorPanel shows a diagnostic box explaining WHY the binary directory
-// is not writable, with category-specific remediation steps. The key insight:
-//   - "erofs"  → chmod/chown will NOT help; the filesystem is mounted read-only
-//                (common: systemd ProtectSystem=strict, fstab ro mount,
-//                 kernel remount-ro after disk error, Docker read-only layer)
-//   - "eacces" → classic Unix permission issue; chmod/chown helps
-//   - "eperm"  → MAC/LSM/immutable flag (SELinux, AppArmor, chflags uchg)
-//   - "other"  → show raw error + generic hints
 function WriteErrorPanel({ info }: { info: UpdateCheckInfo }) {
   const cat = info.write_err_category || "other";
   const dir = info.binary_path ? info.binary_path.substring(0, info.binary_path.lastIndexOf("/")) : "";
@@ -150,9 +150,6 @@ function WriteErrorPanel({ info }: { info: UpdateCheckInfo }) {
   );
 }
 
-// ReleaseNotesHtml renders GitHub-flavored Markdown release notes to sanitized HTML.
-// Uses marked + DOMPurify (same deps as the article editor) loaded lazily so the
-// admin page initial bundle isn't burdened with them when no update is available.
 function ReleaseNotesHtml({ markdown }: { markdown: string }) {
   const [html, setHtml] = useState<string>("");
 
@@ -220,27 +217,149 @@ function ReleaseNotesHtml({ markdown }: { markdown: string }) {
   );
 }
 
+// ProgressBar renders a download/processing indicator.
+function ProgressBar({ status }: { status: UpdateStatus }) {
+  const isDownload = status.status === "downloading" && status.total > 0;
+  const pct = isDownload ? Math.min(100, Math.round((status.progress / status.total) * 100)) : 0;
+
+  const statusIcon: Record<string, string> = {
+    idle: "⏳",
+    downloading: "⬇️",
+    verifying: "🔍",
+    replacing: "🔄",
+    restarting: "🔁",
+    done: "✅",
+    error: "❌",
+  };
+
+  return (
+    <div style={{
+      marginTop: "0.75rem",
+      padding: "0.75rem 1rem",
+      background: status.status === "error" ? "#fef2f2" : "#eff6ff",
+      border: "1px solid",
+      borderColor: status.status === "error" ? "#fecaca" : "#bfdbfe",
+      borderRadius: 6,
+      fontSize: "0.85rem",
+    }}>
+      <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: isDownload ? "0.5rem" : 0 }}>
+        <span style={{ fontSize: "1.1rem" }}>{statusIcon[status.status] || "⏳"}</span>
+        <span style={{ fontWeight: 600 }}>{status.message}</span>
+        {status.version && (
+          <code style={{
+            background: "rgba(0,0,0,0.06)",
+            padding: "0.1rem 0.4rem",
+            borderRadius: 3,
+            fontSize: "0.8rem",
+          }}>{status.version}</code>
+        )}
+        <span style={{ marginLeft: "auto", color: "var(--text-muted)", fontSize: "0.8rem" }}>
+          {status.elapsed_sec.toFixed(0)}s
+        </span>
+      </div>
+      {isDownload && (
+        <>
+          <div style={{
+            width: "100%",
+            height: 8,
+            background: "rgba(0,0,0,0.08)",
+            borderRadius: 4,
+            overflow: "hidden",
+          }}>
+            <div style={{
+              width: pct + "%",
+              height: "100%",
+              background: "linear-gradient(90deg, #3b82f6, #8b5cf6)",
+              borderRadius: 4,
+              transition: "width 0.25s ease",
+            }} />
+          </div>
+          <div style={{
+            display: "flex",
+            justifyContent: "space-between",
+            fontSize: "0.78rem",
+            color: "var(--text-muted)",
+            marginTop: "0.3rem",
+            fontFamily: "ui-monospace, monospace",
+          }}>
+            <span>{formatBytes(status.progress)} / {formatBytes(status.total)}</span>
+            <span>{pct}%</span>
+          </div>
+        </>
+      )}
+      {status.error && (
+        <div style={{
+          marginTop: "0.5rem",
+          padding: "0.5rem 0.7rem",
+          background: "#fee2e2",
+          borderRadius: 4,
+          color: "#991b1b",
+          fontSize: "0.82rem",
+          fontFamily: "ui-monospace, monospace",
+        }}>
+          {status.error}
+        </div>
+      )}
+      {status.status === "done" && status.backup && (
+        <div style={{ fontSize: "0.8rem", color: "#065f46", marginTop: "0.5rem" }}>
+          旧版本已备份到: <code style={{ fontFamily: "ui-monospace, monospace" }}>{status.backup}</code>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function AdminUpdate() {
   const toast = useToast();
   const [csrf, setCsrf] = useState("");
   const [info, setInfo] = useState<UpdateCheckInfo | null>(null);
   const [checking, setChecking] = useState(false);
   const [applying, setApplying] = useState(false);
-  const [logs, setLogs] = useState<string[]>([]);
+  const [updStatus, setUpdStatus] = useState<UpdateStatus | null>(null);
+  const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const addLog = useCallback((msg: string) => {
-    const ts = new Date().toLocaleTimeString("zh-CN", { hour12: false });
-    setLogs((prev) => [...prev, `[${ts}] ${msg}`]);
+  const stopPolling = useCallback(() => {
+    if (pollTimerRef.current) {
+      clearTimeout(pollTimerRef.current);
+      pollTimerRef.current = null;
+    }
   }, []);
+
+  const pollStatus = useCallback(async () => {
+    try {
+      const res = await apiFetch(apiUrl("/api/admin/update/status"));
+      if (res.ok) {
+        const data: UpdateStatus = await res.json();
+        setUpdStatus(data);
+
+        // Terminal states: stop polling
+        if (data.status === "done") {
+          setApplying(false);
+          toast.success(data.message);
+          // Wait for restart, then reload
+          setTimeout(() => window.location.reload(), 5000);
+          return;
+        }
+        if (data.status === "error") {
+          setApplying(false);
+          toast.error(data.error || "更新失败");
+          return;
+        }
+      }
+    } catch {
+      // ignore polling errors
+    }
+    // Continue polling
+    pollTimerRef.current = setTimeout(pollStatus, 1000);
+  }, [toast]);
 
   useEffect(() => {
     getCsrf().then((r) => setCsrf(r.csrf_token)).catch(() => {});
-  }, []);
+    return () => stopPolling();
+  }, [stopPolling]);
 
   const check = useCallback(async () => {
     setChecking(true);
-    setLogs([]);
-    addLog("正在检查 GitHub 最新 Release...");
     try {
       const res = await apiFetch(apiUrl("/api/admin/update/check"));
       if (!res.ok) {
@@ -250,24 +369,39 @@ export default function AdminUpdate() {
       const data: UpdateCheckInfo = await res.json();
       setInfo(data);
       if (data.error) {
-        addLog(`检查完成但有警告: ${data.error}`);
+        toast.error("检查完成但有警告: " + data.error);
       } else if (data.update_available) {
-        addLog(`发现新版本 ${data.latest_version}`);
+        // found new version, no toast needed (UI shows it)
       } else {
-        addLog(`当前版本 ${data.current_version} 已是最新`);
+        toast.success(`当前版本 ${data.current_version} 已是最新`);
       }
     } catch (e: any) {
-      addLog(`检查失败: ${e.message}`);
       toast.error("检查更新失败: " + e.message);
     } finally {
       setChecking(false);
     }
-  }, [addLog, toast]);
+  }, [toast]);
 
   // Auto-check on mount
   useEffect(() => {
     if (csrf) check();
   }, [csrf, check]);
+
+  // Check for in-progress update on mount
+  useEffect(() => {
+    if (!csrf) return;
+    apiFetch(apiUrl("/api/admin/update/status")).then(async (res) => {
+      if (!res.ok) return;
+      const data: UpdateStatus = await res.json();
+      if (data.status !== "idle" && data.status !== "done" && data.status !== "error") {
+        setApplying(true);
+        setUpdStatus(data);
+        pollTimerRef.current = setTimeout(pollStatus, 1000);
+      } else if (data.status === "done" || data.status === "error") {
+        setUpdStatus(data);
+      }
+    }).catch(() => {});
+  }, [csrf, pollStatus]);
 
   const apply = useCallback(async () => {
     if (!info?.update_available) return;
@@ -279,7 +413,6 @@ export default function AdminUpdate() {
       return;
     }
     setApplying(true);
-    addLog(`开始下载 ${info.latest_version}...`);
     try {
       const res = await apiFetch(apiUrl("/api/admin/update/apply"), {
         method: "POST",
@@ -293,22 +426,22 @@ export default function AdminUpdate() {
       if (!res.ok || !data.success) {
         throw new Error((data as any).error || data.message || `HTTP ${res.status}`);
       }
-      addLog(`✅ ${data.message}`);
-      if (data.old_backup) {
-        addLog(`旧版本已备份到: ${data.old_backup}`);
-      }
-      if (data.restarting) {
-        addLog("服务正在重启，页面将在 5 秒后刷新...");
-        setTimeout(() => window.location.reload(), 5000);
-      }
-      toast.success(data.message);
+      // Start polling for progress
+      setUpdStatus({
+        status: "downloading",
+        message: data.message,
+        progress: 0,
+        total: info.download_size || 0,
+        elapsed_sec: 0,
+      });
+      pollTimerRef.current = setTimeout(pollStatus, 800);
     } catch (e: any) {
-      addLog(`❌ 更新失败: ${e.message}`);
-      toast.error("更新失败: " + e.message);
-    } finally {
       setApplying(false);
+      toast.error("更新失败: " + e.message);
     }
-  }, [info, csrf, addLog, toast]);
+  }, [info, csrf, pollStatus, toast]);
+
+  const isInProgress = applying && updStatus && updStatus.status !== "done" && updStatus.status !== "error";
 
   return (
     <div className="admin-page">
@@ -420,8 +553,8 @@ export default function AdminUpdate() {
             ) : null}
           </div>
 
-          {/* Release notes — rendered as Markdown via marked + DOMPurify */}
-          {info?.release_notes && info.update_available && (
+          {/* Release notes */}
+          {info?.release_notes && info.update_available && !isInProgress && (
             <div>
               <div style={{ fontWeight: 600, marginBottom: "0.4rem", fontSize: "0.9rem" }}>
                 Release Notes
@@ -434,6 +567,11 @@ export default function AdminUpdate() {
                 </a>
               )}
             </div>
+          )}
+
+          {/* Progress / status panel during update */}
+          {updStatus && (updStatus.status !== "idle" || applying) && (
+            <ProgressBar status={updStatus} />
           )}
 
           {/* Action buttons */}
@@ -454,25 +592,6 @@ export default function AdminUpdate() {
               {applying ? "更新中…" : info?.update_available ? `⬆️ 更新到 ${info.latest_version}` : "已是最新版本"}
             </button>
           </div>
-
-          {/* Log panel */}
-          {logs.length > 0 && (
-            <div>
-              <div style={{ fontWeight: 600, marginBottom: "0.4rem", fontSize: "0.9rem" }}>日志</div>
-              <pre style={{
-                background: "#0f172a",
-                color: "#e2e8f0",
-                padding: "0.75rem 1rem",
-                borderRadius: 6,
-                fontSize: "0.8rem",
-                maxHeight: 200,
-                overflow: "auto",
-                margin: 0,
-                fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-                lineHeight: 1.6,
-              }}>{logs.join("\n")}</pre>
-            </div>
-          )}
         </div>
       </div>
 
@@ -482,7 +601,7 @@ export default function AdminUpdate() {
           <ol style={{ margin: 0, paddingLeft: "1.2rem" }}>
             <li>检测当前可执行文件路径（<code>os.Executable()</code>）和运行平台（<code>GOOS/GOARCH</code>）</li>
             <li>调用 GitHub API 获取 <code>CrossDark/GoKYCH</code> 的 latest Release</li>
-            <li>根据平台选择对应二进制（如 <code>gokych-linux-amd64</code>），下载到同目录临时文件</li>
+            <li>后台异步下载对应平台二进制（显示进度），不会阻塞浏览器</li>
             <li>用 Release 中的 <code>SHA256SUMS</code> 校验文件完整性</li>
             <li>备份当前二进制为 <code>.prev</code>，原子替换为新版本</li>
             <li>2 秒后优雅关闭 HTTP 服务并用 <code>syscall.Exec</code> 替换进程（PID 不变，systemd 无缝接管）</li>

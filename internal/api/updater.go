@@ -19,16 +19,6 @@ import (
 )
 
 // ── GitHub release constants ─────────────────────────────────────────
-//
-// Asset naming produced by scripts/build-release.sh:
-//
-//	gokych-linux-amd64
-//	gokych-linux-arm64
-//	gokych-darwin-amd64
-//	gokych-darwin-arm64
-//
-// plus a SHA256SUMS file in the same release listing "<hex>  gokych-<os>-<arch>".
-
 const (
 	githubRepo     = "CrossDark/GoKYCH"
 	githubAPIURL   = "https://api.github.com/repos/" + githubRepo + "/releases/latest"
@@ -37,9 +27,6 @@ const (
 	assetSumsName  = "SHA256SUMS"
 )
 
-// cache the last GitHub API response for 5 minutes to avoid hitting the
-// unauthenticated rate limit (60/hour) when an admin mashes the
-// "check update" button.
 var (
 	releaseCacheMu sync.RWMutex
 	releaseCache   *ghRelease
@@ -47,16 +34,15 @@ var (
 	releaseCacheTTL = 5 * time.Minute
 )
 
-// ghRelease is a minimal subset of the GitHub Release API response.
 type ghRelease struct {
-	TagName    string    `json:"tag_name"`
-	Name       string    `json:"name"`
-	Body       string    `json:"body"`
-	Draft      bool      `json:"draft"`
-	Prerelease bool      `json:"prerelease"`
+	TagName     string    `json:"tag_name"`
+	Name        string    `json:"name"`
+	Body        string    `json:"body"`
+	Draft       bool      `json:"draft"`
+	Prerelease  bool      `json:"prerelease"`
 	PublishedAt time.Time `json:"published_at"`
-	HTMLURL    string    `json:"html_url"`
-	Assets     []ghAsset `json:"assets"`
+	HTMLURL     string    `json:"html_url"`
+	Assets      []ghAsset `json:"assets"`
 }
 
 type ghAsset struct {
@@ -65,8 +51,6 @@ type ghAsset struct {
 	Size               int64  `json:"size"`
 }
 
-// platformAsset returns the asset matching the current GOOS/GOARCH, plus
-// the SHA256SUMS asset if present. Returns ("", "") when no match.
 func (r *ghRelease) platformAsset(goos, goarch string) (binURL, sumsURL string) {
 	want := assetPrefix + goos + "-" + goarch
 	for _, a := range r.Assets {
@@ -80,7 +64,6 @@ func (r *ghRelease) platformAsset(goos, goarch string) (binURL, sumsURL string) 
 	return binURL, sumsURL
 }
 
-// fetchLatestRelease hits the GitHub API (or returns a cached result).
 func fetchLatestRelease(client *http.Client) (*ghRelease, error) {
 	releaseCacheMu.RLock()
 	if releaseCache != nil && time.Since(releaseCacheAt) < releaseCacheTTL {
@@ -110,7 +93,6 @@ func fetchLatestRelease(client *http.Client) (*ghRelease, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil {
 		return nil, fmt.Errorf("github api decode: %w", err)
 	}
-	// Skip drafts/prereleases — only promote stable releases.
 	if rel.Draft || rel.Prerelease {
 		return nil, fmt.Errorf("latest release %q is draft=%v prerelease=%v; only stable releases are eligible for auto-update",
 			rel.TagName, rel.Draft, rel.Prerelease)
@@ -123,13 +105,8 @@ func fetchLatestRelease(client *http.Client) (*ghRelease, error) {
 	return &rel, nil
 }
 
-// detectBinPath returns the absolute path to the running binary.
-// Uses os.Executable(); falls back to the default install path.
 func detectBinPath() string {
 	if exe, err := os.Executable(); err == nil && exe != "" {
-		// os.Executable can return a path relative to the cwd on some
-		// platforms or a path with symlinks; EvalSymlinks resolves to the
-		// real binary so rename/replace targets the correct inode.
 		if real, err := filepath.EvalSymlinks(exe); err == nil && real != "" {
 			return real
 		}
@@ -138,18 +115,6 @@ func detectBinPath() string {
 	return defaultBinPath
 }
 
-// canWriteDir tests whether the process can create and remove a temp file
-// in the directory containing `path` (i.e. it can replace the binary).
-// On Linux you can rename over a non-writable file if you have write perms
-// on the directory, so we test the directory, not the file itself.
-// Returns (true, "", "") on success; on failure returns (false, rawErr, category)
-// where category is a short machine-readable string for the frontend to pick
-// targeted advice:
-//
-//	"erofs"   - read-only file system (EROFS): mount option ro / systemd ProtectSystem
-//	"eacces"  - permission denied (EACCES): Unix DAC permissions / ACL
-//	"eperm"   - operation not permitted (EPERM): MAC / immutable flag / other LSM
-//	"other"   - anything else (ENOENT, ENOSPC, etc.)
 func canWriteDir(path string) (bool, string, string) {
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, ".gokych-write-test-")
@@ -161,14 +126,10 @@ func canWriteDir(path string) (bool, string, string) {
 	return true, "", ""
 }
 
-// classifyWriteErr maps an OS error to a machine-readable category.
-// Uses errors.Is with syscall errnos where available; falls back to
-// string matching on the error text for cross-platform safety.
 func classifyWriteErr(err error) string {
 	if err == nil {
 		return ""
 	}
-	// EROFS is the key one: syscall.EROFS exists on all Unix platforms.
 	if isEROFS(err) {
 		return "erofs"
 	}
@@ -188,8 +149,6 @@ func classifyWriteErr(err error) string {
 	}
 }
 
-// inContainer returns true if we appear to be running inside a Docker/containerd
-// container (checks for /.dockerenv and /run/.containerenv markers).
 func inContainer() bool {
 	if _, err := os.Stat("/.dockerenv"); err == nil {
 		return true
@@ -200,9 +159,6 @@ func inContainer() bool {
 	return false
 }
 
-// mountOptionsForPath (Linux only) reads /proc/mounts and returns the mount
-// options string (e.g. "ro,noatime") for the filesystem that contains `path`.
-// Returns "" on non-Linux platforms or if detection fails.
 func mountOptionsForPath(path string) string {
 	if runtime.GOOS != "linux" {
 		return ""
@@ -215,7 +171,6 @@ func mountOptionsForPath(path string) string {
 	if err != nil {
 		return ""
 	}
-	// Find the longest mount point prefix that matches abs.
 	best := ""
 	bestOpts := ""
 	for _, line := range strings.Split(string(data), "\n") {
@@ -223,7 +178,7 @@ func mountOptionsForPath(path string) string {
 		if len(fields) < 4 {
 			continue
 		}
-		mp := fields[1] // mount point
+		mp := fields[1]
 		opts := fields[3]
 		if strings.HasPrefix(abs, mp) && len(mp) > len(best) {
 			best = mp
@@ -233,10 +188,6 @@ func mountOptionsForPath(path string) string {
 	return bestOpts
 }
 
-// compareVersions returns true when latest is "newer" than current.
-// Both are expected to look like "v0.1.0" or "0.1.0"; we do a simple
-// dotted-number comparison. Non-numeric components make us treat the
-// versions as not-equal (so "dev" < any real version).
 func compareVersions(current, latest string) bool {
 	norm := func(s string) []int {
 		s = strings.TrimPrefix(s, "v")
@@ -248,9 +199,6 @@ func compareVersions(current, latest string) bool {
 				if ch >= '0' && ch <= '9' {
 					n = n*10 + int(ch-'0')
 				} else {
-					// pre-release / hash suffix — stop parsing; if we
-					// haven't seen at least one digit, return nil so the
-					// caller knows this isn't a clean semver.
 					if len(out) == 0 {
 						return nil
 					}
@@ -264,8 +212,6 @@ func compareVersions(current, latest string) bool {
 	c := norm(current)
 	l := norm(latest)
 	if c == nil || l == nil {
-		// If we can't parse one side, treat "dev" / hash as older than
-		// any real tag; otherwise be conservative and say "not newer".
 		return (current == "dev" || current == "") && len(l) > 0
 	}
 	for i := 0; i < len(c) || i < len(l); i++ {
@@ -283,32 +229,94 @@ func compareVersions(current, latest string) bool {
 			return false
 		}
 	}
-	return false // equal
+	return false
 }
+
+// ── Async update job state ───────────────────────────────────────────
+//
+// The update runs in a background goroutine so the HTTP response isn't
+// blocked by a slow GitHub download (which can take minutes in China).
+// A single global job slot is sufficient — we never run two concurrent
+// self-updates.
+
+type updateStatus string
+
+const (
+	updateIdle       updateStatus = "idle"
+	updateDownloading updateStatus = "downloading"
+	updateVerifying  updateStatus = "verifying"
+	updateReplacing  updateStatus = "replacing"
+	updateRestarting updateStatus = "restarting"
+	updateDone       updateStatus = "done"
+	updateError      updateStatus = "error"
+)
+
+type updateJobState struct {
+	mu       sync.RWMutex
+	status   updateStatus
+	version  string
+	startAt  time.Time
+	message  string
+	error    string
+	backup   string
+	progress int64
+	total    int64
+}
+
+func (j *updateJobState) set(s updateStatus, msg string) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.status = s
+	j.message = msg
+	slog.Info("update: "+msg, "status", s, "version", j.version)
+}
+
+func (j *updateJobState) setErr(err string) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.status = updateError
+	j.error = err
+	slog.Error("update failed", "err", err, "version", j.version)
+}
+
+func (j *updateJobState) setProgress(downloaded, total int64) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.progress = downloaded
+	j.total = total
+}
+
+func (j *updateJobState) snapshot() (status updateStatus, version, message, errStr, backup string, progress, total int64, elapsedSec float64) {
+	j.mu.RLock()
+	defer j.mu.RUnlock()
+	elapsed := time.Since(j.startAt).Seconds()
+	return j.status, j.version, j.message, j.error, j.backup, j.progress, j.total, elapsed
+}
+
+var updater = &updateJobState{status: updateIdle}
 
 // ── Handlers ──────────────────────────────────────────────────────────
 
-// updateCheckResponse is the JSON body for GET /api/admin/update/check.
 type updateCheckResponse struct {
 	CurrentVersion   string `json:"current_version"`
 	LatestVersion    string `json:"latest_version"`
 	UpdateAvailable  bool   `json:"update_available"`
-	Platform         string `json:"platform"`         // "linux/amd64", etc.
+	Platform         string `json:"platform"`
 	Arch             string `json:"arch"`
 	OS               string `json:"os"`
 	BinaryPath       string `json:"binary_path"`
-	CanWrite         bool   `json:"can_write"`         // binary dir is writable
-	CanWriteError    string `json:"can_write_error,omitempty"`    // OS error when can_write=false
-	WriteErrCategory string `json:"write_err_category,omitempty"` // "erofs"|"eacces"|"eperm"|"other"
-	ProcessUser      string `json:"process_user,omitempty"`       // os user running the process
-	DirPermissions   string `json:"dir_permissions,omitempty"`    // octal permissions of bin dir
-	InContainer      bool   `json:"in_container"`                 // running inside Docker/containerd
-	MountOptions     string `json:"mount_options,omitempty"`      // Linux: mount opts for bin dir
+	CanWrite         bool   `json:"can_write"`
+	CanWriteError    string `json:"can_write_error,omitempty"`
+	WriteErrCategory string `json:"write_err_category,omitempty"`
+	ProcessUser      string `json:"process_user,omitempty"`
+	DirPermissions   string `json:"dir_permissions,omitempty"`
+	InContainer      bool   `json:"in_container"`
+	MountOptions     string `json:"mount_options,omitempty"`
 	PublishedAt      string `json:"published_at,omitempty"`
 	ReleaseURL       string `json:"release_url,omitempty"`
 	ReleaseNotes     string `json:"release_notes,omitempty"`
 	DownloadSize     int64  `json:"download_size,omitempty"`
-	Error            string `json:"error,omitempty"`  // non-fatal (e.g. GitHub unreachable)
+	Error            string `json:"error,omitempty"`
 }
 
 func (s *Server) checkUpdateHandler(c *gin.Context) {
@@ -317,7 +325,6 @@ func (s *Server) checkUpdateHandler(c *gin.Context) {
 
 	canW, canWErr, errCategory := canWriteDir(binPath)
 
-	// Gather permission diagnostics so the admin can see *why* writes fail.
 	dir := filepath.Dir(binPath)
 	var dirPerms string
 	if fi, err := os.Stat(dir); err == nil {
@@ -376,18 +383,13 @@ func (s *Server) checkUpdateHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, resp)
 }
 
-// applyUpdateRequest is the (empty) body for POST /api/admin/update/apply.
-// Future fields (e.g. target_version, force) can go here without breaking.
 type applyUpdateRequest struct {
-	Version string `json:"version"` // optional: override the tag to install; "" = latest
+	Version string `json:"version"`
 }
 
 type applyUpdateResponse struct {
-	Success   bool   `json:"success"`
-	Message   string `json:"message"`
-	Version   string `json:"version,omitempty"`
-	OldBackup string `json:"old_backup,omitempty"`
-	Restarting bool  `json:"restarting"`
+	Success bool   `json:"success"`
+	Message string `json:"message"`
 }
 
 func (s *Server) applyUpdateHandler(c *gin.Context) {
@@ -397,25 +399,60 @@ func (s *Server) applyUpdateHandler(c *gin.Context) {
 		return
 	}
 
+	updater.mu.Lock()
+	if updater.status != updateIdle && updater.status != updateDone && updater.status != updateError {
+		msg := fmt.Sprintf("已有更新任务正在进行中（状态: %s）", updater.status)
+		updater.mu.Unlock()
+		c.JSON(http.StatusConflict, gin.H{"error": msg})
+		return
+	}
+	updater.status = updateIdle
+	updater.version = ""
+	updater.error = ""
+	updater.message = ""
+	updater.backup = ""
+	updater.progress = 0
+	updater.total = 0
+	updater.mu.Unlock()
+
 	goos, goarch := runtime.GOOS, runtime.GOARCH
 	binPath := detectBinPath()
 
 	if ok, reason, _ := canWriteDir(binPath); !ok {
-		c.JSON(http.StatusForbidden, gin.H{
-			"error": fmt.Sprintf("cannot write to %s: %s (process running as %s)",
-				filepath.Dir(binPath), reason, os.Getenv("USER")),
-		})
+		updater.setErr(fmt.Sprintf("cannot write to %s: %s", filepath.Dir(binPath), reason))
+		c.JSON(http.StatusForbidden, gin.H{"error": fmt.Sprintf("cannot write to %s: %s (process running as %s)",
+			filepath.Dir(binPath), reason, os.Getenv("USER"))})
 		return
 	}
 
-	client := &http.Client{Timeout: 60 * time.Second}
+	// Start the background job and respond immediately.
+	updater.mu.Lock()
+	updater.status = updateDownloading
+	updater.startAt = time.Now()
+	updater.mu.Unlock()
 
-	// 1. Fetch release metadata.
+	go s.runUpdate(goos, goarch, binPath, req.Version)
+
+	c.JSON(http.StatusOK, applyUpdateResponse{
+		Success: true,
+		Message: "更新任务已启动，正在后台下载...",
+	})
+}
+
+// runUpdate performs the actual download+verify+replace+restart in a
+// background goroutine. It updates the global updater state as it
+// progresses so the frontend can poll /update/status.
+func (s *Server) runUpdate(goos, goarch, binPath, targetVersion string) {
+	// Use a long timeout: GitHub releases can be slow to download from
+	// China; the binary is ~15-20 MB, so give it 5 minutes.
+	client := &http.Client{Timeout: 5 * time.Minute}
+
 	var rel *ghRelease
 	var err error
-	if req.Version != "" {
-		// Specific tag: use /releases/tags/:tag endpoint.
-		tag := strings.TrimPrefix(req.Version, "v")
+
+	updater.set(updateDownloading, "正在获取 Release 元数据...")
+	if targetVersion != "" {
+		tag := strings.TrimPrefix(targetVersion, "v")
 		url := fmt.Sprintf("https://api.github.com/repos/%s/releases/tags/v%s", githubRepo, tag)
 		r, e := fetchReleaseByTag(client, url)
 		rel, err = r, e
@@ -423,25 +460,32 @@ func (s *Server) applyUpdateHandler(c *gin.Context) {
 		rel, err = fetchLatestRelease(client)
 	}
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		updater.setErr(fmt.Sprintf("获取 Release 信息失败: %v", err))
 		return
 	}
 
-	// 2. Find platform-matched asset.
+	updater.mu.Lock()
+	updater.version = rel.TagName
+	updater.mu.Unlock()
+
 	binURL, sumsURL := rel.platformAsset(goos, goarch)
 	if binURL == "" {
-		c.JSON(http.StatusBadGateway, gin.H{
-			"error": fmt.Sprintf("release %s has no asset for %s/%s", rel.TagName, goos, goarch),
-		})
+		updater.setErr(fmt.Sprintf("Release %s 没有平台 %s/%s 的二进制文件", rel.TagName, goos, goarch))
 		return
 	}
 
-	// 3. Download binary to a temp file in the same directory as the
-	//    target binary (so rename is atomic — same filesystem).
+	var totalSize int64
+	for _, a := range rel.Assets {
+		if a.BrowserDownloadURL == binURL {
+			totalSize = a.Size
+			break
+		}
+	}
+
 	dir := filepath.Dir(binPath)
 	tmp, err := os.CreateTemp(dir, ".gokych-update-")
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("create temp file: %v", err)})
+		updater.setErr(fmt.Sprintf("创建临时文件失败: %v", err))
 		return
 	}
 	tmpPath := tmp.Name()
@@ -452,15 +496,16 @@ func (s *Server) applyUpdateHandler(c *gin.Context) {
 		}
 	}()
 
+	updater.set(updateDownloading, fmt.Sprintf("正在下载 %s ...", rel.TagName))
 	slog.Info("update: downloading binary", "version", rel.TagName, "url", binURL, "to", tmpPath)
-	if err := downloadToFile(client, binURL, tmp); err != nil {
+	if err := downloadToFileWithProgress(client, binURL, tmp, totalSize, updater); err != nil {
 		tmp.Close()
-		c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("download binary: %v", err)})
+		updater.setErr(fmt.Sprintf("下载失败: %v", err))
 		return
 	}
 	tmp.Close()
 
-	// 4. SHA256 verify if SHA256SUMS is present.
+	updater.set(updateVerifying, "正在校验 SHA256...")
 	if sumsURL != "" {
 		wantHash, hashErr := fetchExpectedHash(client, sumsURL, filepath.Base(binURL))
 		if hashErr != nil {
@@ -468,30 +513,26 @@ func (s *Server) applyUpdateHandler(c *gin.Context) {
 		} else if wantHash != "" {
 			gotHash, herr := fileSHA256(tmpPath)
 			if herr != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("hash file: %v", herr)})
+				updater.setErr(fmt.Sprintf("计算文件哈希失败: %v", herr))
 				return
 			}
 			if !strings.EqualFold(gotHash, wantHash) {
-				c.JSON(http.StatusInternalServerError, gin.H{
-					"error": fmt.Sprintf("SHA256 mismatch: got %s, want %s — download may be corrupted or tampered", gotHash, wantHash),
-				})
+				updater.setErr(fmt.Sprintf("SHA256 校验不匹配: 文件可能已损坏或被篡改"))
 				return
 			}
 			slog.Info("update: SHA256 verified", "hash", gotHash)
 		}
 	}
 
-	// 5. chmod +x
+	updater.set(updateReplacing, "正在设置可执行权限...")
 	if err := os.Chmod(tmpPath, 0755); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("chmod: %v", err)})
+		updater.setErr(fmt.Sprintf("chmod 失败: %v", err))
 		return
 	}
 
-	// 6. Back up current binary (best-effort).
 	backupPath := binPath + ".prev"
+	updater.set(updateReplacing, "正在备份当前版本...")
 	if err := os.Rename(binPath, backupPath); err != nil {
-		// Can't rename (maybe it's a symlink or we don't have perms on
-		// the inode). Try copy + remove instead.
 		slog.Warn("update: cannot rename current binary for backup, trying copy", "err", err)
 		if src, err2 := os.Open(binPath); err2 == nil {
 			if dst, err3 := os.Create(backupPath); err3 == nil {
@@ -501,43 +542,64 @@ func (s *Server) applyUpdateHandler(c *gin.Context) {
 			}
 			src.Close()
 		}
-		// If even that fails, proceed — the rename of the new binary
-		// over the old one will still work on Unix (the running
-		// process keeps the old inode alive).
 	} else {
 		slog.Info("update: backed up old binary", "backup", backupPath)
 	}
 
-	// 7. Atomic rename tmp → binPath.
+	updater.mu.Lock()
+	updater.backup = backupPath
+	updater.mu.Unlock()
+
+	updater.set(updateReplacing, "正在替换二进制文件...")
 	if err := os.Rename(tmpPath, binPath); err != nil {
-		// Try to restore backup.
 		_ = os.Rename(backupPath, binPath)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("replace binary: %v", err)})
+		updater.setErr(fmt.Sprintf("替换二进制失败: %v", err))
 		return
 	}
-	success = true // don't remove the (now-renamed) tmp in defer
+	success = true
 
 	slog.Info("update: binary replaced successfully",
 		"old", backupPath, "new", binPath, "version", rel.TagName)
 
-	// 8. Trigger restart asynchronously (after response is sent).
-	restarting := false
+	updater.set(updateRestarting, "正在重启服务...")
+
 	if restartFn != nil {
-		restarting = true
 		go func() {
-			time.Sleep(1 * time.Second) // give HTTP response time to flush
+			time.Sleep(1 * time.Second)
 			if err := restartFn(); err != nil {
 				slog.Error("update: restart function returned error", "err", err)
 			}
 		}()
 	}
 
-	c.JSON(http.StatusOK, applyUpdateResponse{
-		Success:    true,
-		Message:    fmt.Sprintf("已更新到 %s，%s", rel.TagName, map[bool]string{true: "服务正在重启...", false: "请手动重启服务"}[restarting]),
-		Version:    rel.TagName,
-		OldBackup:  backupPath,
-		Restarting: restarting,
+	updater.mu.Lock()
+	updater.status = updateDone
+	updater.message = fmt.Sprintf("已更新到 %s，服务正在重启", rel.TagName)
+	updater.mu.Unlock()
+}
+
+type updateStatusResponse struct {
+	Status      string  `json:"status"`
+	Version     string  `json:"version,omitempty"`
+	Message     string  `json:"message"`
+	Error       string  `json:"error,omitempty"`
+	Backup      string  `json:"backup,omitempty"`
+	Progress    int64   `json:"progress"`
+	Total       int64   `json:"total"`
+	ElapsedSec  float64 `json:"elapsed_sec"`
+}
+
+func (s *Server) updateStatusHandler(c *gin.Context) {
+	status, version, message, errStr, backup, progress, total, elapsed := updater.snapshot()
+	c.JSON(http.StatusOK, updateStatusResponse{
+		Status:     string(status),
+		Version:    version,
+		Message:    message,
+		Error:      errStr,
+		Backup:     backup,
+		Progress:   progress,
+		Total:      total,
+		ElapsedSec: elapsed,
 	})
 }
 
@@ -566,6 +628,59 @@ func fetchReleaseByTag(client *http.Client, url string) (*ghRelease, error) {
 	return &rel, nil
 }
 
+// downloadToFileWithProgress downloads url to f, reporting byte counts
+// into job periodically (every ~256KB) so the frontend can show a bar.
+func downloadToFileWithProgress(client *http.Client, url string, f *os.File, total int64, job *updateJobState) error {
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("User-Agent", "GoKYCH-SelfUpdater")
+	// Follow redirects explicitly? http.Client follows up to 10 by default;
+	// GitHub release assets redirect to objects.githubusercontent.com.
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return fmt.Errorf("download returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	// Use the Content-Length from the final response if we didn't get a
+	// size from the asset metadata.
+	if total <= 0 && resp.ContentLength > 0 {
+		total = resp.ContentLength
+	}
+
+	var downloaded int64
+	buf := make([]byte, 64*1024)
+	lastReport := time.Now()
+	for {
+		n, rerr := resp.Body.Read(buf)
+		if n > 0 {
+			if _, werr := f.Write(buf[:n]); werr != nil {
+				return werr
+			}
+			downloaded += int64(n)
+			// Throttle progress updates to ~4/sec to avoid mutex churn.
+			if time.Since(lastReport) > 250*time.Millisecond {
+				job.setProgress(downloaded, total)
+				lastReport = time.Now()
+			}
+		}
+		if rerr == io.EOF {
+			break
+		}
+		if rerr != nil {
+			return rerr
+		}
+	}
+	job.setProgress(downloaded, total)
+	return nil
+}
+
 func downloadToFile(client *http.Client, url string, f *os.File) error {
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -587,8 +702,6 @@ func downloadToFile(client *http.Client, url string, f *os.File) error {
 	return nil
 }
 
-// fetchExpectedHash downloads SHA256SUMS and returns the hex hash for
-// the named asset, or "" if the asset isn't listed.
 func fetchExpectedHash(client *http.Client, sumsURL, assetName string) (string, error) {
 	req, err := http.NewRequest("GET", sumsURL, nil)
 	if err != nil {
@@ -609,8 +722,6 @@ func fetchExpectedHash(client *http.Client, sumsURL, assetName string) (string, 
 	}
 	for _, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
-		// Format: "<hex>  <filename>" (two spaces between hash and name)
-		// or "<hex> *<filename>" (binary-mode marker from sha256sum).
 		parts := strings.Fields(line)
 		if len(parts) == 2 {
 			hash := parts[0]
