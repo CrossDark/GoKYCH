@@ -5041,7 +5041,10 @@ body.admin-modal-open { overflow: hidden; }
     font-style: italic;
 }
 
-/* 分屏: 编辑 / 预览 各占一半,中间细缝隔开 */
+/* 分屏: 编辑 / 预览 各占一半,中间细缝隔开。
+ * 两个面板都约束为 70vh 最大高度、独立滚动,
+ * 这样同步滚动时两个容器的可见区域高度一致,
+ * 比例计算准确,且不会因为滚轮滚动穿透导致页面跳动。 */
 .markdown-editor[data-mode="split"] {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -5077,6 +5080,42 @@ body.admin-modal-open { overflow: hidden; }
     box-shadow: 0 0 0 3px rgba(var(--accent-rgb, 100, 100, 200), 0.12);
 }
 
+/* 分屏态: 编辑面板也是独立滚动容器。
+ * 桌面端(>900px,左右并排):用 flex + height:100% 让 textarea
+ * 填满与预览等高的容器,确保两个滚动区 clientHeight 完全一致,
+ * 比例同步精确。
+ * 移动端(≤900px,上下堆叠):不使用 flex 等高,textarea 保持
+ * 自身高度并内部滚动,避免 height:100% 在 auto 高度的 grid
+ * 单元格中产生循环依赖导致折叠。 */
+@media (min-width: 901px) {
+    .markdown-editor[data-mode="split"] .markdown-editor-edit-pane {
+        min-height: 320px;
+        max-height: 70vh;
+        overflow: hidden;
+        display: flex;
+    }
+    .markdown-editor[data-mode="split"] .markdown-editor-edit-pane textarea {
+        flex: 1;
+        min-height: 0;
+        height: 100%;
+        max-height: none;
+        resize: none;
+        margin: 0;
+        border-radius: var(--radius);
+    }
+}
+/* 分屏态下(含移动端)textarea 都需要阻止滚动穿透到页面 */
+.markdown-editor[data-mode="split"] .markdown-editor-edit-pane textarea {
+    overscroll-behavior: contain;
+}
+/* 移动端分屏堆叠: 给 textarea 一个合理的最大高度,防止编辑器撑满整个屏幕 */
+@media (max-width: 900px) {
+    .markdown-editor[data-mode="split"] .markdown-editor-edit-pane textarea {
+        max-height: 70vh;
+        resize: none;
+    }
+}
+
 .markdown-editor-preview-pane {
     min-height: 320px;
     max-height: 70vh;
@@ -5085,6 +5124,8 @@ body.admin-modal-open { overflow: hidden; }
     background: var(--bg-card);
     border: 1px solid var(--border);
     border-radius: var(--radius);
+    /* 阻止滚动穿透到页面 */
+    overscroll-behavior: contain;
 }
 /* 分屏态下,预览面板不重复 padding(已经在容器上) */
 .markdown-editor[data-mode="split"] .markdown-editor-preview-pane {

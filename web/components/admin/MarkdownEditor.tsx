@@ -251,9 +251,17 @@ export function MarkdownEditor({
 
   // Sync-scroll in split mode: when the user scrolls
   // either pane, propagate the proportional scroll
-  // position to the other. The `isSyncing` flag breaks
-  // the feedback loop (textarea scroll → preview scroll
-  // → textarea scroll → ...).
+  // position to the other.
+  //
+  // Anti-feedback-loop strategy: instead of a brittle
+  // timing-based flag (requestAnimationFrame can fire
+  // before the programmatic scroll event is delivered,
+  // causing oscillations that make the page jump), we
+  // track the exact scrollTop value we just set on the
+  // peer element. When that peer fires a scroll event
+  // with that exact value (within 1px epsilon), we
+  // ignore it as our own echo. This is immune to
+  // event-dispatch timing differences across browsers.
   //
   // The effect re-runs whenever `previewNode` changes
   // because the preview div mounts asynchronously
@@ -265,33 +273,39 @@ export function MarkdownEditor({
     const textarea = textareaRef.current;
     const preview = previewNode;
     if (!textarea || !preview) return;
-    let isSyncing = false;
+
+    // Last programmatic scrollTop set on each element.
+    // When a scroll event's scrollTop matches this value
+    // (within EPSILON), it's our own echo — skip it.
+    const EPSILON = 1;
+    let lastSetTextarea = -Infinity;
+    let lastSetPreview = -Infinity;
+
     const onTextareaScroll = () => {
-      if (isSyncing) return;
+      const top = textarea.scrollTop;
+      // Ignore echoes from programmatic sync
+      if (Math.abs(top - lastSetTextarea) <= EPSILON) return;
       const denom = textarea.scrollHeight - textarea.clientHeight;
       if (denom <= 0) return;
-      isSyncing = true;
-      const ratio = textarea.scrollTop / denom;
+      const ratio = top / denom;
       const pDenom = preview.scrollHeight - preview.clientHeight;
-      preview.scrollTop = ratio * Math.max(0, pDenom);
-      requestAnimationFrame(() => {
-        isSyncing = false;
-      });
+      const target = ratio * Math.max(0, pDenom);
+      lastSetPreview = target;
+      preview.scrollTop = target;
     };
     const onPreviewScroll = () => {
-      if (isSyncing) return;
+      const top = preview.scrollTop;
+      if (Math.abs(top - lastSetPreview) <= EPSILON) return;
       const denom = preview.scrollHeight - preview.clientHeight;
       if (denom <= 0) return;
-      isSyncing = true;
-      const ratio = preview.scrollTop / denom;
+      const ratio = top / denom;
       const tDenom = textarea.scrollHeight - textarea.clientHeight;
-      textarea.scrollTop = ratio * Math.max(0, tDenom);
-      requestAnimationFrame(() => {
-        isSyncing = false;
-      });
+      const target = ratio * Math.max(0, tDenom);
+      lastSetTextarea = target;
+      textarea.scrollTop = target;
     };
-    textarea.addEventListener("scroll", onTextareaScroll);
-    preview.addEventListener("scroll", onPreviewScroll);
+    textarea.addEventListener("scroll", onTextareaScroll, { passive: true });
+    preview.addEventListener("scroll", onPreviewScroll, { passive: true });
     return () => {
       textarea.removeEventListener("scroll", onTextareaScroll);
       preview.removeEventListener("scroll", onPreviewScroll);

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { getCsrf } from "@/lib/api";
+import { getCsrf, apiUrl, apiFetch } from "@/lib/api";
 import { useToast } from "@/lib/admin-feedback";
 
 interface UpdateCheckInfo {
@@ -56,7 +56,7 @@ export default function AdminUpdate() {
     setLogs([]);
     addLog("正在检查 GitHub 最新 Release...");
     try {
-      const res = await fetch("/api/admin/update/check", { credentials: "include" });
+      const res = await apiFetch(apiUrl("/api/admin/update/check"));
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         throw new Error(body.error || `HTTP ${res.status}`);
@@ -95,9 +95,8 @@ export default function AdminUpdate() {
     setApplying(true);
     addLog(`开始下载 ${info.latest_version}...`);
     try {
-      const res = await fetch("/api/admin/update/apply", {
+      const res = await apiFetch(apiUrl("/api/admin/update/apply"), {
         method: "POST",
-        credentials: "include",
         headers: {
           "Content-Type": "application/json",
           "X-CSRF-Token": csrf,
