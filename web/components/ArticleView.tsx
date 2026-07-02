@@ -49,6 +49,31 @@ export function ArticleView({ data, articleType, articleSlug }: Props) {
   const [bubbleHeights, setBubbleHeights] = useState<Record<number, number>>({});
   const bubbleMeasureKeyRef = useRef(0);
 
+  // Measure bubble top + height for each commented line. Used after
+  // innerHTML is rendered, on window resize, after data load, and after
+  // new comments are submitted.
+  //
+  // Reads commented-line numbers directly from lineDataRef rather than
+  // the commentedLines state so that async callbacks (requestIdleCallback
+  // in the content-hydration effect) always see the latest data even if
+  // the callback was scheduled before the [data] effect populated the
+  // state (classic React stale-closure trap).
+  const measureBubbleTops = useCallback((container: HTMLElement) => {
+    const lines = Object.keys(lineDataRef.current).map(Number).sort((a, b) => a - b);
+    const tops: Record<number, number> = {};
+    const heights: Record<number, number> = {};
+    lines.forEach((ln) => {
+      const el = container.querySelector(`[data-line="${ln}"]`) as HTMLElement | null;
+      if (el) {
+        tops[ln] = el.offsetTop;
+        heights[ln] = el.offsetHeight;
+      }
+    });
+    bubbleMeasureKeyRef.current += 1;
+    setBubbleTops(tops);
+    setBubbleHeights(heights);
+  }, []);
+
   // Auth
   useEffect(() => {
     getMe().then((r) => {
@@ -70,24 +95,16 @@ export function ArticleView({ data, articleType, articleSlug }: Props) {
     allComments.forEach((c: Comment) => { const ln = (c as any).line_number; if (!d[ln]) d[ln] = []; d[ln].push(c); });
     lineDataRef.current = d;
     setCommentedLines(Object.keys(d).map(Number).sort((a, b) => a - b));
-  }, [data]);
-
-  // Measure bubble top + height for each commented line. Used both after
-  // innerHTML is rendered and on window resize.
-  const measureBubbleTops = useCallback((container: HTMLElement) => {
-    const tops: Record<number, number> = {};
-    const heights: Record<number, number> = {};
-    commentedLines.forEach((ln) => {
-      const el = container.querySelector(`[data-line="${ln}"]`) as HTMLElement | null;
-      if (el) {
-        tops[ln] = el.offsetTop;
-        heights[ln] = el.offsetHeight;
-      }
+    // Re-measure bubble positions after data is loaded (DOM is already
+    // rendered via dangerouslySetInnerHTML). Use rAF to ensure layout is
+    // settled; the hydration effect also measures but this is a safety
+    // net for articles without math/mermaid where hydrateMarkdown may
+    // resolve before the data effect has populated lineDataRef.
+    requestAnimationFrame(() => {
+      const container = contentRef.current;
+      if (container) measureBubbleTops(container);
     });
-    bubbleMeasureKeyRef.current += 1;
-    setBubbleTops(tops);
-    setBubbleHeights(heights);
-  }, [commentedLines]);
+  }, [data, measureBubbleTops]);
 
   // Re-measure on resize (responsive font/wrap can shift line positions).
   useEffect(() => {
@@ -272,6 +289,11 @@ export function ArticleView({ data, articleType, articleSlug }: Props) {
       // Re-apply marker on the block
       const block = contentRef.current?.querySelector(`[data-line="${popup.lineNum}"]`);
       if (block) block.classList.add("has-line-comments");
+      // Re-measure bubble positions (new line may need positioning)
+      requestAnimationFrame(() => {
+        const container = contentRef.current;
+        if (container) measureBubbleTops(container);
+      });
     } catch (err: any) { alert(err.message || "添加行评论失败"); }
     finally { setSubmitting(false); }
   };
