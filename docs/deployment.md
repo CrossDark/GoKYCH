@@ -491,9 +491,18 @@ Worker 名称通过 `WORKER_NAME` 环境变量统一控制，`name` 和 `WORKER_
 
 ---
 
-### 4.2 完整部署步骤（从零开始）
+### 4.2 完整部署步骤
 
-##### 步骤 1：准备后端
+Cloudflare 支持两种部署方式，任选其一即可：
+
+- **方式A：CLI 命令行部署**（§4.2.1）— 本地运行 wrangler 部署，适合开发者和CI/CD
+- **方式B：Dashboard 网页端 Git 集成部署**（§4.2.2）— 在 Cloudflare 控制台连接 GitHub 仓库，每次 push 自动构建部署，无需本地安装 Node.js
+
+---
+
+#### 4.2.1 方式A：CLI 命令行部署
+
+##### 步骤A1：准备后端
 
 确保后端 Go 服务已部署并可从公网访问，且已配置：
 - HTTPS 证书（Let's Encrypt 即可）
@@ -508,7 +517,7 @@ CORS_ALLOWED_ORIGINS=https://你的-worker名.你的账号.workers.dev,https://�
 
 改完后重启：`sudo systemctl restart gokych`
 
-##### 步骤 2：克隆代码并安装依赖
+##### 步骤A2：克隆代码并安装依赖
 
 ```bash
 git clone <你的仓库地址> GoKYCH
@@ -522,7 +531,7 @@ npm install
 > 脚本使用 `npx` 调用时会自动下载最新版本。如果你想固定版本，可手动安装：
 > `npm install -D @opennextjs/cloudflare wrangler`
 
-##### 步骤 3：配置前端环境变量
+##### 步骤A3：配置前端环境变量
 
 在 `web/` 目录创建 `.env.local` 文件（**必须**，已在 .gitignore 中，不会被提交）：
 
@@ -532,11 +541,11 @@ NEXT_PUBLIC_API_BASE_URL=https://api.kych.net
 ```
 
 > **关键提醒**：`NEXT_PUBLIC_API_BASE_URL` 是 **Next.js 构建时环境变量**，
-> 会被 webpack 内联到客户端 JS bundle 中。必须在 `cf:build` 阶段设置
+> 会被 webpack 内联到客户端 JS bundle 中。必须在构建阶段设置
 > （通过 `.env.local` 或 shell 环境变量）。**不能** 用 `wrangler secret put` 设置
 > （那是运行时变量，构建阶段读不到，会导致前端所有 API 请求都指向 localhost）。
 
-##### 步骤 4：登录 Cloudflare
+##### 步骤A4：登录 Cloudflare
 
 ```bash
 # 在 web/ 目录下
@@ -550,7 +559,7 @@ npx wrangler login
 npx wrangler whoami
 ```
 
-##### 步骤 5（可选）：本地预览
+##### 步骤A5（可选）：本地预览
 
 在部署到 Cloudflare 之前，可以先在本地预览 Workers 运行时效果：
 
@@ -567,7 +576,7 @@ Wrangler 会启动一个本地 Worker 模拟器（通常在 `http://localhost:87
 > 注意：本地预览模式下 `NEXT_PUBLIC_API_BASE_URL` 仍从 `.env.local` 读取，
 > 确保后端地址可访问（本地开发用 `http://localhost:8000` 或公网地址均可）。
 
-##### 步骤 6：构建并部署
+##### 步骤A6：构建并部署
 
 ```bash
 cd web/
@@ -593,6 +602,88 @@ Deployed created-rule-front triggers (0.78 sec)
 ```
 
 打开输出的 URL（如 `https://created-rule-front.你的账号.workers.dev`）验证网站。
+
+---
+
+#### 4.2.2 方式B：Cloudflare Dashboard 网页端 Git 集成部署
+
+这种方式不需要在本地安装 Node.js/wrangler，完全在 Cloudflare 网页控制台操作。
+Cloudflare 的 Workers Builds 会在服务器上自动拉取代码、安装依赖、构建并部署。
+每次 push 到 GitHub 主分支会自动触发重新部署（类似 EdgeOne Makers）。
+
+##### 步骤B1：准备后端
+
+与方式A相同：确保后端已部署、HTTPS 可用、CORS 已配置 Workers 域名。
+
+##### 步骤B2：推送代码到 GitHub
+
+确保代码已推送到 GitHub 仓库（公开或私有均可，Cloudflare 支持私有仓库）。
+确保 `web/wrangler.jsonc`、`web/open-next.config.ts` 等配置文件已提交到仓库。
+
+##### 步骤B3：在 Cloudflare 控制台创建 Worker 并连接 Git
+
+1. 登录 [Cloudflare Dashboard](https://dash.cloudflare.com/)
+2. 左侧菜单点击 **Workers & Pages**
+3. 点击 **Create application**（创建应用）
+4. 选择 **Workers** 标签页（不是 Pages）
+5. 点击 **Deploy using Cloudflare's build system**（或 "Connect to Git"）
+   > 如果看不到此选项，先在 Workers & Pages 页面右上角确认账号已升级到
+   > Workers Paid（$5/月计划，免费计划不支持 Git 构建）
+6. 选择你的 Git 提供商（**GitHub** 或 GitLab），点击 **Connect**
+7. 授权 Cloudflare 访问你的仓库（可以选择所有仓库或仅指定仓库）
+8. 选择 GoKYCH 仓库，点击 **Begin setup**
+
+##### 步骤B4：配置构建设置
+
+在配置页面填写以下信息：
+
+| 配置项 | 值 |
+|--------|-----|
+| **Production branch**（生产分支） | `main`（或你的主分支名） |
+| **Root directory**（根目录） | `web`（**必须**，因为 wrangler.jsonc 在 web/ 子目录） |
+| **Build command**（构建命令） | `npx @opennextjs/cloudflare build` |
+| **Deploy command**（部署命令） | 留空（Cloudflare 自动检测 wrangler.jsonc 并执行 `wrangler deploy`） |
+
+> **注意**：
+> - Root directory 必须设为 `web`，因为 `wrangler.jsonc` 和 `package.json` 在 `web/` 目录下。
+>   如果设为仓库根目录，Cloudflare 找不到 wrangler 配置文件会报错。
+> - Build command 不能直接写 `npm run deploy`（那会在构建步骤中就尝试部署，导致权限错误）。
+>   正确做法是 build command 只做构建，部署由 Cloudflare 自动通过 wrangler 完成。
+
+##### 步骤B5：配置环境变量
+
+在同一配置页面，找到 **Environment variables**（环境变量）部分，添加：
+
+| 变量名 | 值 | 说明 |
+|--------|-----|------|
+| `NEXT_PUBLIC_API_BASE_URL` | `https://api.kych.net` | **构建时必需**，后端API地址 |
+| `WORKER_NAME` | `created-rule-front`（或你想要的名称） | Worker名称，与wrangler.jsonc中`${WORKER_NAME:-gokych}`配合，不设则默认为`gokych` |
+
+> - `NEXT_PUBLIC_API_BASE_URL` 必须在 **Builds** 的环境变量中设置（不仅仅是 Worker runtime 的环境变量），
+>   因为它是构建时变量，需要在构建阶段被 webpack 读取。
+> - 如果需要设置 Secrets（如其他密钥），在同一页面的 **Secrets** 部分添加（加密存储，不出现在日志中）。
+> - 请勿使用 `wrangler secret put` 命令设置 `NEXT_PUBLIC_*` 变量（那是运行时变量，构建阶段读不到）。
+
+##### 步骤B6：部署
+
+点击 **Save and Deploy**（保存并部署）。Cloudflare 将：
+1. 拉取 GitHub 仓库代码
+2. 进入 `web/` 目录
+3. 执行 `npm install`（自动检测 package-lock.json）
+4. 执行 `npx @opennextjs/cloudflare build`（构建）
+5. 执行 `wrangler deploy`（部署，读取 wrangler.jsonc）
+6. 首次部署通常需要 2-5 分钟
+
+构建日志可以在 Worker 详情页的 **Deployments**（部署）标签页查看。
+
+部署成功后，Cloudflare 会分配一个 `https://<worker-name>.<你的账号>.workers.dev` 地址。
+
+##### 步骤B7：后续自动部署
+
+配置完成后，**每次 push 到 main 分支**都会自动触发构建和部署，无需任何手动操作。
+如需查看构建日志或回滚：Workers & Pages → 你的 Worker → Deployments 标签页。
+
+如果需要手动触发重新部署（不 push 代码）：Worker 详情页 → Deployments → 点击右上角 **Create deployment** → 选择最新 commit 部署。
 
 ---
 
@@ -737,14 +828,19 @@ jobs:
 
 | 错误信息 | 原因 | 解决方法 |
 |----------|------|----------|
-| `Service binding 'WORKER_SELF_REFERENCE' references Worker 'xxx' which was not found [code: 10143]` | Worker 名称冲突：wrangler.jsonc 的 name 与控制台已有同名 Worker 不一致 | 首次部署用 `WORKER_NAME=<不存在的名字> npm run deploy`；或先在控制台删除重名 Worker |
-| `Error: Workers Paid plan is required` | 免费计划 Worker 体积 3 MiB 不够（GoKYCH 前端 gzip 后约 600KB-2MB，通常免费计划够用，但某些情况需付费） | 升级到 Workers Paid（$5/月），或减小 bundle 体积 |
-| `Cannot find module '@opennextjs/cloudflare'` | npx 下载失败或网络问题 | 手动安装：`npm install -D @opennextjs/cloudflare wrangler`，或配置 npm 镜像源 |
-| 部署成功但页面显示"文章不存在" | `NEXT_PUBLIC_API_BASE_URL` 未在构建时设置，SSR fetch 打到 `localhost:8000` | 检查 `web/.env.local` 是否存在且正确，重新 `npm run deploy` |
+| `Service binding 'WORKER_SELF_REFERENCE' references Worker 'xxx' which was not found [code: 10143]` | Worker 名称冲突：wrangler.jsonc 的 name 与控制台已有同名 Worker 不一致 | CLI：`WORKER_NAME=<新名字> npm run deploy`；Dashboard：修改构建设置中的 `WORKER_NAME` 环境变量为不冲突的名称，重新部署 |
+| `Error: Workers Paid plan is required` | 免费计划不支持 Git 构建（Dashboard方式）或 Worker 体积超限 | 升级到 Workers Paid（$5/月）；CLI方式免费计划通常够用（gzip约600KB-2MB，在3MiB限制内） |
+| `Cannot find module '@opennextjs/cloudflare'` | npx 下载失败或网络问题 | CLI：手动安装 `npm install -D @opennextjs/cloudflare wrangler`；Dashboard：确认Build command是 `npx @opennextjs/cloudflare build`，Cloudflare构建环境能访问npm |
+| Dashboard构建失败：`ENOENT: no such file or directory, open 'wrangler.jsonc'` | Root directory 设错了（设为仓库根目录而非web/） | Dashboard → Worker → Settings → Builds → Root directory 改为 `web`，重新部署 |
+| Dashboard构建失败：`npm ERR! enoent Could not read package.json` | 同上，根目录设错 | 同上，Root directory 必须设为 `web` |
+| Dashboard构建失败：`Unknown command: deploy` | Build command 写了 `npm run deploy`，导致在构建阶段就尝试wrangler deploy但没有API token | Build command 只写 `npx @opennextjs/cloudflare build`，部署由Cloudflare自动完成（Deploy command留空） |
+| Dashboard部署成功但页面显示"文章不存在" | `NEXT_PUBLIC_API_BASE_URL` 未在**构建时**环境变量中设置（只设了运行时变量或用了secret） | Dashboard → Worker → Settings → Variables and Secrets → 在 **Environment Variables**（不是Secrets）中添加 `NEXT_PUBLIC_API_BASE_URL`，且确保在Build阶段可见；然后在Deployments中触发重新部署 |
+| CLI部署成功但页面显示"文章不存在" | `NEXT_PUBLIC_API_BASE_URL` 未在构建时设置，SSR fetch 打到 `localhost:8000` | 检查 `web/.env.local` 是否存在且正确，重新 `npm run deploy` |
 | 登录后刷新显示未登录 | CORS 未配置 Workers 域名，Set-Cookie 被浏览器拦截 | 后端 `.env` 的 `CORS_ALLOWED_ORIGINS` 添加 Workers 域名，重启后端 |
-| `Authentication Error: Invalid API token` | wrangler login 过期或 token 无效 | 重新运行 `npx wrangler login` |
-| `A binding for ASSETS was not found` | `.open-next/assets/` 目录不存在或构建失败 | 先运行 `npm run cf:build` 确认构建成功，再 `npm run cf:deploy` |
-| 静态资源（CSS/JS）404 | 构建产物不完整 | 删除 `.open-next/` 目录后重新构建：`rm -rf .open-next && npm run cf:build` |
+| `Authentication Error: Invalid API token` | wrangler login 过期或 token 无效（仅CLI） | 重新运行 `npx wrangler login` |
+| `A binding for ASSETS was not found` | `.open-next/assets/` 目录不存在或构建失败 | CLI：先运行 `npm run cf:build` 确认构建成功，再 `npm run cf:deploy`；Dashboard：查看Build logs确认构建步骤是否成功完成 |
+| 静态资源（CSS/JS）404 | 构建产物不完整 | CLI：删除 `.open-next/` 目录后重新构建 `rm -rf .open-next && npm run cf:build`；Dashboard：在Deployments中触发Redeploy |
+| Dashboard每次push都不自动部署 | 生产分支名设置错误（默认main，但你的分支可能是master） | Dashboard → Worker → Settings → Builds → Production branch 改为你的实际主分支名 |
 
 ---
 
