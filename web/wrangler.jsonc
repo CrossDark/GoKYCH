@@ -4,10 +4,15 @@
   //
   // ─── Worker 名称 ────────────────────────────────────────
   // name 和 WORKER_SELF_REFERENCE.service 必须完全一致（两者都指同一个 Worker），
-  // 否则会出现 10143 错误。如需自定义 Worker 名称，同时修改下面两个字段：
+  // 且必须与 Cloudflare Dashboard 中创建的 Worker 名称完全一致，否则会出现
+  // 10143 错误（Service binding references Worker which was not found）。
   //
-  //   "name": "your-custom-name",
-  //   "services": [{ "binding": "WORKER_SELF_REFERENCE", "service": "your-custom-name" }]
+  // Cloudflare Workers Builds（Git 连接部署）会自动用 Dashboard 中的 Worker 名称
+  // 覆盖 name 字段，但不会覆盖 services[].service，所以两个字段都必须显式设为
+  // 正确的名称。如需自定义 Worker 名称，同时修改下面两个字段：
+  //
+  //   "name": "your-worker-name",
+  //   "services": [{ "binding": "WORKER_SELF_REFERENCE", "service": "your-worker-name" }]
   //
   // ─── 构建环境变量 ────────────────────────────────────────
   // NEXT_PUBLIC_API_BASE_URL 是 Next.js 构建时变量，不要写在此文件中，
@@ -23,7 +28,7 @@
   //   npm run cf:preview  # 本地预览 Workers 运行时
 
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "gokych",
+  "name": "creater-rule-web",
   "main": ".open-next/worker.js",
   "compatibility_date": "2026-03-01",
   "compatibility_flags": [
@@ -39,7 +44,7 @@
   "services": [
     {
       "binding": "WORKER_SELF_REFERENCE",
-      "service": "gokych"
+      "service": "creater-rule-web"
     }
   ],
 
