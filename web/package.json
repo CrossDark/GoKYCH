@@ -8,9 +8,11 @@
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "cf:build": "npx opennextjs-cloudflare build",
-    "cf:deploy": "npx wrangler deploy",
-    "cf:preview": "npx wrangler dev"
+    "preview": "npx @opennextjs/cloudflare build && npx @opennextjs/cloudflare preview",
+    "deploy": "npx @opennextjs/cloudflare build && npx @opennextjs/cloudflare deploy",
+    "cf:build": "npx @opennextjs/cloudflare build",
+    "cf:deploy": "npx @opennextjs/cloudflare deploy",
+    "cf:preview": "npx @opennextjs/cloudflare preview"
   },
   "dependencies": {
     "@types/dompurify": "^3.0.5",

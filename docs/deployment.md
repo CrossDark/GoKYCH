@@ -460,74 +460,291 @@ export function apiUrl(path: string): string {
 - Session cookie 域：`api.kych.net`（后端 host），浏览器对
   `api.kych.net` 的 fetch 自动带上
 
-### 3.6 备选：Cloudflare Workers（OpenNext）部署
+### 3.6 备选：Cloudflare Workers（OpenNext）详细部署指南
 
-如果希望前端部署在 Cloudflare 而非 EdgeOne，可以使用 OpenNext 将 Next.js 构建为 Cloudflare Workers。
+如果希望前端部署在 Cloudflare 而非 EdgeOne，可以使用 `@opennextjs/cloudflare`
+将 Next.js 构建为 **Cloudflare Workers**（Workers Paid 计划，免费计划 Worker 体积上限 3 MiB 不够）。
 
-**仓库已内置 `web/wrangler.jsonc` 配置**，Worker 名称和 `WORKER_SELF_REFERENCE` 绑定通过环境变量 `WORKER_NAME` 统一控制，无需手动改配置文件，不会出现 10143 错误。
+> **前置条件**：
+> - Node.js 18+（推荐 20 LTS）
+> - 一个 Cloudflare 账号（已注册 Workers Paid 计划，$5/月）
+> - 后端 Go 服务已部署且有公网 HTTPS 地址（如 `https://api.kych.net`）
+> - macOS / Linux 开发环境（Windows 建议用 WSL2）
 
-#### Worker 名称自动同步机制
+---
 
-`web/wrangler.jsonc` 使用 Wrangler 环境变量插值：
+#### 3.6.1 仓库内置文件说明
 
-```jsonc
-"name": "${WORKER_NAME:-gokych}",
-// ...
-"services": [
-  {
-    "binding": "WORKER_SELF_REFERENCE",
-    "service": "${WORKER_NAME:-gokych}"   // 自动与 name 同步
-  }
-]
+仓库已为 Cloudflare 部署准备好以下文件（**无需手动创建**）：
+
+| 文件 | 作用 |
+|------|------|
+| `web/wrangler.jsonc` | Wrangler 配置（Worker 名称、绑定、兼容性标志） |
+| `web/open-next.config.ts` | OpenNext Cloudflare 适配器配置 |
+| `web/.dev.vars` | 本地开发环境变量（`NEXTJS_ENV=development`） |
+| `web/public/_headers` | Cloudflare Pages 静态资源缓存头 |
+| `web/next.config.ts` | 末尾可选加载 `initOpenNextCloudflareForDev()`（不影响 EdgeOne/Docker） |
+| `.gitignore` | 已包含 `.open-next/`、`.wrangler/`、`.dev.vars`、`.env.local` |
+
+Worker 名称通过 `WORKER_NAME` 环境变量统一控制，`name` 和 `WORKER_SELF_REFERENCE.service`
+自动同步，从根本上避免错误 10143。
+
+---
+
+#### 3.6.2 完整部署步骤（从零开始）
+
+##### 步骤 1：准备后端
+
+确保后端 Go 服务已部署并可从公网访问，且已配置：
+- HTTPS 证书（Let's Encrypt 即可）
+- CORS 允许你的 Cloudflare Workers 域名
+
+后端 `.env` 中添加（**必须**，否则跨域请求被阻止）：
+
+```bash
+# 后端服务器 /opt/gokych/.env
+CORS_ALLOWED_ORIGINS=https://你的-worker名.你的账号.workers.dev,https://你的自定义域名
 ```
 
-- `name` 和 `WORKER_SELF_REFERENCE.service` 引用**同一个环境变量** `WORKER_NAME`，永远一致
-- 不设置 `WORKER_NAME` 时默认为 `gokych`
-- 设置自定义名称只需：`WORKER_NAME=created-rule-front npm run cf:deploy`
+改完后重启：`sudo systemctl restart gokych`
 
-#### 部署步骤（3步）
+##### 步骤 2：克隆代码并安装依赖
+
+```bash
+git clone <你的仓库地址> GoKYCH
+cd GoKYCH/web
+
+# 安装前端依赖（必须）
+npm install
+```
+
+> 注：`@opennextjs/cloudflare` 和 `wrangler` 不需要预先 `npm install -D`，
+> 脚本使用 `npx` 调用时会自动下载最新版本。如果你想固定版本，可手动安装：
+> `npm install -D @opennextjs/cloudflare wrangler`
+
+##### 步骤 3：配置前端环境变量
+
+在 `web/` 目录创建 `.env.local` 文件（**必须**，已在 .gitignore 中，不会被提交）：
+
+```bash
+# web/.env.local
+NEXT_PUBLIC_API_BASE_URL=https://api.kych.net
+```
+
+> **关键提醒**：`NEXT_PUBLIC_API_BASE_URL` 是 **Next.js 构建时环境变量**，
+> 会被 webpack 内联到客户端 JS bundle 中。必须在 `cf:build` 阶段设置
+> （通过 `.env.local` 或 shell 环境变量）。**不能** 用 `wrangler secret put` 设置
+> （那是运行时变量，构建阶段读不到，会导致前端所有 API 请求都指向 localhost）。
+
+##### 步骤 4：登录 Cloudflare
+
+```bash
+# 在 web/ 目录下
+npx wrangler login
+```
+
+浏览器会自动打开 Cloudflare 授权页面，点击「Allow」授权 Wrangler 管理你的 Workers。
+
+验证登录状态：
+```bash
+npx wrangler whoami
+```
+
+##### 步骤 5（可选）：本地预览
+
+在部署到 Cloudflare 之前，可以先在本地预览 Workers 运行时效果：
+
+```bash
+cd web/
+WORKER_NAME=my-gokych npm run cf:preview
+# 或
+npm run preview
+```
+
+Wrangler 会启动一个本地 Worker 模拟器（通常在 `http://localhost:8788`），
+你可以测试 SSR、API 请求、登录等功能。
+
+> 注意：本地预览模式下 `NEXT_PUBLIC_API_BASE_URL` 仍从 `.env.local` 读取，
+> 确保后端地址可访问（本地开发用 `http://localhost:8000` 或公网地址均可）。
+
+##### 步骤 6：构建并部署
 
 ```bash
 cd web/
 
-# 1. 安装依赖（首次）
-npm install
+# 方式A：使用默认 Worker 名称 "gokych"
+npm run deploy
 
-# 2. 配置后端 API 地址（创建 web/.env.local，已在 .gitignore）
-cat > .env.local <<EOF
-NEXT_PUBLIC_API_BASE_URL=https://api.example.com
-EOF
+# 方式B：指定自定义 Worker 名称（推荐）
+WORKER_NAME=created-rule-front npm run deploy
 
-# 3. 登录 Cloudflare（首次）
-npx wrangler login
-
-# 4. 构建 + 部署
-#    默认 Worker 名称为 gokych：
-npm run cf:build && npm run cf:deploy
-
-#    使用自定义 Worker 名称：
-WORKER_NAME=created-rule-front npm run cf:build && WORKER_NAME=created-rule-front npm run cf:deploy
+# 方式C：一条命令同时指定名称和API地址（不使用.env.local）
+WORKER_NAME=created-rule-front NEXT_PUBLIC_API_BASE_URL=https://api.kych.net \
+  npm run deploy
 ```
 
-也可用一条命令指定名称并部署：
+部署成功后，Wrangler 会输出类似：
+
+```
+Total Upload: 2295.89 KiB / gzip: 612.34 KiB
+Uploaded created-rule-front (3.42 sec)
+Deployed created-rule-front triggers (0.78 sec)
+  https://created-rule-front.你的账号.workers.dev
+```
+
+打开输出的 URL（如 `https://created-rule-front.你的账号.workers.dev`）验证网站。
+
+---
+
+#### 3.6.3 自定义域名绑定（可选但推荐）
+
+Workers 默认分配的 `xxx.workers.dev` 域名在国内访问可能不稳定，建议绑定自定义域名：
+
+1. **DNS 托管到 Cloudflare**：你的域名（如 `kych.net`）必须使用 Cloudflare DNS
+2. **Cloudflare Dashboard** → Workers & Pages → 你的 Worker（如 `created-rule-front`）
+   → Settings → Triggers → Custom Domains → Add Custom Domain
+3. 输入你想绑定的子域名，如 `cf.kych.net`，点击「Add Custom Domain」
+4. Cloudflare 自动配置 DNS 和 SSL 证书，几分钟后即可通过 `https://cf.kych.net` 访问
+
+绑定自定义域名后，**必须** 更新后端 CORS：
 
 ```bash
-WORKER_NAME=created-rule-front NEXT_PUBLIC_API_BASE_URL=https://api.kych.net \
-  sh -c 'npm run cf:build && npm run cf:deploy'
+# 后端 /opt/gokych/.env
+CORS_ALLOWED_ORIGINS=https://cf.kych.net,https://created-rule-front.你的账号.workers.dev
+sudo systemctl restart gokych
 ```
 
-#### 可用 npm scripts
+重新构建部署前端（因为 `NEXT_PUBLIC_API_BASE_URL` 是构建时变量——不，等一下：
+如果 API 地址没变，**不需要**重新构建，只需在 Cloudflare 控制台绑定域名即可）。
+
+---
+
+#### 3.6.4 常用 npm scripts 说明
 
 | 命令 | 说明 |
 |------|------|
-| `npm run cf:build` | 使用 OpenNext 构建（读取 `.env.local` 或 shell 环境变量） |
-| `npm run cf:deploy` | 部署到 Cloudflare Workers（读取 `WORKER_NAME` 环境变量） |
-| `npm run cf:preview` | 本地预览 Worker（`npx wrangler dev`） |
+| `npm run dev` | Next.js 开发服务器（localhost:3000），连接本地后端 |
+| `npm run build` | 纯 Next.js build（供 EdgeOne/Docker 使用，不做 OpenNext 转换） |
+| `npm run cf:build` | OpenNext 构建（先生成 `.next/`，再转换为 `.open-next/` Worker 格式） |
+| `npm run cf:deploy` | 部署已构建的 `.open-next/` 到 Cloudflare（不重新构建） |
+| `npm run deploy` | = cf:build + cf:deploy，构建+部署一步到位 |
+| `npm run cf:preview` | 本地预览 Workers 运行时（`npx @opennextjs/cloudflare preview`） |
+| `npm run preview` | = cf:build + cf:preview，构建+本地预览 |
+| `npm run typecheck` | TypeScript 类型检查 |
+| `npm run lint` | ESLint 检查 |
 
-> **重要提示**：
-> - `NEXT_PUBLIC_API_BASE_URL` 是 Next.js **构建时**环境变量（会被 webpack 内联到客户端 bundle），必须在 `cf:build` 阶段设置（通过 `.env.local` 或 shell 环境变量）。**不能**通过 `wrangler secret put` 设置（那是运行时变量，构建阶段读不到）。
-> - 后端 `CORS_ALLOWED_ORIGINS` 需要添加你的 Cloudflare Workers 域名（如 `https://created-rule-front.你的账号.workers.dev` 或自定义域名），否则跨域请求会被阻止。
-> - EdgeOne 部署不受影响：EdgeOne 使用自身 Next.js 适配器，会忽略 `wrangler.jsonc`。
+---
+
+#### 3.6.5 WORKER_NAME 环境变量详解
+
+`web/wrangler.jsonc` 使用 Wrangler 原生 `${ENV_VAR:-default}` 插值语法：
+
+```jsonc
+"name": "${WORKER_NAME:-gokych}",
+"services": [
+  {
+    "binding": "WORKER_SELF_REFERENCE",
+    "service": "${WORKER_NAME:-gokych}"
+  }
+]
+```
+
+| 场景 | 命令 | Worker 名称 |
+|------|------|-------------|
+| 不设置 WORKER_NAME | `npm run deploy` | `gokych` |
+| 临时指定名称 | `WORKER_NAME=my-frontend npm run deploy` | `my-frontend` |
+| 永久指定 | 在 shell 配置（如 `~/.zshrc`）中 `export WORKER_NAME=created-rule-front` | `created-rule-front` |
+| .dev.vars（仅本地） | 在 `web/.dev.vars` 中加 `WORKER_NAME=local-test` | 本地预览时生效 |
+
+`WORKER_SELF_REFERENCE` 是 OpenNext 用于 ISR（增量静态再生成）自调用的
+服务绑定，**必须**指向当前 Worker 自身。因为 `name` 和 `service` 引用同一个
+环境变量，两者永远一致，不会出现错误 10143。
+
+---
+
+#### 3.6.6 与 EdgeOne 部署的共存
+
+GoKYCH 同时支持三种前端部署方式，互不干扰：
+
+| 部署方式 | 构建命令 | 使用的配置 | 说明 |
+|----------|----------|------------|------|
+| **EdgeOne Makers**（默认推荐） | 平台自动 `npm run build` | 无特殊配置，平台自动检测 Next.js | 国内访问最快，自动 HTTPS/CDN |
+| **Cloudflare Workers** | `npm run deploy` | `wrangler.jsonc` + `open-next.config.ts` | 海外访问快，免费额度有限 |
+| **Docker standalone** | `STANDALONE=1 npm run build` | `next.config.ts` 中 `output:"standalone"` | VM 自托管，配合 nginx |
+
+- `wrangler.jsonc`、`open-next.config.ts` 等文件对 EdgeOne 构建**无影响**
+  （EdgeOne 使用自身 Next.js 适配器，不读取 Wrangler 配置）
+- `next.config.ts` 中的 `initOpenNextCloudflareForDev()` 用 try/catch 包裹，
+  未安装 `@opennextjs/cloudflare` 时静默跳过
+- `public/_headers` 仅对 Cloudflare Pages 生效，EdgeOne/Docker 忽略
+
+---
+
+#### 3.6.7 GitHub Actions 自动部署（可选）
+
+如果你想每次 push 到 main 分支自动部署到 Cloudflare Workers：
+
+1. 在 Cloudflare Dashboard → My Profile → API Tokens → Create Token
+   - 选择「Edit Cloudflare Workers」模板
+   - 权限至少包含：Account / Workers Scripts / Edit
+   - 创建后复制 Token（只显示一次）
+
+2. 在 GitHub 仓库 → Settings → Secrets and variables → Actions → New repository secret：
+   - Name: `CLOUDFLARE_API_TOKEN`
+   - Value: 刚才复制的 Token
+   - 再添加一个：
+   - Name: `CLOUDFLARE_ACCOUNT_ID`
+   - Value: 你的 Cloudflare Account ID（在 Dashboard 右侧栏可找到）
+
+3. 在仓库创建 `.github/workflows/deploy-cloudflare.yml`：
+
+```yaml
+name: Deploy to Cloudflare Workers
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'web/**'
+      - '.github/workflows/deploy-cloudflare.yml'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - name: Deploy
+        run: npx @opennextjs/cloudflare build && npx wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          WORKER_NAME: created-rule-front
+          NEXT_PUBLIC_API_BASE_URL: https://api.kych.net
+```
+
+---
+
+#### 3.6.8 常见错误排查
+
+| 错误信息 | 原因 | 解决方法 |
+|----------|------|----------|
+| `Service binding 'WORKER_SELF_REFERENCE' references Worker 'xxx' which was not found [code: 10143]` | Worker 名称冲突：wrangler.jsonc 的 name 与控制台已有同名 Worker 不一致 | 首次部署用 `WORKER_NAME=<不存在的名字> npm run deploy`；或先在控制台删除重名 Worker |
+| `Error: Workers Paid plan is required` | 免费计划 Worker 体积 3 MiB 不够（GoKYCH 前端 gzip 后约 600KB-2MB，通常免费计划够用，但某些情况需付费） | 升级到 Workers Paid（$5/月），或减小 bundle 体积 |
+| `Cannot find module '@opennextjs/cloudflare'` | npx 下载失败或网络问题 | 手动安装：`npm install -D @opennextjs/cloudflare wrangler`，或配置 npm 镜像源 |
+| 部署成功但页面显示"文章不存在" | `NEXT_PUBLIC_API_BASE_URL` 未在构建时设置，SSR fetch 打到 `localhost:8000` | 检查 `web/.env.local` 是否存在且正确，重新 `npm run deploy` |
+| 登录后刷新显示未登录 | CORS 未配置 Workers 域名，Set-Cookie 被浏览器拦截 | 后端 `.env` 的 `CORS_ALLOWED_ORIGINS` 添加 Workers 域名，重启后端 |
+| `Authentication Error: Invalid API token` | wrangler login 过期或 token 无效 | 重新运行 `npx wrangler login` |
+| `A binding for ASSETS was not found` | `.open-next/assets/` 目录不存在或构建失败 | 先运行 `npm run cf:build` 确认构建成功，再 `npm run cf:deploy` |
+| 静态资源（CSS/JS）404 | 构建产物不完整 | 删除 `.open-next/` 目录后重新构建：`rm -rf .open-next && npm run cf:build` |
 
 ---
 

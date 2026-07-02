@@ -68,3 +68,16 @@ const nextConfig: NextConfig = {
 };
 
 export default nextConfig;
+
+// Cloudflare OpenNext dev integration: enables local bindings during `next dev`.
+// EdgeOne and Docker standalone deployments ignore this (no-op when the package
+// is not installed or when running in production builds).
+try {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { initOpenNextCloudflareForDev } = require("@opennextjs/cloudflare");
+  initOpenNextCloudflareForDev();
+} catch {
+  // @opennextjs/cloudflare is an optional devDependency; if not installed,
+  // local development works without Cloudflare bindings (which is fine for
+  // EdgeOne / Docker targets).
+}
