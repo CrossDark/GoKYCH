@@ -20,11 +20,13 @@ import (
 
 // ── GitHub release constants ─────────────────────────────────────────
 const (
-	githubRepo     = "CrossDark/GoKYCH"
-	githubAPIURL   = "https://api.github.com/repos/" + githubRepo + "/releases/latest"
-	defaultBinPath = "/opt/gokych/bin/gokych"
-	assetPrefix    = "gokych-"
-	assetSumsName  = "SHA256SUMS"
+	githubRepo      = "CrossDark/GoKYCH"
+	githubAPIURL    = "https://api.github.com/repos/" + githubRepo + "/releases/latest"
+	defaultBinPath  = "/opt/gokych/bin/gokych"
+	assetPrefix     = "gokych-"
+	assetSumsName   = "SHA256SUMS"
+	partFileSuffix  = ".part"
+	maxDownloadRetries = 5
 )
 
 var (
@@ -483,16 +485,29 @@ func (s *Server) runUpdate(goos, goarch, binPath, targetVersion string) {
 	}
 
 	dir := filepath.Dir(binPath)
-	tmp, err := os.CreateTemp(dir, ".gokych-update-")
+
+	// Use a deterministic part file name so an interrupted download can be
+	// resumed across process restarts. Format: .gokych-update-v{tag}.part
+	partPath := filepath.Join(dir, ".gokych-update-"+strings.TrimPrefix(rel.TagName, "v")+partFileSuffix)
+
+	// Clean up stale .part files from previous versions to avoid cluttering
+	// the bin directory. Errors are non-fatal.
+	cleanupStaleParts(dir, partPath)
+
+	// Open (or create) the part file. If it already exists from a prior
+	// interrupted download, downloadToFileWithProgress will send a Range
+	// header to resume from the current file size.
+	tmp, err := os.OpenFile(partPath, os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
 		updater.setErr(fmt.Sprintf("创建临时文件失败: %v", err))
 		return
 	}
-	tmpPath := tmp.Name()
+	tmpPath := partPath
 	success := false
 	defer func() {
 		if !success {
-			os.Remove(tmpPath)
+			// Keep the .part file on failure so the next attempt can resume.
+			tmp.Close()
 		}
 	}()
 
@@ -513,10 +528,14 @@ func (s *Server) runUpdate(goos, goarch, binPath, targetVersion string) {
 		} else if wantHash != "" {
 			gotHash, herr := fileSHA256(tmpPath)
 			if herr != nil {
+				os.Remove(tmpPath)
 				updater.setErr(fmt.Sprintf("计算文件哈希失败: %v", herr))
 				return
 			}
 			if !strings.EqualFold(gotHash, wantHash) {
+				// Remove the corrupted part file so the next attempt
+				// starts from scratch instead of reusing bad data.
+				os.Remove(tmpPath)
 				updater.setErr(fmt.Sprintf("SHA256 校验不匹配: 文件可能已损坏或被篡改"))
 				return
 			}
@@ -526,6 +545,7 @@ func (s *Server) runUpdate(goos, goarch, binPath, targetVersion string) {
 
 	updater.set(updateReplacing, "正在设置可执行权限...")
 	if err := os.Chmod(tmpPath, 0755); err != nil {
+		os.Remove(tmpPath)
 		updater.setErr(fmt.Sprintf("chmod 失败: %v", err))
 		return
 	}
@@ -628,57 +648,191 @@ func fetchReleaseByTag(client *http.Client, url string) (*ghRelease, error) {
 	return &rel, nil
 }
 
-// downloadToFileWithProgress downloads url to f, reporting byte counts
-// into job periodically (every ~256KB) so the frontend can show a bar.
+// cleanupStaleParts removes .part files from previous (different) versions
+// in dir. It keeps the current version's part file (keepPath) intact so
+// an interrupted download of the in-progress version can still resume.
+func cleanupStaleParts(dir, keepPath string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if !strings.HasPrefix(name, ".gokych-update-") || !strings.HasSuffix(name, partFileSuffix) {
+			continue
+		}
+		full := filepath.Join(dir, name)
+		if full == keepPath {
+			continue
+		}
+		if err := os.Remove(full); err != nil {
+			slog.Warn("update: cannot remove stale part file", "path", full, "err", err)
+		} else {
+			slog.Info("update: cleaned stale part file", "path", full)
+		}
+	}
+}
+
+// downloadToFileWithProgress downloads url to f with resume support and
+// automatic retry on transient network errors.
+//
+// Resume mechanism:
+//  1. Before each HTTP request, stat f to get its current size (existing).
+//  2. If existing > 0, send "Range: bytes={existing}-" to ask the server to
+//     send only the remaining bytes.
+//  3. A 206 Partial Content response means the server honored the range —
+//     we append to f starting from offset `existing`.
+//  4. A 200 OK response means the server ignored the Range header (rare for
+//     GitHub, but possible with proxies) — we truncate f and start over.
+//  5. On network error (timeout, connection reset, unexpected EOF), wait
+//     with exponential backoff and retry up to maxDownloadRetries times,
+//     each time re-checking the file size to resume from where we left off.
 func downloadToFileWithProgress(client *http.Client, url string, f *os.File, total int64, job *updateJobState) error {
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("User-Agent", "GoKYCH-SelfUpdater")
-	// Follow redirects explicitly? http.Client follows up to 10 by default;
-	// GitHub release assets redirect to objects.githubusercontent.com.
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return fmt.Errorf("download returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
-	}
-
-	// Use the Content-Length from the final response if we didn't get a
-	// size from the asset metadata.
-	if total <= 0 && resp.ContentLength > 0 {
-		total = resp.ContentLength
-	}
-
 	var downloaded int64
-	buf := make([]byte, 64*1024)
-	lastReport := time.Now()
-	for {
-		n, rerr := resp.Body.Read(buf)
-		if n > 0 {
-			if _, werr := f.Write(buf[:n]); werr != nil {
-				return werr
+
+	for attempt := 0; attempt < maxDownloadRetries; attempt++ {
+		if attempt > 0 {
+			backoff := time.Duration(1<<uint(attempt-1)) * time.Second
+			if backoff > 8*time.Second {
+				backoff = 8 * time.Second
 			}
-			downloaded += int64(n)
-			// Throttle progress updates to ~4/sec to avoid mutex churn.
-			if time.Since(lastReport) > 250*time.Millisecond {
-				job.setProgress(downloaded, total)
-				lastReport = time.Now()
+			job.set(updateDownloading, fmt.Sprintf("网络中断，%v 后重试（第 %d/%d 次）...", backoff, attempt+1, maxDownloadRetries))
+			slog.Warn("update: download retry", "attempt", attempt+1, "backoff", backoff, "downloaded", downloaded)
+			time.Sleep(backoff)
+		}
+
+		// Determine current file size to decide whether to send Range.
+		st, err := f.Stat()
+		if err != nil {
+			return fmt.Errorf("stat part file: %w", err)
+		}
+		existing := st.Size()
+
+		// If the file is already complete (e.g. previous attempt finished
+		// the download but failed before verification), skip the download.
+		if total > 0 && existing >= total {
+			job.setProgress(existing, total)
+			downloaded = existing
+			return nil
+		}
+
+		req, err := http.NewRequest("GET", url, nil)
+		if err != nil {
+			return err
+		}
+		req.Header.Set("User-Agent", "GoKYCH-SelfUpdater")
+		if existing > 0 {
+			req.Header.Set("Range", fmt.Sprintf("bytes=%d-", existing))
+		}
+
+		resp, err := client.Do(req)
+		if err != nil {
+			// Network-level error (DNS, timeout, connection reset) → retry.
+			downloaded = existing
+			job.setProgress(downloaded, total)
+			if attempt == maxDownloadRetries-1 {
+				return fmt.Errorf("download request failed after %d retries: %w", maxDownloadRetries, err)
+			}
+			continue
+		}
+
+		// Handle 416 Range Not Satisfiable: the server says our range is
+		// beyond the file. This means the part file is larger than the
+		// remote asset (different version?). Truncate and start over.
+		if resp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
+			resp.Body.Close()
+			slog.Warn("update: range not satisfiable, truncating part file", "existing", existing)
+			if err := f.Truncate(0); err != nil {
+				return fmt.Errorf("truncate part file: %w", err)
+			}
+			if _, err := f.Seek(0, io.SeekStart); err != nil {
+				return fmt.Errorf("seek part file: %w", err)
+			}
+			downloaded = 0
+			continue
+		}
+
+		// If the server ignored our Range request and returned 200 with the
+		// full body, we must truncate and write from the beginning.
+		if existing > 0 && resp.StatusCode == http.StatusOK {
+			slog.Info("update: server returned 200 instead of 206, restarting from beginning")
+			if err := f.Truncate(0); err != nil {
+				resp.Body.Close()
+				return fmt.Errorf("truncate part file: %w", err)
+			}
+			if _, err := f.Seek(0, io.SeekStart); err != nil {
+				resp.Body.Close()
+				return fmt.Errorf("seek part file: %w", err)
+			}
+			existing = 0
+		} else if resp.StatusCode == http.StatusPartialContent {
+			// Server honored our Range request; seek to end to append.
+			if _, err := f.Seek(0, io.SeekEnd); err != nil {
+				resp.Body.Close()
+				return fmt.Errorf("seek part file end: %w", err)
+			}
+		} else if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+			resp.Body.Close()
+			return fmt.Errorf("download returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		}
+
+		// Determine the expected total size from Content-Range or Content-Length.
+		if total <= 0 {
+			if cr := resp.Header.Get("Content-Range"); cr != "" {
+				// Content-Range: bytes 100-199/200 → total is after '/'
+				if idx := strings.LastIndex(cr, "/"); idx >= 0 {
+					fmt.Sscanf(cr[idx+1:], "%d", &total)
+				}
+			}
+			if total <= 0 && resp.ContentLength > 0 {
+				total = resp.ContentLength + existing
 			}
 		}
-		if rerr == io.EOF {
-			break
+
+		// Stream the body to disk.
+		downloaded = existing
+		buf := make([]byte, 64*1024)
+		lastReport := time.Now()
+		readErr := error(nil)
+		for {
+			n, rerr := resp.Body.Read(buf)
+			if n > 0 {
+				if _, werr := f.Write(buf[:n]); werr != nil {
+					resp.Body.Close()
+					return werr
+				}
+				downloaded += int64(n)
+				if time.Since(lastReport) > 250*time.Millisecond {
+					job.setProgress(downloaded, total)
+					lastReport = time.Now()
+				}
+			}
+			if rerr == io.EOF {
+				readErr = nil
+				break
+			}
+			if rerr != nil {
+				readErr = rerr
+				break
+			}
 		}
-		if rerr != nil {
-			return rerr
+		resp.Body.Close()
+
+		if readErr == nil {
+			// Download completed successfully for this attempt.
+			// Sync to disk before returning so a crash doesn't lose data.
+			f.Sync()
+			job.setProgress(downloaded, total)
+			return nil
 		}
+
+		// Transient read error (connection reset, timeout, etc.) → retry.
+		slog.Warn("update: read error during download, will retry",
+			"err", readErr, "downloaded", downloaded, "total", total, "attempt", attempt+1)
 	}
-	job.setProgress(downloaded, total)
-	return nil
+
+	return fmt.Errorf("download failed after %d retries; partial file kept for manual resume", maxDownloadRetries)
 }
 
 func downloadToFile(client *http.Client, url string, f *os.File) error {

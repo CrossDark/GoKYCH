@@ -2,14 +2,14 @@
 
 跨越晨昏的 Go 后端实现 — WikiDot 风格的多类型内容发布平台。
 
-Go 1.26+ · Gin · MySQL 8 · Next.js 15 前端在 `web/`
+Go 1.26+ · Gin · MySQL 8 · Next.js 16 (React 19) 前端在 `web/`
 
 ---
 
 ## 项目简介
 
 GoKYCH 是一个个人 wiki/blog 平台，参考 PyKYCH（同作者的 Python 前身）实现。后端用 Go 写，
-前端用 Next.js 15（App Router + TypeScript）。数据落在 MySQL，静态资源走文件系统。
+前端用 Next.js 16（App Router + TypeScript）。数据落在 MySQL，静态资源走文件系统。
 
 支持 5 种文章类型：
 
@@ -28,6 +28,13 @@ GoKYCH 是一个个人 wiki/blog 平台，参考 PyKYCH（同作者的 Python �
 - 行评论（≤20 字符，电脑端侧边浮泡，移动端底部）
 - 全文评论（支持 Markdown）
 - 缩略图、推荐位、置顶
+
+### 权限模型
+
+三级角色体系：
+- **owner（站长）**：最高权限，可管理用户/角色/站点设置/更新，可开关"允许所有用户编辑所有文章"
+- **admin（管理员）**：可编辑/删除所有文章、管理通知/标签/文件/首页
+- **user（普通用户）**：可创建文章；默认仅能编辑/删除自己的文章；站长开启 `allow_all_edit` 后可编辑所有文章
 
 ### Typst 独有能力
 
@@ -72,6 +79,7 @@ go build -o ./gokych ./cmd/gokych
 
 ### Docker
 
+后端单二进制镜像（仓库根 Dockerfile）：
 ```bash
 docker build -t gokych .
 docker run -d --name gokych \
@@ -83,9 +91,11 @@ docker run -d --name gokych \
   gokych
 ```
 
+前端 standalone 镜像见 `web/Dockerfile`（用于自托管 Next.js，配合 nginx 反向代理）。
+
 ### 生产部署（EdgeOne + VM）
 
-推荐架构：Next.js 前端部署在 EdgeOne Pages / Cloudflare Pages，Go 后端运行在 VPS（Nginx 反向代理）。详细部署步骤见 [docs/deployment.md](docs/deployment.md)。
+推荐架构：Next.js 前端部署在 EdgeOne Pages / Cloudflare Workers，Go 后端运行在 VPS（Nginx 反向代理）。详细部署步骤见 [docs/deployment.md](docs/deployment.md)。
 
 关键环境变量（前端）：
 - `NEXT_PUBLIC_API_BASE_URL=https://api.example.com` — 指向你的后端API地址
@@ -122,7 +132,20 @@ docker run -d --name gokych \
 ### YAML 配置
 
 - `$DATA_DIR/settings/db.yaml` — 覆盖 MySQL 设置
-- `$DATA_DIR/settings/settings.yml` — 站点元数据（标题、ICP备案、主题、首页配置、favicon），由后台 `/admin/settings` 维护
+- `$DATA_DIR/settings/settings.yml` — 站点元数据（标题、ICP备案、主题、首页配置、favicon、功能开关），由后台 `/admin/settings` 维护
+
+### 站点设置功能开关
+
+站点设置中 `features` 部分包含以下开关（后台 `/admin/settings` 可修改）：
+
+| 开关 | 默认值 | 说明 |
+|------|--------|------|
+| `enable_comments` | `true` | 启用全文评论 |
+| `enable_dark_mode` | `true` | 启用暗色模式切换 |
+| `enable_search` | `true` | 启用全文搜索 |
+| `enable_tags_sidebar` | `true` | 启用标签侧边栏 |
+| `posts_per_page` | `10` | 每页文章数 |
+| `allow_all_edit` | `false` | **站长专属**：开启后所有已登录用户可编辑/删除任意文章 |
 
 ---
 
@@ -135,23 +158,36 @@ docker run -d --name gokych \
 │   ├── api/                   # HTTP handler + 路由 + 中间件
 │   │   ├── auth.go            #   登录/注册/登出/CSRF
 │   │   ├── admin.go           #   后台 CRUD（用户/通知/设置/API Key/Passkey/更新/文件/标签/首页/资料）
-│   │   ├── articles.go        #   公共文章 API（含 typst 编译触发）
+│   │   ├── articles.go        #   公共文章 API（含 typst 编译触发、权限检查）
+│   │   ├── articles_test.go   #   文章 API 测试
+│   │   ├── article_vars.go    #   Wikidot 文章变量（%%title%% 等）
 │   │   ├── comments.go        #   评论/行评论
 │   │   ├── ratings.go         #   评分
 │   │   ├── files.go           #   文件上传/管理 + 静态资源URL重写
 │   │   ├── site.go            #   站点公开配置
+│   │   ├── themes.go          #   主题 CSS 服务
 │   │   ├── pdf.go             #   typst PDF 输出端点
+│   │   ├── search.go          #   全文搜索
+│   │   ├── passkey.go         #   WebAuthn/Passkey 端点
+│   │   ├── apikey.go          #   API Key 管理端点
+│   │   ├── cors.go / cors_test.go  # CORS 中间件
 │   │   ├── middleware.go      #   auth/csrf/session/gzip/nonce
 │   │   ├── requestid.go       #   X-Request-ID
-│   │   ├── security.go        #   CSP/HSTS/X-Frame-Options
-│   │   └── dberr.go           #   MySQL 1062 判重
+│   │   ├── security_headers.go #   CSP/HSTS/X-Frame-Options
+│   │   ├── respond.go         #   统一 JSON 响应工具
+│   │   ├── router.go          #   路由注册
+│   │   ├── server.go          #   Server 结构体 + 依赖注入
+│   │   ├── updater.go         #   在线更新检查（GitHub Release）
+│   │   ├── updater_unix.go / updater_other.go  #  平台相关重启逻辑
+│   │   ├── wikidot_lookup.go  #   Wikidot %%name%% 等内建变量
+│   │   └── wikidot_user_lookup.go  #  Wikidot 用户查找
 │   ├── auth/                  # 认证子系统
 │   │   ├── session/           #   会话管理
 │   │   ├── password/          #   bcrypt 密码哈希
 │   │   ├── ratelimit/         #   登录限流（失败锁定）
 │   │   ├── passkey/           #   WebAuthn/Passkey 无密码登录
 │   │   ├── apikey/            #   API Key 鉴权（X-API-Key 头）
-│   │   └── user/              #   用户 CRUD
+│   │   └── user/              #   用户 CRUD + 角色判断
 │   ├── content/               # 文章数据层
 │   │   ├── parsers/           #   markdown / wikidot / bbcode / html 解析器
 │   │   ├── articles.go        #   文章 CRUD + typst 缓存集成
@@ -160,36 +196,53 @@ docker run -d --name gokych \
 │   │   ├── ratings.go         #   评分
 │   │   └── tags.go            #   标签
 │   ├── core/
-│   │   ├── db/                #   数据库连接池
+│   │   ├── db/                #   数据库连接池 + dbutil.go（错误判重等工具）
 │   │   ├── schema/            #   自动建表/迁移
 │   │   ├── settings/          #   settings.yml 读写
 │   │   ├── themes/            #   主题加载
 │   │   ├── metrics/           #   Prometheus 指标
 │   │   └── logging/           #   slog 配置
+│   ├── config/                # 环境变量配置解析
 │   └── typst/                 # typst CLI 包装器
 │       ├── typst.go           #   编译/缓存/资源链接/路径重写
 │       ├── worker.go          #   异步编译 worker + 依赖级联
+│       ├── worker_state.go    #   编译状态跟踪
 │       ├── resolve.go         #   @slug 跨文章导入解析
 │       └── assets/
 │           └── template.typ   #   默认中文排版模板（物化到工作区，用户可修改）
 ├── examples/
 │   └── wikidot-demo-render/   # Wikidot 渲染示例
-├── data/                      # 运行时数据（不进git）：uploads/avatars/plugins/themes/typst
-├── web/                       # Next.js 15 前端（App Router）
-│   ├── app/                   #   路由页面
-│   ├── components/            #   React 组件
-│   ├── lib/                   #   API客户端 + 工具函数
-│   └── styles/                #   全局CSS
+├── configs/
+│   └── db.yaml.example        # DB YAML 配置模板
 ├── scripts/                   # 部署/构建脚本
+│   ├── build-release.sh       #   跨平台编译 release 二进制
+│   ├── install-backend.sh     #   从 Release 安装二进制到系统
+│   ├── install-all.sh         #   新 VM 一键初始化（后端+nginx+MySQL+TLS）
+│   └── deploy-backend.sh      #   跨机构建+推送到远端
+├── data/                      # 运行时数据（不进git）：uploads/avatars/plugins/themes/typst
+├── web/                       # Next.js 16 前端（App Router, React 19）
+│   ├── app/                   #   路由页面（公共站点 + /admin 后台）
+│   ├── components/            #   React 组件（ArticleView / AdminConfirm / MarkdownEditor 等）
+│   ├── lib/                   #   API客户端 + 工具函数 + 类型定义
+│   ├── styles/                #   全局CSS
+│   ├── middleware.ts          #   CSP nonce 生成（Edge Runtime 兼容）
+│   ├── next.config.ts         #   Next.js 配置（standalone条件启用）
+│   ├── open-next.config.ts    #   Cloudflare Workers 适配器配置
+│   ├── wrangler.jsonc         #   Cloudflare Wrangler 部署配置
+│   └── Dockerfile             #   前端 standalone 镜像
 ├── docs/                      # 部署/开发文档
-│   ├── deployment.md          #   生产部署指南（EdgeOne/Nginx/Caddy）
+│   ├── deployment.md          #   生产部署指南（EdgeOne/Cloudflare/Nginx/Caddy）
 │   ├── development.md         #   开发指南
 │   └── typst写作指南.typ       #   Typst写作指南（可发布为网站文章）
 └── wiki/                      # 项目Wiki
-    ├── Typst写作指南.md        #   Typst写作指南（Markdown版）
+    ├── API-接口文档.md
+    ├── 架构概览.md
+    ├── 数据库设计.md
     ├── 部署指南.md
     ├── 开发指南.md
-    └── ...
+    ├── 配置说明.md
+    ├── Typst写作指南.md
+    └── Home.md
 ```
 
 ---
@@ -203,7 +256,7 @@ docker run -d --name gokych \
 | GET  | `/api/site`                                    | 站点元数据 + 子站点链接    |
 | GET  | `/api/home`                                    | 首页聚合（推荐+最近+通知） |
 | GET  | `/api/articles?type=md&page=1`                 | 文章列表                   |
-| GET  | `/api/articles/{type}/{slug}`                  | 文章详情                   |
+| GET  | `/api/articles/{type}/{slug}`                  | 文章详情（含 can_edit）    |
 | GET  | `/api/articles/{type}/{slug}/pdf`              | Typst PDF 下载             |
 | GET  | `/api/search?q=foo`                            | 全文搜索（FULLTEXT索引）   |
 | GET  | `/api/labels` / `/api/labels/{tag}`            | 标签列表/标签下文章        |
@@ -211,8 +264,10 @@ docker run -d --name gokych \
 | GET  | `/api/articles/{type}/{slug}/line-comments`    | 行评论                     |
 | GET  | `/api/articles/{type}/{slug}/rating`           | 评分摘要                   |
 | GET  | `/api/notifications`                           | 通知列表（需登录）         |
+| GET  | `/api/themes/{name}.css`                       | 主题 CSS                   |
 | GET  | `/uploads/{filename}`                          | 上传的静态文件             |
 | GET  | `/avatars/{filename}`                          | 用户头像                   |
+| GET  | `/api/health`                                  | 健康检查（db+status）       |
 
 ### 认证
 
@@ -228,15 +283,16 @@ docker run -d --name gokych \
 
 | 方法   | 路径                                                  | 说明               |
 |--------|------------------------------------------------------|--------------------|
+| POST   | `/api/articles`                                      | 创建文章（任何登录用户） |
+| PUT    | `/api/articles/{type}/{slug}`                        | 更新文章（管理员/作者/allow_all_edit开启时所有用户） |
+| DELETE | `/api/articles/{type}/{slug}`                        | 删除文章（同上） |
+| POST   | `/api/articles/{type}/{slug}/recompile`              | 重编译 Typst 缓存（管理员/作者） |
 | POST   | `/api/articles/{type}/{slug}/comments`               | 发表评论           |
 | POST   | `/api/articles/{type}/{slug}/line-comments`          | 发表行评论         |
 | POST   | `/api/articles/{type}/{slug}/rating`                 | 评分               |
 | DELETE | `/api/articles/{type}/{slug}/rating`                 | 撤销评分           |
-| POST   | `/api/articles?type=md`                              | 创建文章（管理员） |
-| PUT    | `/api/articles/{type}/{slug}`                        | 更新文章（管理员） |
-| DELETE | `/api/articles/{type}/{slug}`                        | 删除文章（管理员） |
-| POST   | `/api/admin/upload`                                  | 上传文件（管理员） |
-| /api/admin/*                                              | 后台管理 API       |
+| GET/POST/DELETE | `/api/admin/files`                           | 文件管理（管理员） |
+| *      | `/api/admin/*`                                       | 后台管理 API（用户/通知/标签/设置/API Key/Passkey/更新等） |
 
 所有响应都是 JSON，错误格式 `{"error": "..."}`。GET 成功直接返回数据对象/数组；写成功返回 `{"status":"ok", ...}`。
 
@@ -254,6 +310,7 @@ docker run -d --name gokych \
 - **Gzip 压缩**：所有文本响应（JSON/HTML/JS/CSS）自动 gzip
 - **连接池调优**：默认 Pool.Min=5, Pool.Max=25
 - **静态资源长缓存**：`/uploads/*` 和 `/avatars/*` 带 1 年 Cache-Control（文件名基于hash/UUID，更新会生成新URL）
+- **渲染缓存**：文章 rendered_html 在创建/更新时预热，读请求零解析开销
 
 ---
 
@@ -298,6 +355,7 @@ npm run build
 - **Typst 引用上传文件** — 直接使用后台上传的路径（`/uploads/xxx.png`），无需配置
 - **API Key** — 后台创建 API Key，通过 `X-API-Key` 请求头鉴权，适合脚本/CI集成
 - **Passkey** — 支持 WebAuthn 无密码登录（需要配置 `APP_DOMAIN` 和 HTTPS）
+- **在线更新** — 后台 `/admin/update` 检查 GitHub Release，一键下载替换二进制并重启（仅站长）
 - **插件** — `data/plugins/` 目录可扩展功能
 
 ---

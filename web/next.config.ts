@@ -22,7 +22,7 @@ if (isProd && !isStandalone && !process.env.NEXT_PUBLIC_API_BASE_URL) {
     "(EdgeOne Makers). The browser bundle uses this env to point " +
     "cross-origin /api fetches at the Go backend. Without it, every " +
     "article detail page will render as \"文章不存在\" even though " +
-    "the article exists — see docs/deployment.md §5."
+    "the article exists — see docs/deployment.md §3.2."
   );
 }
 

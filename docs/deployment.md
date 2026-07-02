@@ -86,9 +86,9 @@ sudo ufw allow 443/tcp
 sudo ufw enable
 
 # Go（编译用；运行时只用二进制，不需要常驻）
-# 用 1.23+（仓库 go.mod 要求）
-wget https://go.dev/dl/go1.23.4.linux-amd64.tar.gz
-sudo tar -C /usr/local -xzf go1.23.4.linux-amd64.tar.gz
+# 用 1.26+（仓库 go.mod 要求 go 1.26.4）
+wget https://go.dev/dl/go1.26.4.linux-amd64.tar.gz
+sudo tar -C /usr/local -xzf go1.26.4.linux-amd64.tar.gz
 echo 'export PATH=$PATH:/usr/local/go/bin' | sudo tee /etc/profile.d/go.sh
 source /etc/profile.d/go.sh
 ```
@@ -479,7 +479,7 @@ export function apiUrl(path: string): string {
 
 | 文件 | 作用 |
 |------|------|
-| `web/wrangler.jsonc` | Wrangler 配置（Worker 名称默认为 `gokych`，`name` 和 `WORKER_SELF_REFERENCE.service` 已同步） |
+| `web/wrangler.jsonc` | Wrangler 配置（Worker 名称为 `creater-rule-web`，`name` 和 `WORKER_SELF_REFERENCE.service` 已同步；Cloudflare CI 会自动覆盖 `name`，但**不会**覆盖 `services[].service`，因此两个字段必须显式与 Dashboard 中的 Worker 名称保持一致） |
 | `web/open-next.config.ts` | OpenNext Cloudflare 适配器配置（必需，esbuild 构建时读取） |
 | `web/.dev.vars` | 本地开发环境变量（`NEXTJS_ENV=development`） |
 | `web/public/_headers` | Cloudflare Pages 静态资源缓存头 |
@@ -488,8 +488,9 @@ export function apiUrl(path: string): string {
 | `.gitignore` | 已包含 `.open-next/`、`.wrangler/`、`.dev.vars`、`.env.local` |
 
 `@opennextjs/cloudflare` 和 `wrangler` 已添加到 `dependencies`（确保云端生产构建时也会安装），`npm install` 时会自动安装。
-Worker 默认名称为 `gokych`（`name` 和 `WORKER_SELF_REFERENCE.service` 已同步为同一值），
-如需自定义名称，需同时修改 `web/wrangler.jsonc` 中的 `name` 和 `services[0].service` 两个字段（参考文件头部注释）。
+Worker 名称通过 `web/wrangler.jsonc` 静态配置（OpenNext 构建阶段不支持环境变量插值），
+`name` 和 `WORKER_SELF_REFERENCE.service` 两个字段必须完全一致且与 Cloudflare Dashboard 中的 Worker 名称相同
+（详见 §4.5）。
 
 ---
 
@@ -580,11 +581,13 @@ Wrangler 会启动一个本地 Worker 模拟器（通常在 `http://localhost:87
 ```bash
 cd web/
 
-# 构建并部署（使用 wrangler.jsonc 中配置的 Worker 名称 "gokych"）
+# 构建并部署（使用 wrangler.jsonc 中配置的 Worker 名称）
 npm run cf:deploy
 
 # 如果需要自定义 Worker 名称，先修改 web/wrangler.jsonc 中的 name 和 services[0].service，
-# 提交后再运行部署命令
+# 确保两者完全一致且与 Cloudflare Dashboard 中的 Worker 名称匹配，提交后再运行部署命令。
+# 注意：Cloudflare Workers Builds（Git 连接部署）会自动用 Dashboard 中的 Worker 名称
+# 覆盖 name 字段，但不会覆盖 services[].service，所以两个字段都必须显式设置正确。
 ```
 
 部署成功后，Wrangler 会输出类似：
@@ -726,35 +729,30 @@ sudo systemctl restart gokych
 `web/wrangler.jsonc` 使用静态名称配置（OpenNext 构建阶段不支持环境变量插值）：
 
 ```jsonc
-"name": "gokych",
+"name": "creater-rule-web",
 "services": [
   {
     "binding": "WORKER_SELF_REFERENCE",
-    "service": "gokych"
+    "service": "creater-rule-web"
   }
 ]
 ```
 
-如需自定义 Worker 名称（例如避免与已有 Worker 冲突），**必须同时修改以下两个字段**，否则会出现 10143 错误：
+如需自定义 Worker 名称（例如避免与已有 Worker 冲突，或 Dashboard 中已创建了不同名称的 Worker），**必须同时修改以下两个字段**，否则会出现 10143 错误：
 
-1. `"name": "your-custom-name"`
-2. `"services[0].service": "your-custom-name"`
-
-修改示例：
-```jsonc
-"name": "created-rule-front",
-"services": [
-  {
-    "binding": "WORKER_SELF_REFERENCE",
-    "service": "created-rule-front"
-  }
-]
-```
+1. `"name": "your-worker-name"`
+2. `"services[0].service": "your-worker-name"`
 
 > **重要**：
 > - 修改后必须将 `web/wrangler.jsonc` 的变更提交到 Git，云端构建时才能生效。
-> - `WORKER_SELF_REFERENCE` 是 OpenNext 用于 ISR（增量静态再生成）自调用的
+> - `WORKER_SELF_REFERENCE` 是 OpenNext 用于 ISR（增量静态再生成）和缓存 revalidate 自调用的
 >   服务绑定，**必须**指向当前 Worker 自身。两个字段保持一致即可避免 10143 错误。
+> - **Cloudflare Workers Builds CI 的坑**：通过 Dashboard "Connect to Git" 部署时，
+>   CI 系统会自动用 Dashboard 中创建的 Worker 名称覆盖 `name` 字段，但**不会**覆盖
+>   `services[].service`。因此 `services[0].service` 必须预先硬编码为正确的 Worker 名称，
+>   不能依赖 CI 自动同步。如果 CI 日志出现 "Failed to match Worker name" 警告紧接着
+>   10143 错误，说明 `services[0].service` 与 Dashboard 中的 Worker 名称不一致——
+>   修改 `web/wrangler.jsonc` 中两个字段为 Dashboard 显示的名称，提交后重新部署即可。
 > - CLI 本地部署时也会读取 wrangler.jsonc，无需通过环境变量指定名称。
 
 ---
@@ -836,7 +834,7 @@ jobs:
 
 | 错误信息 | 原因 | 解决方法 |
 |----------|------|----------|
-| `Service binding 'WORKER_SELF_REFERENCE' references Worker 'xxx' which was not found [code: 10143]` | Worker 名称冲突：wrangler.jsonc 的 name 与 services[0].service 不一致，或与控制台已有同名 Worker 冲突 | 修改 `web/wrangler.jsonc`，确保 `"name"` 和 `"services[0].service"` 两个字段值完全相同且不与已有Worker冲突，提交后重新部署 |
+| `Service binding 'WORKER_SELF_REFERENCE' references Worker 'xxx' which was not found [code: 10143]` | 三种可能：(1) wrangler.jsonc 的 name 与 services[0].service 不一致；(2) services[0].service 与 Cloudflare Dashboard 中的 Worker 名称不匹配（Cloudflare CI 只覆盖 name 不覆盖 services[].service）；(3) 控制台存在同名但不同类型的 Worker | 确保 `web/wrangler.jsonc` 中 `"name"` 和 `"services[0].service"` 两个字段值完全相同，且与 Dashboard 中 Worker 名称一致；若 CI 日志有 "Failed to match Worker name" 警告，说明名称被 CI 覆盖但 services 未同步，以警告中的期望名称为准修改两个字段后提交重新部署 |
 | `Error: Workers Paid plan is required` | 免费计划不支持 Git 构建（Dashboard方式）或 Worker 体积超限 | 升级到 Workers Paid（$5/月）；CLI方式免费计划通常够用（gzip约600KB-2MB，在3MiB限制内） |
 | `Could not resolve "@opennextjs/cloudflare"` 或 `Cannot find module '@opennextjs/cloudflare'` | 构建依赖在 devDependencies 中，云端生产构建（NODE_ENV=production）时 npm 不安装 devDependencies；或使用 npx 导致网络问题/版本不一致 | 已修复：`@opennextjs/cloudflare` 和 `wrangler` 已移至 `dependencies`；确保 Build command 使用 `npm run cf:build`（本地依赖）而非 `npx @opennextjs/cloudflare build` |
 | Dashboard构建失败：`ENOENT: no such file or directory, open 'wrangler.jsonc'` | Root directory 设错了（设为仓库根目录而非web/） | Dashboard → Worker → Settings → Builds → Root directory 改为 `web`，重新部署 |
@@ -935,7 +933,7 @@ RPID 用了 `localhost` — 这只在 `APP_DOMAIN=localhost:3000` 时发生。
 | EdgeOne 上 `output: "standalone"` 干扰 | standalone 输出模式与 Makers 自带构建器冲突 | `web/next.config.ts` 已改成条件 opt-in（`STANDALONE=1` 才开），Makers 不设此环境变量，零冲突 |
 | EdgeOne 改了构建器默认行为 | 平台升级可能改变默认 Next.js 构建参数 | 锁定仓库 `package.json` 里 `next` 版本；如遇问题在控制台"构建设置"显式指定 |
 | CORS preflight 走错中间件 | OPTIONS 请求如果被 CSRF 中间件拦了，浏览器永远收不到 204 → 实际 mutation 也发不出去 | CORS 已在 `csrfMiddleware` 之前安装，preflight 直接 204 短路（commit `90498db`） |
-| Cloudflare WORKER_SELF_REFERENCE 错误 10143 | wrangler.jsonc 中 `name` 和 `services[0].service` 字段值不一致，或与控制台已存在的 Worker 不匹配 | 确保 `web/wrangler.jsonc` 中 `"name"` 和 `"services[0].service"` 两个字段值完全相同；首次部署前确保控制台没有同名冲突的 Worker；修改后提交到 Git 再部署 |
+| Cloudflare WORKER_SELF_REFERENCE 错误 10143 | 三种原因：(1) wrangler.jsonc 中 `name` 和 `services[0].service` 字段值不一致；(2) services[0].service 与 Dashboard 中 Worker 名称不匹配（Cloudflare Workers Builds CI 只覆盖 name 不覆盖 services[].service）；(3) 首次 Dashboard Git 连接部署时 wrangler.jsonc 的 name 与 CI 期望名称不一致 | 确保两个字段值完全相同且与 Dashboard Worker 名称一致；CI 日志中的 "Failed to match Worker name" 警告会显示 CI 期望的名称，以该名称为准修改两个字段，提交后重新部署 |
 | Cloudflare 构建 `Could not resolve "@opennextjs/cloudflare"` | 构建依赖在 devDependencies 中，NODE_ENV=production 时 npm 不安装；或使用 npx 临时下载导致网络问题/版本不一致 | 已修复：`@opennextjs/cloudflare` 和 `wrangler` 在 `dependencies` 中；Dashboard Build command 使用 `npm run cf:build` |
 | Cloudflare Workers 跨域失败 | 后端 `CORS_ALLOWED_ORIGINS` 未包含 workers.dev 域名或自定义域名 | 后端 `.env` 的 `CORS_ALLOWED_ORIGINS` 添加 Cloudflare 域名，逗号分隔 |
 | Cloudflare 构建后 API 请求仍指向 localhost | `NEXT_PUBLIC_API_BASE_URL` 未在构建时设置（这是构建时变量，不是运行时变量） | 创建 `web/.env.local` 写入 `NEXT_PUBLIC_API_BASE_URL=https://api.example.com`，或构建时通过 shell 环境变量传入；不要用 `wrangler secret put` 设置 NEXT_PUBLIC_* 变量 |
@@ -1104,6 +1102,8 @@ GOARCH=arm64 ./scripts/deploy-backend.sh
 
 | commit    | 主题                                                         |
 |-----------|--------------------------------------------------------------|
+| *new*     | fix(cloudflare): Worker 名称统一为 creater-rule-web，修复 CI 10143 错误 |
+| *new*     | feat(admin): allow_all_edit 站长专属开关（所有用户编辑所有文章） |
 | *new*     | feat(deploy): scripts/install-all.sh — Ubuntu 一键后端初始化 (curl\|sudo bash) |
 | `0baf836` | docs(deploy): clarify deploy-backend.sh runs on operator machine, not on the VM |
 | `9441bee` | docs(deploy): rewrite deployment.md for EdgeOne Makers; tick done items in TODO |
