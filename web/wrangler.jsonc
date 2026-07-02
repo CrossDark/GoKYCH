@@ -1,53 +1,36 @@
 {
-  // Cloudflare Workers 配置文件（用于 @opennextjs/cloudflare 部署）
-  // 腾讯云 EdgeOne Makers 部署会忽略此文件，使用平台内置适配器。
+  // Cloudflare Workers 配置文件（由 scripts/gen-wrangler-config.cjs 自动生成，勿手动编辑）
+  // ──────────────────────────────────────────────────────────────────────
+  // Worker 名称通过环境变量 WORKER_NAME / CF_WORKER_NAME 设置，默认 "ywda-web"。
+  // name 和 services[0].service 始终保持一致，避免 Cloudflare CI 覆盖 name 后
+  // service 指向旧名称导致 10143 错误。
   //
-  // ─── Worker 名称 ────────────────────────────────────────
-  // name 和 WORKER_SELF_REFERENCE.service 必须完全一致（两者都指同一个 Worker），
-  // 且必须与 Cloudflare Dashboard 中创建的 Worker 名称完全一致，否则会出现
-  // 10143 错误（Service binding references Worker which was not found）。
+  // Cloudflare Workers Builds（Git 连接部署）会自动用 Dashboard 中的 Worker
+  // 名称覆盖 name 字段，但不会覆盖 services[].service，因此必须确保两个字段
+  // 使用同一个值。
   //
-  // Cloudflare Workers Builds（Git 连接部署）会自动用 Dashboard 中的 Worker 名称
-  // 覆盖 name 字段，但不会覆盖 services[].service，所以两个字段都必须显式设为
-  // 正确的名称。如需自定义 Worker 名称，同时修改下面两个字段：
+  // 用法：
+  //   WORKER_NAME=my-worker npm run cf:deploy   # 自定义 Worker 名称
+  //   npm run cf:deploy                         # 使用默认值 ywda-web
   //
-  //   "name": "your-worker-name",
-  //   "services": [{ "binding": "WORKER_SELF_REFERENCE", "service": "your-worker-name" }]
-  //
-  // ─── 构建环境变量 ────────────────────────────────────────
-  // NEXT_PUBLIC_API_BASE_URL 是 Next.js 构建时变量，不要写在此文件中，
-  // 通过以下方式设置：
-  //   CLI 部署：web/.env.local 或 shell 环境变量
-  //   Dashboard 部署：Builds → Environment variables
-  //
-  // ─── 部署命令 ───────────────────────────────────────────
-  //   npm install         # 首次安装依赖
-  //   npx wrangler login  # CLI 方式：首次登录 Cloudflare
-  //   npm run cf:build    # 构建（仅构建，不部署）
-  //   npm run cf:deploy   # 部署到 Cloudflare（需先构建）
-  //   npm run cf:preview  # 本地预览 Workers 运行时
-
+  // 构建环境变量 NEXT_PUBLIC_API_BASE_URL 不在此文件中设置，通过 .env.local
+  // 或 CI 环境变量传入。
   "$schema": "node_modules/wrangler/config-schema.json",
+
+  // Worker 名称（来自环境变量 WORKER_NAME，默认 ywda-web）
   "name": "ywda-web",
   "main": ".open-next/worker.js",
   "compatibility_date": "2026-03-01",
-  "compatibility_flags": [
-    "nodejs_compat",
-    "global_fetch_strictly_public"
-  ],
-
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
   "assets": {
     "directory": ".open-next/assets",
     "binding": "ASSETS"
   },
 
+  // WORKER_SELF_REFERENCE 是 OpenNext ISR/缓存自调用绑定，必须指向自身
   "services": [
-    {
-      "binding": "WORKER_SELF_REFERENCE",
-      "service": "ywda-web"
-    }
+    { "binding": "WORKER_SELF_REFERENCE", "service": "ywda-web" }
   ],
-
   "observability": {
     "enabled": true
   }

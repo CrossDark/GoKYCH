@@ -8,6 +8,10 @@
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
+    "cf:config": "node scripts/gen-wrangler-config.cjs",
+    "precf:build": "node scripts/gen-wrangler-config.cjs",
+    "precf:deploy": "node scripts/gen-wrangler-config.cjs",
+    "precf:preview": "node scripts/gen-wrangler-config.cjs",
     "cf:build": "opennextjs-cloudflare build",
     "cf:deploy": "opennextjs-cloudflare deploy",
     "cf:preview": "opennextjs-cloudflare preview"
