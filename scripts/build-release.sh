@@ -13,6 +13,7 @@
 #   dist/gokych-linux-amd64     (Ubuntu/Debian x86_64)
 #   dist/gokych-linux-arm64     (Ubuntu ARM / Graviton)
 #   dist/SHA256SUMS             (所有 binary 的 sha256，install 脚本会读)
+#   dist/RELEASE_NOTES.md       (中英双语 release notes)
 #
 # 用法：
 #   scripts/build-release.sh v0.1.0                # CLI 位置参数
@@ -25,9 +26,15 @@
 #   交互式 TTY → 主动 read 询问输入（git describe 拿到合法 tag 时可回车确认）；
 #   非 TTY (CI / pipe) → 直接 die 并提示用 --version / -v 显式传。
 #
+# 上传目标（--upload）：
+#   - GitHub:  使用 gh CLI（必须已登录）
+#   - GitCode: 使用 curl + GITCODE_TOKEN 环境变量（私人令牌，需 projects 权限）
+#              同时自动推送 tag 到 GitCode remote（如果配置了的话）
+#
 # 前置：
-#   - Go 1.22+（CGO_ENABLED=0 跨平台编译）
-#   - gh（GitHub CLI）— 只有 --upload 才需要
+#   - Go 1.26+（CGO_ENABLED=0 跨平台编译）
+#   - gh（GitHub CLI）— 只有上传 GitHub 时需要
+#   - GITCODE_TOKEN 环境变量 — 只有上传 GitCode 时需要
 #
 # 版本格式：vX.Y.Z 或 X.Y.Z（可带 -rc1 / -alpha.1 等 pre-release 后缀）
 # ────────────────────────────────────────────────────────────────────
@@ -250,31 +257,128 @@ TABLE_END
 } > "$RELEASE_NOTES"
 ok "RELEASE_NOTES.md 已生成 (中英双语 + 推荐 install-all.sh)"
 
-# ── 6. 上传到 GitHub Release（可选） ──
+# ── GitCode 仓库常量（大小写敏感，与 remote URL 一致） ──
+GC_OWNER="CrossDark"
+GC_REPO="GoKych"
+GC_API="https://gitcode.com/api/v5"
+GC_REMOTE="GitCode"
+
+# ── 6. 上传到 GitHub / GitCode Release（可选） ──
 if [[ "$UPLOAD" -eq 1 ]]; then
-  if ! command -v gh >/dev/null 2>&1; then
-    die "gh (GitHub CLI) 未安装 — 跳过上传或者先 brew install gh"
-  fi
-  if ! gh auth status >/dev/null 2>&1; then
-    die "gh 未登录 — 先 gh auth login"
-  fi
   TAG="v${VERSION#v}"  # 把 v0.1.0 标准化
   # 防御性二次检查:第 1.5 步 --upload 已 prompt 过,这里再卡一次
   is_valid_version "$VERSION" || die "VERSION=$VERSION 仍不是合法 semver — 用 --version v0.1.0 / -v v0.1.0 / VERSION=v0.1.0 env 显式传"
-  log "create/update release ${TAG}…"
-  if gh release view "$TAG" >/dev/null 2>&1; then
-    log "release 已存在，上传新资产…"
-    gh release upload "$TAG" "$DIST"/* --clobber
+
+  # ── 6a. 先推送 tag 到两个 remote（release 依赖 tag 存在） ──
+  log "推送 tag ${TAG} 到 remotes…"
+  if git -C "$REPO_ROOT" rev-parse "$TAG" >/dev/null 2>&1; then
+    # tag 已存在本地，直接推送
+    git -C "$REPO_ROOT" push origin "$TAG" 2>&1 | sed 's/^/  [origin] /' || warn "推送 tag 到 GitHub 失败（可能无权限或网络问题）"
+    if git -C "$REPO_ROOT" remote get-url "$GC_REMOTE" >/dev/null 2>&1; then
+      git -C "$REPO_ROOT" push "$GC_REMOTE" "$TAG" 2>&1 | sed 's/^/  [gitcode] /' || warn "推送 tag 到 GitCode 失败（可能无权限或网络问题）"
+    else
+      warn "GitCode remote 未配置，跳过推 tag（配置: git remote add GitCode https://gitcode.com/CrossDark/GoKych.git）"
+    fi
   else
-    log "创建新 release…"
-    gh release create "$TAG" "$DIST"/* \
-      --title "gokych $TAG" \
-      --notes-file "$RELEASE_NOTES"
+    warn "tag ${TAG} 不存在于本地 — 跳过自动推 tag。请先 git tag -a ${TAG} -m '${TAG}' && git push origin ${TAG} && git push GitCode ${TAG}"
   fi
-  ok "上传完成：https://github.com/CrossDark/GoKYCH/releases/tag/$TAG"
+
+  # ── 6b. GitHub 上传 ──
+  if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+    log "上传到 GitHub…"
+    if gh release view "$TAG" >/dev/null 2>&1; then
+      log "GitHub release 已存在，上传新资产…"
+      gh release upload "$TAG" "$DIST"/* --clobber 2>&1 | sed 's/^/  /'
+    else
+      log "创建 GitHub release…"
+      gh release create "$TAG" "$DIST"/* \
+        --title "gokych $TAG" \
+        --notes-file "$RELEASE_NOTES" 2>&1 | sed 's/^/  /'
+    fi
+    ok "GitHub 上传完成：https://github.com/CrossDark/GoKYCH/releases/tag/$TAG"
+  else
+    warn "gh (GitHub CLI) 未安装或未登录，跳过 GitHub 上传"
+  fi
+
+  # ── 6c. GitCode 上传（Gitee-compatible API v5） ──
+  # API 文档（Gitee）: https://gitee.com/api/v5/swagger
+  # GitCode 实现 Gitee v5 API 的子集：
+  #   创建 release:  POST /repos/{owner}/{repo}/releases  (formData)
+  #                  返回 release 对象包含 id 字段
+  #   上传附件:      POST /repos/{owner}/{repo}/releases/{id}/attach_files  (multipart)
+  # 认证: access_token 作为 formData 字段传
+  # 注意: GitCode GET release 响应不包含 id 字段（与标准 Gitee 不同），
+  #      但 POST 创建响应会返回完整对象含 id。若 release 已存在，
+  #      建议在 GitCode 网页端先删除旧 release 再重新上传，或上传到新 tag。
+  if [[ -n "${GITCODE_TOKEN:-}" ]]; then
+    log "上传到 GitCode…"
+
+    GCUA="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 GoKYCH-ReleaseScript"
+
+    # 先检查 release 是否已存在（GET 不带 id，但能确认存在性）
+    GC_EXIST_CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "User-Agent: $GCUA" \
+      "${GC_API}/repos/${GC_OWNER}/${GC_REPO}/releases/tags/${TAG}" 2>/dev/null)
+
+    if [[ "$GC_EXIST_CODE" == "200" ]]; then
+      warn "GitCode release ${TAG} 已存在。GitCode GET API 不返回 release id，无法增量上传附件。"
+      warn "请在 GitCode 网页端删除旧 release 后重新运行本脚本，或使用新 tag。"
+      warn "（旧 release 页面: https://gitcode.com/${GC_OWNER}/${GC_REPO}/releases/tag/${TAG}）"
+      # 继续尝试 POST 覆盖，万一 GitCode 支持 upsert
+    fi
+
+    log "创建 GitCode release ${TAG}…"
+    # -F "body=<file" 让 curl 从文件读取 body 内容，避免 shell 转义问题
+    GC_CREATE_BODY=$(curl -s -w "\n%{http_code}" -X POST \
+      -H "User-Agent: $GCUA" \
+      -F "access_token=${GITCODE_TOKEN}" \
+      -F "tag_name=${TAG}" \
+      -F "name=gokych ${TAG}" \
+      -F "body=<${RELEASE_NOTES}" \
+      -F "target_commitish=$(git -C "$REPO_ROOT" rev-parse HEAD)" \
+      -F "prerelease=false" \
+      "${GC_API}/repos/${GC_OWNER}/${GC_REPO}/releases" 2>&1) || true
+    GC_CREATE_CODE=$(echo "$GC_CREATE_BODY" | tail -1)
+    GC_CREATE_RESP=$(echo "$GC_CREATE_BODY" | sed '$d')
+    GC_REL_ID=""
+
+    if [[ "$GC_CREATE_CODE" == "201" || "$GC_CREATE_CODE" == "200" ]]; then
+      GC_REL_ID=$(echo "$GC_CREATE_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin).get('id',''))" 2>/dev/null || echo "")
+      if [[ -n "$GC_REL_ID" ]]; then
+        ok "GitCode release 创建成功 (id=${GC_REL_ID})，开始上传附件…"
+      else
+        warn "GitCode release 创建成功但响应中无 id，无法上传附件"
+        warn "响应: $(echo "$GC_CREATE_RESP" | head -c 300)"
+      fi
+    else
+      warn "GitCode 创建 release 失败 (HTTP ${GC_CREATE_CODE}): $(echo "$GC_CREATE_RESP" | head -c 300)"
+    fi
+
+    if [[ -n "$GC_REL_ID" ]]; then
+      for f in "$DIST"/*; do
+        fname="$(basename "$f")"
+        printf "  上传 %s … " "$fname"
+        UP_RESP=$(curl -s -w "\n%{http_code}" -X POST \
+          -H "User-Agent: $GCUA" \
+          -F "access_token=${GITCODE_TOKEN}" \
+          -F "file=@${f}" \
+          "${GC_API}/repos/${GC_OWNER}/${GC_REPO}/releases/${GC_REL_ID}/attach_files" 2>&1) || true
+        UP_CODE=$(echo "$UP_RESP" | tail -1)
+        UP_BODY=$(echo "$UP_RESP" | sed '$d')
+        if [[ "$UP_CODE" == "201" || "$UP_CODE" == "200" ]]; then
+          echo "✓"
+        else
+          echo "✗ (HTTP ${UP_CODE})"
+          echo "    $(echo "$UP_BODY" | head -c 200)"
+        fi
+      done
+      ok "GitCode 上传完成：https://gitcode.com/${GC_OWNER}/${GC_REPO}/releases/tag/${TAG}"
+    fi
+  else
+    warn "GITCODE_TOKEN 未设置，跳过 GitCode 上传（设置: export GITCODE_TOKEN=你的私人令牌）"
+  fi
 fi
 
 ok "全部完成 🚀"
 echo
-echo "产物在 ${DIST}/，把下面的文件作为 asset 上传到 GitHub Release："
+echo "产物在 ${DIST}/，把下面的文件作为 asset 上传到 GitHub/GitCode Release："
 ls -1 "$DIST" | sed 's/^/  /'

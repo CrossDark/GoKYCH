@@ -95,16 +95,17 @@ for a in d.get('assets', []):
       return 0
       ;;
     gitcode)
-      # GitCode 的 release API 不一定 1:1 兼容 GitHub。给一个尝试：
-      # https://gitcode.com/api/v3/repos/{owner}/{repo}/releases
-      local url="https://gitcode.com/api/v3/repos/$GC_REPO/releases"
+      # GitCode Gitee-compatible API v5（v3 返回 404）
+      # https://gitcode.com/api/v5/repos/{owner}/{repo}/releases
+      local ua="Mozilla/5.0 (compatible; GoKYCH-Installer/1.0)"
+      local url="https://gitcode.com/api/v5/repos/$GC_REPO/releases"
       if [[ "$GOKYCH_VERSION" == "latest" ]]; then
         url="$url/latest"
       else
         url="$url/tags/$GOKYCH_VERSION"
       fi
       local json
-      json=$(curl -fsSL "$url" 2>/dev/null) || return 1
+      json=$(curl -fsSL -H "User-Agent: $ua" -H "Accept: application/json" "$url" 2>/dev/null) || return 1
       TAG=$(echo "$json" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('tag_name','') or d.get('name',''))" 2>/dev/null) || return 1
       [[ -n "$TAG" ]] || return 1
       # GitCode asset 路径：https://gitcode.com/{owner}/{repo}/releases/download/{tag}/{asset}
