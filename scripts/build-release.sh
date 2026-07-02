@@ -28,13 +28,20 @@
 #
 # 上传目标（--upload）：
 #   - GitHub:  使用 gh CLI（必须已登录）
-#   - GitCode: 使用 curl + GITCODE_TOKEN 环境变量（私人令牌，需 projects 权限）
-#              同时自动推送 tag 到 GitCode remote（如果配置了的话）
+#   - GitCode: 使用 curl 调用 API
+#     - GITCODE_TOKEN  （必填）: 私人令牌，用于 v5 API 创建 release
+#       在 https://gitcode.com/setting/provate-tokens 创建（需 projects 权限）
+#     - GITCODE_COOKIE （可选）: 浏览器会话 Cookie，用于 v2 API 上传二进制附件
+#       未设置时仅创建 release 和 tag，不上传二进制文件
+#       获取方法: 登录 gitcode.com → F12 → Application → Cookies → 复制所有 cookie
+#     同时自动推送 tag 到 GitCode remote（如果配置了的话）
 #
 # 前置：
 #   - Go 1.26+（CGO_ENABLED=0 跨平台编译）
 #   - gh（GitHub CLI）— 只有上传 GitHub 时需要
-#   - GITCODE_TOKEN 环境变量 — 只有上传 GitCode 时需要
+#   - python3（macOS/Linux 通常预装，用于 JSON 解析）
+#   - GITCODE_TOKEN 环境变量 — 上传 GitCode 时必填
+#   - GITCODE_COOKIE 环境变量 — 上传 GitCode 二进制附件时需要
 #
 # 版本格式：vX.Y.Z 或 X.Y.Z（可带 -rc1 / -alpha.1 等 pre-release 后缀）
 # ────────────────────────────────────────────────────────────────────
@@ -260,8 +267,11 @@ ok "RELEASE_NOTES.md 已生成 (中英双语 + 推荐 install-all.sh)"
 # ── GitCode 仓库常量（大小写敏感，与 remote URL 一致） ──
 GC_OWNER="CrossDark"
 GC_REPO="GoKych"
-GC_API="https://gitcode.com/api/v5"
+GC_API_V5="https://gitcode.com/api/v5"
+GC_API_V2="https://web-api.gitcode.com/api/v2"
+GC_REPO_ID="${GC_OWNER}%2F${GC_REPO}"
 GC_REMOTE="GitCode"
+GC_UA="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36"
 
 # ── 6. 上传到 GitHub / GitCode Release（可选） ──
 if [[ "$UPLOAD" -eq 1 ]]; then
@@ -303,78 +313,246 @@ if [[ "$UPLOAD" -eq 1 ]]; then
     warn "gh (GitHub CLI) 未安装或未登录，跳过 GitHub 上传"
   fi
 
-  # ── 6c. GitCode 上传（Gitee-compatible API v5） ──
-  # API 文档（Gitee）: https://gitee.com/api/v5/swagger
-  # GitCode 实现 Gitee v5 API 的子集：
-  #   创建 release:  POST /repos/{owner}/{repo}/releases  (formData)
-  #                  返回 release 对象包含 id 字段
-  #   上传附件:      POST /repos/{owner}/{repo}/releases/{id}/attach_files  (multipart)
-  # 认证: access_token 作为 formData 字段传
-  # 注意: GitCode GET release 响应不包含 id 字段（与标准 Gitee 不同），
-  #      但 POST 创建响应会返回完整对象含 id。若 release 已存在，
-  #      建议在 GitCode 网页端先删除旧 release 再重新上传，或上传到新 tag。
+  # ── 6c. GitCode 上传 ──
+  # GitCode 有两套 API：
+  #   v5 API (Gitee 兼容):  用 GITCODE_TOKEN（私人令牌）认证，支持创建 release，
+  #                         但响应不含数字 id，attach_files 端点也未实现（返回404）。
+  #   v2 API (Web API):     需要 GITCODE_COOKIE（浏览器会话 Cookie）认证，
+  #                         支持 release CRUD 和两阶段附件上传（OBS 预签名）。
+  #
+  # 两阶段附件上传流程：
+  #   1. POST /api/v2/projects/{repoId}/releases/upload  → 获取 OBS 预签名 URL
+  #   2. PUT  <signed-url>                                 → 上传文件到对象存储
+  #   3. PUT  /api/v2/projects/{repoId}/releases/{tag}    → 更新 release 的 links 关联附件
+  #
+  # 获取 GITCODE_COOKIE：
+  #   登录 gitcode.com → F12 打开开发者工具 → Application/存储 → Cookies →
+  #   复制 gitcode.com 下所有 cookie 的 name=value 对（分号分隔）。
+  #   Cookie 有效期约数周，过期后需重新获取。
   if [[ -n "${GITCODE_TOKEN:-}" ]]; then
     log "上传到 GitCode…"
 
-    GCUA="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 GoKYCH-ReleaseScript"
-
-    # 先检查 release 是否已存在（GET 不带 id，但能确认存在性）
-    GC_EXIST_CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "User-Agent: $GCUA" \
-      "${GC_API}/repos/${GC_OWNER}/${GC_REPO}/releases/tags/${TAG}" 2>/dev/null)
+    # 先确保 release 存在（v5 API 创建）
+    GC_EXIST_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+      -H "User-Agent: $GC_UA" \
+      "${GC_API_V5}/repos/${GC_OWNER}/${GC_REPO}/releases/tags/${TAG}" 2>/dev/null)
 
     if [[ "$GC_EXIST_CODE" == "200" ]]; then
-      warn "GitCode release ${TAG} 已存在。GitCode GET API 不返回 release id，无法增量上传附件。"
-      warn "请在 GitCode 网页端删除旧 release 后重新运行本脚本，或使用新 tag。"
-      warn "（旧 release 页面: https://gitcode.com/${GC_OWNER}/${GC_REPO}/releases/tag/${TAG}）"
-      # 继续尝试 POST 覆盖，万一 GitCode 支持 upsert
+      log "GitCode release ${TAG} 已存在"
+    else
+      log "创建 GitCode release ${TAG}（v5 API）…"
+      GC_CREATE_BODY=$(curl -s -w "\n%{http_code}" -X POST \
+        -H "User-Agent: $GC_UA" \
+        -F "access_token=${GITCODE_TOKEN}" \
+        -F "tag_name=${TAG}" \
+        -F "name=gokych ${TAG}" \
+        -F "body=<${RELEASE_NOTES}" \
+        -F "target_commitish=$(git -C "$REPO_ROOT" rev-parse HEAD)" \
+        -F "prerelease=false" \
+        "${GC_API_V5}/repos/${GC_OWNER}/${GC_REPO}/releases" 2>&1) || true
+      GC_CREATE_CODE=$(echo "$GC_CREATE_BODY" | tail -1)
+      GC_CREATE_RESP=$(echo "$GC_CREATE_BODY" | sed '$d')
+      if [[ "$GC_CREATE_CODE" == "201" || "$GC_CREATE_CODE" == "200" ]]; then
+        ok "GitCode release 创建成功"
+      else
+        warn "GitCode 创建 release 响应 HTTP ${GC_CREATE_CODE}: $(echo "$GC_CREATE_RESP" | head -c 200)"
+      fi
     fi
 
-    log "创建 GitCode release ${TAG}…"
-    # -F "body=<file" 让 curl 从文件读取 body 内容，避免 shell 转义问题
-    GC_CREATE_BODY=$(curl -s -w "\n%{http_code}" -X POST \
-      -H "User-Agent: $GCUA" \
-      -F "access_token=${GITCODE_TOKEN}" \
-      -F "tag_name=${TAG}" \
-      -F "name=gokych ${TAG}" \
-      -F "body=<${RELEASE_NOTES}" \
-      -F "target_commitish=$(git -C "$REPO_ROOT" rev-parse HEAD)" \
-      -F "prerelease=false" \
-      "${GC_API}/repos/${GC_OWNER}/${GC_REPO}/releases" 2>&1) || true
-    GC_CREATE_CODE=$(echo "$GC_CREATE_BODY" | tail -1)
-    GC_CREATE_RESP=$(echo "$GC_CREATE_BODY" | sed '$d')
-    GC_REL_ID=""
-
-    if [[ "$GC_CREATE_CODE" == "201" || "$GC_CREATE_CODE" == "200" ]]; then
-      GC_REL_ID=$(echo "$GC_CREATE_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin).get('id',''))" 2>/dev/null || echo "")
-      if [[ -n "$GC_REL_ID" ]]; then
-        ok "GitCode release 创建成功 (id=${GC_REL_ID})，开始上传附件…"
+    # ── 上传二进制附件（需要 GITCODE_COOKIE） ──
+    if [[ -n "${GITCODE_COOKIE:-}" ]]; then
+      if ! command -v python3 >/dev/null 2>&1; then
+        warn "python3 未安装，跳过 GitCode 二进制附件上传"
       else
-        warn "GitCode release 创建成功但响应中无 id，无法上传附件"
-        warn "响应: $(echo "$GC_CREATE_RESP" | head -c 300)"
+        # 获取 release 的当前状态（v2 GET，浏览器 UA 即可）
+        GC_GET_BODY=$(curl -s -w "\n%{http_code}" \
+          -H "User-Agent: $GC_UA" \
+          -H "Accept: application/json" \
+          -H "Referer: https://gitcode.com/" \
+          "${GC_API_V2}/projects/${GC_REPO_ID}/releases/${TAG}" 2>&1) || true
+        GC_GET_CODE=$(echo "$GC_GET_BODY" | tail -1)
+        GC_GET_RESP=$(echo "$GC_GET_BODY" | sed '$d')
+
+        if [[ "$GC_GET_CODE" != "200" ]]; then
+          warn "获取 GitCode release 信息失败 (HTTP ${GC_GET_CODE})，跳过附件上传"
+        else
+          # 提取现有 links（避免重复添加）
+          GC_EXISTING_LINKS=$(GC_GET_RESP="$GC_GET_RESP" python3 -c '
+import os, json, re
+d = os.environ.get("GC_GET_RESP", "")
+try:
+    d = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", " ", d)
+    r = json.loads(d)
+    links = []
+    for l in ((r.get("assets") or {}).get("links") or []):
+        links.append({"name": l.get("name"), "url": l.get("url"), "attachment_id": l.get("attachment_id")})
+    print(json.dumps(links))
+except Exception:
+    print("[]")
+' 2>/dev/null || echo '[]')
+
+          GC_LINKS_FILE="$(mktemp)"
+          echo '[]' > "$GC_LINKS_FILE"
+          # 注意: 此处不使用 trap 清理临时文件，避免覆盖外层 trap
+
+          for f in "$DIST"/*; do
+            fname="$(basename "$f")"
+            fsize=$(stat -f%z "$f" 2>/dev/null || stat -c%s "$f" 2>/dev/null)
+
+            case "$fname" in
+              *.sha256|SHA256SUMS|*.md) ftype="text/plain" ;;
+              *)                       ftype="application/octet-stream" ;;
+            esac
+
+            printf "  上传 %s (%s) … " "$fname" "$(du -h "$f" | cut -f1)"
+
+            # Step 1: 获取 OBS 预签名 URL
+            SIGNED_BODY=$(curl -s -w "\n%{http_code}" -X POST \
+              -H "User-Agent: $GC_UA" \
+              -H "Accept: application/json" \
+              -H "Content-Type: application/json" \
+              -H "Referer: https://gitcode.com/${GC_OWNER}/${GC_REPO}/releases/new" \
+              -H "Origin: https://gitcode.com" \
+              -H "Cookie: ${GITCODE_COOKIE}" \
+              -d "{\"type\":\"RELEASE\",\"size\":${fsize},\"file_name\":\"${fname}\",\"content_type\":\"${ftype}\",\"project_id\":\"${GC_REPO_ID}\"}" \
+              "${GC_API_V2}/projects/${GC_REPO_ID}/releases/upload" 2>&1) || true
+            SIGNED_CODE=$(echo "$SIGNED_BODY" | tail -1)
+            SIGNED_RESP=$(echo "$SIGNED_BODY" | sed '$d')
+
+            if [[ "$SIGNED_CODE" != "200" ]]; then
+              echo "✗ (签名 URL HTTP ${SIGNED_CODE})"
+              echo "    $(echo "$SIGNED_RESP" | head -c 200)"
+              continue
+            fi
+
+            # 用 python3 解析签名响应
+            SIGNED_FIELDS=$(SIGNED_RESP="$SIGNED_RESP" GC_OWNER="$GC_OWNER" GC_REPO="$GC_REPO" TAG="$TAG" FNAME="$fname" python3 -c '
+import os, json, sys
+from urllib.parse import quote
+d = os.environ.get("SIGNED_RESP", "")
+try:
+    j = json.loads(d)
+    if "error_code" in j:
+        sys.exit(1)
+    urls = [k for k in j.keys() if k.startswith("http")]
+    if not urls:
+        sys.exit(1)
+    signed_url = urls[0]
+    info = j[signed_url]
+    owner = os.environ["GC_OWNER"]
+    repo = os.environ["GC_REPO"]
+    tag = os.environ["TAG"]
+    fn = os.environ["FNAME"]
+    cdn = "https://gitcode.com/{}/{}/releases/download/{}/{}".format(owner, repo, tag, quote(fn))
+    out = {
+        "signedUrl": signed_url,
+        "attachmentId": info.get("attachment_id", ""),
+        "cdnAddr": cdn,
+        "contentType": info.get("Content-Type", "application/octet-stream"),
+        "obsAcl": info.get("x-obs-acl", "private"),
+        "obsMetaProjectId": info.get("x-obs-meta-project-id", ""),
+        "obsCallback": info.get("x-obs-callback", ""),
+    }
+    for k, v in out.items():
+        print("{}={}".format(k.upper(), json.dumps(v)))
+except Exception as e:
+    print("PARSE_ERROR={}".format(json.dumps(str(e))))
+' 2>/dev/null) || true
+
+            if [[ -z "$SIGNED_FIELDS" || "$SIGNED_FIELDS" == *PARSE_ERROR* ]]; then
+              echo "✗ (解析签名响应失败)"
+              continue
+            fi
+
+            eval "$SIGNED_FIELDS"
+
+            if [[ -z "${SIGNEDURL:-}" || -z "${ATTACHMENTID:-}" ]]; then
+              echo "✗ (解析签名 URL 失败)"
+              continue
+            fi
+
+            # Step 2: PUT 文件到 OBS
+            PUT_EXTRA_HEADERS=()
+            [[ -n "${OBSMETAPROJECTID:-}" ]] && PUT_EXTRA_HEADERS+=(-H "x-obs-meta-project-id: ${OBSMETAPROJECTID}")
+            [[ -n "${OBSCALLBACK:-}" ]] && PUT_EXTRA_HEADERS+=(-H "x-obs-callback: ${OBSCALLBACK}")
+
+            PUT_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
+              -H "Content-Type: ${CONTENTTYPE:-$ftype}" \
+              -H "x-obs-acl: ${OBSACL:-private}" \
+              "${PUT_EXTRA_HEADERS[@]}" \
+              --data-binary "@${f}" \
+              "$SIGNEDURL" 2>/dev/null) || true
+
+            if [[ "$PUT_CODE" -ge 200 && "$PUT_CODE" -lt 300 ]]; then
+              echo "✓"
+              GC_LINKS_FILE="$GC_LINKS_FILE" FNAME="$fname" CDN_URL="$CDNADDR" ATTACH_ID="$ATTACHMENTID" python3 -c '
+import os, json
+f = os.environ["GC_LINKS_FILE"]
+arr = json.loads(open(f).read() or "[]")
+arr.append({"name": os.environ["FNAME"], "url": os.environ["CDN_URL"], "attachment_id": os.environ["ATTACH_ID"], "action": "create"})
+open(f, "w").write(json.dumps(arr))
+'
+            else
+              echo "✗ (OBS HTTP ${PUT_CODE})"
+            fi
+          done
+
+          # Step 3: 合并 links 并 PUT 更新 release
+          GC_NEW_LINKS=$(cat "$GC_LINKS_FILE")
+          rm -f "$GC_LINKS_FILE"
+
+          if [[ "$GC_NEW_LINKS" != "[]" ]]; then
+            log "关联附件到 release…"
+
+            GC_MERGED_LINKS=$(GC_EXISTING_LINKS="$GC_EXISTING_LINKS" GC_NEW_LINKS="$GC_NEW_LINKS" python3 -c '
+import os, json
+existing = json.loads(os.environ.get("GC_EXISTING_LINKS", "[]"))
+new_links = json.loads(os.environ.get("GC_NEW_LINKS", "[]"))
+new_names = {l["name"] for l in new_links}
+merged = [l for l in existing if l.get("name") not in new_names] + new_links
+cleaned = [{"name": l["name"], "url": l["url"], "attachment_id": l["attachment_id"], "action": l.get("action", "create")} for l in merged]
+print(json.dumps(cleaned))
+' 2>/dev/null || echo "$GC_NEW_LINKS")
+
+            # 用 python3 构建完整 PUT body
+            GC_PUT_BODY=$(TAG="$TAG" RELEASE_NOTES="$RELEASE_NOTES" GC_MERGED_LINKS="$GC_MERGED_LINKS" python3 -c '
+import os, json
+desc = open(os.environ["RELEASE_NOTES"]).read()
+links = json.loads(os.environ.get("GC_MERGED_LINKS", "[]"))
+body = {
+    "tag_name": os.environ["TAG"],
+    "name": "gokych " + os.environ["TAG"],
+    "description": desc,
+    "links": links,
+    "assets": []
+}
+print(json.dumps(body))
+' 2>/dev/null)
+
+            PUT_REL_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
+              -H "User-Agent: $GC_UA" \
+              -H "Accept: application/json" \
+              -H "Content-Type: application/json" \
+              -H "Referer: https://gitcode.com/${GC_OWNER}/${GC_REPO}/releases/edit/${TAG}" \
+              -H "Origin: https://gitcode.com" \
+              -H "Cookie: ${GITCODE_COOKIE}" \
+              -d "$GC_PUT_BODY" \
+              "${GC_API_V2}/projects/${GC_REPO_ID}/releases/${TAG}" 2>/dev/null) || true
+
+            if [[ "$PUT_REL_CODE" -ge 200 && "$PUT_REL_CODE" -lt 300 ]]; then
+              ok "GitCode 附件上传完成：https://gitcode.com/${GC_OWNER}/${GC_REPO}/releases/tag/${TAG}"
+            else
+              warn "关联附件到 release 失败 (HTTP ${PUT_REL_CODE})，文件已上传但未关联"
+            fi
+          else
+            warn "没有文件成功上传到 OBS"
+          fi
+        fi
       fi
     else
-      warn "GitCode 创建 release 失败 (HTTP ${GC_CREATE_CODE}): $(echo "$GC_CREATE_RESP" | head -c 300)"
-    fi
-
-    if [[ -n "$GC_REL_ID" ]]; then
-      for f in "$DIST"/*; do
-        fname="$(basename "$f")"
-        printf "  上传 %s … " "$fname"
-        UP_RESP=$(curl -s -w "\n%{http_code}" -X POST \
-          -H "User-Agent: $GCUA" \
-          -F "access_token=${GITCODE_TOKEN}" \
-          -F "file=@${f}" \
-          "${GC_API}/repos/${GC_OWNER}/${GC_REPO}/releases/${GC_REL_ID}/attach_files" 2>&1) || true
-        UP_CODE=$(echo "$UP_RESP" | tail -1)
-        UP_BODY=$(echo "$UP_RESP" | sed '$d')
-        if [[ "$UP_CODE" == "201" || "$UP_CODE" == "200" ]]; then
-          echo "✓"
-        else
-          echo "✗ (HTTP ${UP_CODE})"
-          echo "    $(echo "$UP_BODY" | head -c 200)"
-        fi
-      done
-      ok "GitCode 上传完成：https://gitcode.com/${GC_OWNER}/${GC_REPO}/releases/tag/${TAG}"
+      warn "GITCODE_COOKIE 未设置，跳过 GitCode 二进制附件上传"
+      warn "（仅创建了 release 和 tag。要上传二进制，请设置 GITCODE_COOKIE 环境变量）"
+      warn "获取方法：登录 gitcode.com → F12 → Application → Cookies → 复制所有 cookie"
     fi
   else
     warn "GITCODE_TOKEN 未设置，跳过 GitCode 上传（设置: export GITCODE_TOKEN=你的私人令牌）"
