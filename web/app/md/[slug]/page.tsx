@@ -3,9 +3,9 @@ import { renderArticleDetailError } from "@/components/ArticleDetailError";
 import { ArticleView } from "@/components/ArticleView";
 import type { Metadata } from "next";
 
-// ISR: revalidate article content every 60s. Comments/ratings are fetched
+// ISR: revalidate article content every 300s (5min). Comments/ratings are fetched
 // client-side after hydration, so cached HTML stays fresh enough.
-export const revalidate = 60;
+export const revalidate = 300;
 
 interface Props {
   params: Promise<{ slug: string }>;

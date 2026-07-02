@@ -97,37 +97,27 @@ func (s *Server) getArticle(c *gin.Context) {
 		return
 	}
 
-	// ETag / short-TTL cache for the aggregated detail (P3-28). The tag covers
-	// only PUBLIC state (article id + last update), so it's safe to share
-	// across users. Logged-in users see per-user fields (can_edit, their own
-	// rating), so we never 304 for them and disable caching; anonymous reads
-	// get a private 30s cache + conditional 304 on a matching If-None-Match.
-	//
-	// ETag is computed BEFORE the comments/line-comments/rating sub-queries so
-	// a 304 response short-circuits the DB load. A cache hit shouldn't pay for
-	// comments/ratings the client already has.
+	// ETag is based on article id + last update. Cached HTML is the public/anon
+	// view (identical for all users), so even logged-in visitors can get a 304
+	// when the article hasn't changed. Personalised fields (can_edit, user
+	// rating) are in separate JSON fields and don't affect the ETag.
 	currentUser := CurrentUserFromContext(c)
 	etag := fmt.Sprintf("\"%d-%d\"", a.ID, a.UpdatedAt.Unix())
 	c.Header("ETag", etag)
 	if currentUser == nil {
-		c.Header("Cache-Control", "private, max-age=30")
-		if c.GetHeader("If-None-Match") == etag {
-			c.Status(http.StatusNotModified)
-			return
-		}
+		// Anonymous: allow CDN/Edge caching since HTML is identical for all.
+		// Use a longer max-age because DB-level caching means regenerating is
+		// cheap, but the CDN can hold it longer until invalidated.
+		c.Header("Cache-Control", "public, max-age=60")
 	} else {
-		c.Header("Cache-Control", "no-store")
+		c.Header("Cache-Control", "private, max-age=30")
+	}
+	if c.GetHeader("If-None-Match") == etag {
+		c.Status(http.StatusNotModified)
+		return
 	}
 
-	// The vars injection needs the rating summary, so we
-	// load it BEFORE the render. We do the load lazily here
-	// (after the cheaper comments/line-comments queries that
-	// come later in this handler) to keep the original
-	// ordering of error reporting — a rating load failure
-	// should still produce a 500, not silently omit
-	// `%%rating%%` from the rendered output. voterKey is
-	// empty for anonymous users; the rating summary ignores
-	// it and returns the unfiltered average.
+	// Load rating summary (needed for response regardless of cache hit).
 	voterKey := ""
 	if currentUser != nil {
 		voterKey = content.VoterKey(&currentUser.ID, currentUser.Username)
@@ -139,56 +129,17 @@ func (s *Server) getArticle(c *gin.Context) {
 		return
 	}
 
-	// Render with a context that wires up the page-lookup
-	// adapter (for `[[include …]]` / `[[module ListPages]]`)
-	// and the per-article `%%var%%` substitutions
-	// (`%%user_name%%`, `%%title%%`, `%%tags%%`, `%%rating%%`,
-	// `%%created_at%%`, etc.). For non-wikidot types the
-	// context is a no-op (only the wikidot renderer reads it
-	// today), so this stays free for md/bbcode/html.
-	lookup := &wikidotPageLookup{
-		db:          s.DB,
-		currentType: a.Type,
-		currentSlug: a.Slug,
-	}
-	if currentUser != nil {
-		lookup.currentUserID = &currentUser.ID
-	}
-	// UserLookup is wired alongside PageLookup so the
-	// renderer's `[[user Name]]` mentions resolve to the
-	// users table — the link gets the user's nickname /
-	// avatar / staff badge instead of the typed name.
-	// The lookup is a thin DB-only adapter (no per-render
-	// state) so a single instance is reused; constructing
-	// it per render is still cheaper than the per-render
-	// PageLookup allocation pattern.
-	userLookup := &wikidotUserLookup{db: s.DB}
-	vars := buildArticleVars(a, currentUser, rating)
-	renderCtx := &parsers.RenderContext{
-		PageLookup:  lookup,
-		UserLookup:  userLookup,
-		Vars:        vars,
-		ArticleType: a.Type,
-	}
-	// For typst articles, check async compile status BEFORE rendering to
-	// avoid a redundant cache lookup (renderTypst calls CompileHTMLCached
-	// internally, but we need to know the status first to decide whether
-	// to auto-enqueue, show a placeholder, or use cached HTML).
-	//
-	// Flow:
-	//   1. If a queue row exists with pending/compiling → show "compiling…".
-	//   2. If a queue row exists with failed → show error.
-	//   3. If a queue row exists with success → render normally (cache hit).
-	//   4. If NO queue row exists, check whether the cache has HTML:
-	//      - cache hit → render normally (article was compiled before
-	//        the queue system existed, or was compiled via recompile API).
-	//      - cache miss → auto-enqueue the article for compilation and
-	//        show "compiling…" so the first visitor triggers the build
-	//        instead of staring at a permanent "not yet compiled" message.
+	// Determine the article HTML: prefer pre-rendered cache (zero CPU cost),
+	// fall back to live rendering if cache is empty (shouldn't happen for
+	// non-typst articles post-WarmCache, but handles the race where an
+	// article was just created and the render hasn't finished yet).
+	var html template.HTML
 	var typstShowCompileMsg bool
 	var typstCompileErr string
 	var compileStatus *typst.CompileStatus
+
 	if atype == "typst" {
+		// Typst: check async compile status first.
 		cs, cerr := typst.GetCompileStatus(s.DB, a.ID)
 		if cerr != nil {
 			slog.Error("getArticle: typst compile status", "article_id", a.ID, "err", cerr)
@@ -201,13 +152,8 @@ func (s *Server) getArticle(c *gin.Context) {
 				typstShowCompileMsg = true
 				typstCompileErr = cs.ErrorMessage
 			}
-			// cs != nil → queue record exists; do NOT auto-enqueue here
-			// (the worker is already handling it, or it permanently failed).
 		} else {
-			// cs == nil && cerr == nil: no queue record. Check whether the
-			// cache has HTML. If not, auto-enqueue so the first visitor
-			// triggers compilation instead of seeing a permanent
-			// "not yet compiled" placeholder.
+			// No queue record — check cache, auto-enqueue if missing.
 			if typst.Available() {
 				if _, cacheErr := typst.CompileHTMLCached(a.ID, ""); cacheErr != nil {
 					slog.Info("getArticle: typst cache miss with no queue, auto-enqueuing",
@@ -216,8 +162,6 @@ func (s *Server) getArticle(c *gin.Context) {
 						slog.Warn("getArticle: auto-enqueue failed", "article_id", a.ID, "err", qerr)
 					} else {
 						typstShowCompileMsg = true
-						// Re-fetch status after enqueuing so the response
-						// includes the fresh 'pending' record.
 						if freshCs, freshErr := typst.GetCompileStatus(s.DB, a.ID); freshErr == nil {
 							compileStatus = freshCs
 						}
@@ -227,12 +171,40 @@ func (s *Server) getArticle(c *gin.Context) {
 		}
 	}
 
-	html := parsers.RenderCtx(parsers.ArticleType(atype), a.ID, a.Content, renderCtx)
+	// Use cached rendered_html if available; otherwise render live.
+	if a.RenderedHTML != "" && !typstShowCompileMsg {
+		html = template.HTML(a.RenderedHTML)
+	} else {
+		// Live render fallback (cache miss or typst compiling).
+		lookup := &wikidotPageLookup{
+			db:          s.DB,
+			currentType: a.Type,
+			currentSlug: a.Slug,
+		}
+		if currentUser != nil {
+			lookup.currentUserID = &currentUser.ID
+		}
+		userLookup := &wikidotUserLookup{db: s.DB}
+		vars := buildArticleVars(a, currentUser, rating)
+		renderCtx := &parsers.RenderContext{
+			PageLookup:  lookup,
+			UserLookup:  userLookup,
+			Vars:        vars,
+			ArticleType: a.Type,
+		}
+		html = parsers.RenderCtx(parsers.ArticleType(atype), a.ID, a.Content, renderCtx)
+		// Async cache fill for non-typst articles so the next read hits cache.
+		if atype != "typst" && a.RenderedHTML == "" {
+			go func() {
+				if err := content.RenderAndSave(s.DB, a); err != nil {
+					slog.Warn("getArticle: async cache fill failed", "article_id", a.ID, "err", err)
+				}
+			}()
+		}
+	}
+
 	// Rewrite /uploads/ and /avatars/ relative paths to absolute URLs
-	// when PublicURL is set (cross-origin CDN deployments). Without
-	// this, <img src="/uploads/foo.png"> in rendered article HTML
-	// would resolve against the CDN origin which doesn't serve those
-	// files (504/404). Dev (PublicURL="") passes through unchanged.
+	// when PublicURL is set (cross-origin CDN deployments).
 	html = template.HTML(s.rewriteStaticAssetURLs(string(html)))
 
 	// Override HTML with compile-in-progress / error messages for typst
@@ -246,9 +218,6 @@ func (s *Server) getArticle(c *gin.Context) {
 		}
 	}
 
-	// Sub-query failures are now fail-fast: a partial response (article +
-	// half-broken comments) is worse than a 500, since the frontend can't
-	// distinguish "no comments" from "comments failed to load".
 	comments, err := content.GetComments(s.DB, a.ID)
 	if err != nil {
 		slog.Error("getArticle: load comments", "article_id", a.ID, "err", err)
@@ -270,21 +239,13 @@ func (s *Server) getArticle(c *gin.Context) {
 		return
 	}
 
-	// (voterKey was set earlier — before the render — so the
-	// rating summary could be loaded with the viewer's score
-	// for the `%%rating%%` substitution. canEdit is still
-	// local to this block.)
 	canEdit := false
 	if currentUser != nil {
-		// Admin/owner can edit; author can edit their own.
 		if currentUser.Role == "admin" || currentUser.Role == "owner" ||
 			(a.AuthorID != nil && *a.AuthorID == currentUser.ID) {
 			canEdit = true
 		}
 	}
-	// (rating was already loaded earlier, before the render, so
-	// `%%rating%%` could be substituted into the wikidot vars
-	// map. We reuse the existing local here.)
 
 	c.JSON(http.StatusOK, ArticleDetail{
 		Article:           a,

@@ -19,6 +19,7 @@ import (
 	"gokych/internal/auth/ratelimit"
 	"gokych/internal/auth/session"
 	"gokych/internal/config"
+	"gokych/internal/content"
 	coredb "gokych/internal/core/db"
 	"gokych/internal/core/logging"
 	"gokych/internal/core/metrics"
@@ -98,6 +99,27 @@ func main() {
 	// "data/typst" which breaks when the binary isn't run from the project
 	// root (e.g. systemd, Docker, tests).
 	typst.SetWorkspaceDir(cfg.App.DataDir + "/typst")
+
+	// Hook typst compilation success → sync post-processed HTML into
+	// articles.rendered_html so subsequent reads hit the DB cache directly
+	// without re-running typst or the post-processor.
+	typst.AfterCompileFunc = func(articleID int, htmlBody string, depIDs []int) {
+		if err := content.UpdateTypstHTML(db, articleID, htmlBody); err != nil {
+			slog.Warn("main: failed to sync typst rendered_html", "article_id", articleID, "err", err)
+		}
+		// Re-render any non-typst dependents whose cache was invalidated.
+		for _, did := range depIDs {
+			var dtype, dslug string
+			if err := db.QueryRow(`SELECT type, slug FROM articles WHERE id = ?`, did).Scan(&dtype, &dslug); err == nil {
+				if dtype != "typst" {
+					if da, err := content.GetArticle(db, dtype, dslug); err == nil {
+						_ = content.RenderAndSave(db, da)
+					}
+				}
+			}
+		}
+	}
+
 	// Start the async typst compilation worker pool (2 workers = up to 2
 	// concurrent compilations, further bounded by compileSem at 4 in the
 	// typst package itself). This decouples HTTP request latency from
@@ -105,6 +127,13 @@ func main() {
 	// the background.
 	typst.StartWorker(db, 2)
 	defer typst.StopWorker()
+
+	// Warm the article render cache at startup (non-blocking batch).
+	// Pre-populates articles.rendered_html for existing articles so the
+	// first visitor after deploy gets instant HTML.
+	go func() {
+		content.WarmCache(db, 50)
+	}()
 	srv := api.NewServer(db, sess, limiter, m, cfg.App.DataDir, cfg.App.TrustedProxies)
 	// PublicURL is the absolute base URL the backend is reachable at
 	// from the public internet — used to build absolute /uploads/*

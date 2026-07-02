@@ -37,6 +37,14 @@ var db *sql.DB
 // called once at startup (after the pool is ready) for the cache to take effect.
 func SetDB(d *sql.DB) { db = d }
 
+// AfterCompileFunc is an optional callback invoked after a successful
+// typst compilation (both HTML + PDF saved to typst_cache). The main
+// package sets this to sync the post-processed HTML into articles.rendered_html
+// without creating a circular dependency between the typst and rendercache
+// packages. The callback receives the article ID, the raw HTML body from
+// typst, and the resolved dependency IDs.
+var AfterCompileFunc func(articleID int, htmlBody string, depIDs []int)
+
 // workspaceDir is the directory typst compiles in. Relative imports
 // (e.g. `#import "template.typ"`) resolve from here, and any image / asset
 // references the user puts in the article can sit alongside the .typ
@@ -333,6 +341,22 @@ func CompileAndCache(articleID int, source string) error {
 	); err != nil {
 		return fmt.Errorf("typst: cache write failed: %w", err)
 	}
+
+	// Sync dependencies to article_deps for cascading invalidation.
+	if _, derr := db.Exec(`DELETE FROM article_deps WHERE article_id = ?`, articleID); derr == nil {
+		for _, did := range depIDs {
+			_, _ = db.Exec(
+				`INSERT IGNORE INTO article_deps (article_id, depends_on_id) VALUES (?, ?)`,
+				articleID, did,
+			)
+		}
+	}
+
+	// Fire post-compile hook.
+	if AfterCompileFunc != nil {
+		AfterCompileFunc(articleID, html, depIDs)
+	}
+
 	slog.Info("typst: compiled and cached", "article_id", articleID, "deps", len(depIDs))
 	return nil
 }

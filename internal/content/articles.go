@@ -17,6 +17,13 @@ type Article struct {
 	Slug      string    `json:"slug"`
 	Title     string    `json:"title"`
 	Content   string    `json:"content"`
+	// RenderedHTML holds the fully post-processed HTML for the anonymous/
+	// public view (no per-user vars, no admin preview). It is populated
+	// at write time (CreateArticle / UpdateArticle) and on lazy backfill
+	// for pre-cache articles; the API GET handler serves it directly from
+	// this field without re-parsing source, eliminating markdown/wikidot
+	// CPU cost on the read path.
+	RenderedHTML   string    `json:"-"`
 	AuthorID  *int      `json:"author_id"`
 	// Author* are LEFT-JOINed from users so articles with no author (or with
 	// an author whose user row was deleted) still serialise cleanly. All
@@ -59,12 +66,14 @@ type rowScanner interface {
 
 func scanArticleWithUser(s rowScanner, a *Article) error {
 	var username, nickname, avatar sql.NullString
+	var renderedHTML sql.NullString
 	if err := s.Scan(
-		&a.ID, &a.Type, &a.Slug, &a.Title, &a.Content, &a.AuthorID,
+		&a.ID, &a.Type, &a.Slug, &a.Title, &a.Content, &renderedHTML, &a.AuthorID,
 		&username, &nickname, &avatar, &a.CreatedAt, &a.UpdatedAt,
 	); err != nil {
 		return err
 	}
+	a.RenderedHTML = renderedHTML.String
 	a.AuthorName = username.String
 	a.AuthorNickname = nickname.String
 	a.AuthorAvatar = avatar.String
@@ -132,7 +141,7 @@ func ListArticles(db *sql.DB, atype string, authorID *int, page, perPage, before
 	// (avoids the N+1 trap of fetching every author separately for the
 	// homepage list). Anonymous / deleted-author rows surface with empty
 	// author_* — checked via omitempty on the front-end.
-	listSQL := `SELECT a.id, a.type, a.slug, a.title, LEFT(a.content, 200) AS content, a.author_id,
+	listSQL := `SELECT a.id, a.type, a.slug, a.title, LEFT(a.content, 200) AS content, NULL AS rendered_html, a.author_id,
 		            u.username, u.nickname, u.avatar, a.created_at, a.updated_at
 		 FROM articles a LEFT JOIN users u ON u.id = a.author_id WHERE ` + whereSQL
 	listArgs := append(append([]any{}, args...), perPage)
@@ -197,7 +206,7 @@ func ListArticles(db *sql.DB, atype string, authorID *int, page, perPage, before
 func GetArticle(db *sql.DB, atype, slug string) (*Article, error) {
 	a := &Article{}
 	row := db.QueryRow(
-		`SELECT a.id, a.type, a.slug, a.title, a.content, a.author_id,
+		`SELECT a.id, a.type, a.slug, a.title, a.content, a.rendered_html, a.author_id,
 		        u.username, u.nickname, u.avatar, a.created_at, a.updated_at
 		 FROM articles a LEFT JOIN users u ON u.id = a.author_id
 		 WHERE a.type = ? AND a.slug = ?`, atype, slug,
@@ -216,7 +225,8 @@ func GetArticle(db *sql.DB, atype, slug string) (*Article, error) {
 // CreateArticle inserts a new article and returns it.
 // For typst articles, compilation is enqueued asynchronously instead of
 // blocking the request — readers will see a "compiling..." placeholder until
-// the background worker finishes.
+// the background worker finishes. For other types, the HTML is pre-rendered
+// immediately into articles.rendered_html so subsequent reads are zero-parse.
 func CreateArticle(db *sql.DB, atype, slug, title, content string, authorID *int) (*Article, error) {
 	_, err := db.Exec(
 		`INSERT INTO articles (type, slug, title, content, author_id) VALUES (?, ?, ?, ?, ?)`,
@@ -229,10 +239,15 @@ func CreateArticle(db *sql.DB, atype, slug, title, content string, authorID *int
 	if err != nil {
 		return nil, err
 	}
-	// Enqueue async typst compilation (non-blocking; errors logged but don't
-	// fail the create — the queue row shows 'failed' with CLI-not-found msg
-	// if typst isn't installed).
-	if atype == "typst" {
+	// Pre-render HTML for non-typst articles (typst is async).
+	if atype != "typst" {
+		if rerr := RenderAndSave(db, a); rerr != nil {
+			slog.Warn("createArticle: render cache failed", "article_id", a.ID, "err", rerr)
+		}
+	} else {
+		// Enqueue async typst compilation (non-blocking; errors logged but don't
+		// fail the create — the queue row shows 'failed' with CLI-not-found msg
+		// if typst isn't installed).
 		if qerr := typst.EnqueueCompile(db, a.ID); qerr != nil {
 			slog.Warn("failed to enqueue typst compile on create", "article_id", a.ID, "err", qerr)
 		}
@@ -241,13 +256,19 @@ func CreateArticle(db *sql.DB, atype, slug, title, content string, authorID *int
 }
 
 // UpdateArticle updates title and content. Returns the updated article.
-// For typst articles, the old cache is invalidated and a fresh async
-// compilation is enqueued; dependents are also re-queued so their compiled
-// output picks up the changes.
-func UpdateArticle(db *sql.DB, atype, slug, title, content string) (*Article, error) {
-	_, err := db.Exec(
+// For all article types the rendered_html cache is invalidated; non-typst
+// articles are synchronously re-rendered into the cache, while typst
+// articles enqueue an async compilation. Caching invalidation cascades
+// to dependents (wikidot [[include]] / typst @import).
+func UpdateArticle(db *sql.DB, atype, slug, title, contentStr string) (*Article, error) {
+	// Load the article first so we can get its ID for cascade invalidation.
+	old, err := GetArticle(db, atype, slug)
+	if err != nil {
+		return nil, err
+	}
+	_, err = db.Exec(
 		`UPDATE articles SET title = ?, content = ? WHERE type = ? AND slug = ?`,
-		title, content, atype, slug,
+		title, contentStr, atype, slug,
 	)
 	if err != nil {
 		return nil, err
@@ -256,17 +277,34 @@ func UpdateArticle(db *sql.DB, atype, slug, title, content string) (*Article, er
 	if err != nil {
 		return nil, err
 	}
-	// Enqueue async re-compile for typst. The old cache is deleted so readers
-	// immediately see the "compiling..." placeholder instead of stale HTML.
-	if atype == "typst" {
+	// Cascade-invalidate this article + all articles that depend on it
+	// ([[include]] / @import chains).
+	invalidated := InvalidateCacheCascading(db, old.ID)
+	// Re-render self for non-typst; typst goes through the async queue.
+	if atype != "typst" {
+		if rerr := RenderAndSave(db, a); rerr != nil {
+			slog.Warn("updateArticle: render cache failed", "article_id", a.ID, "err", rerr)
+		}
+		// Re-render invalidated dependents (non-typst only).
+		for _, did := range invalidated {
+			if did == a.ID {
+				continue
+			}
+			if derr := renderAndSaveByID(db, did); derr != nil {
+				slog.Warn("updateArticle: dependent re-render failed", "dep_id", did, "err", derr)
+			}
+		}
+	} else {
+		// Enqueue async re-compile for typst. The old cache is already
+		// cleared (rendered_html = NULL) so readers immediately see the
+		// "compiling..." placeholder.
 		if _, derr := db.Exec(`DELETE FROM typst_cache WHERE article_id = ?`, a.ID); derr != nil {
 			slog.Warn("failed to invalidate typst_cache", "article_id", a.ID, "err", derr)
 		}
 		if qerr := typst.EnqueueCompile(db, a.ID); qerr != nil {
 			slog.Warn("failed to enqueue typst compile on update", "article_id", a.ID, "err", qerr)
 		}
-		// Cascade: any article that @imports this one (directly or
-		// transitively) must also be re-compiled against the new source.
+		// Cascade: any article that @imports this one must also be re-compiled.
 		if ierr := typst.EnqueueDependents(db, a.ID); ierr != nil {
 			slog.Warn("failed to enqueue typst dependents", "article_id", a.ID, "err", ierr)
 		}
@@ -274,24 +312,81 @@ func UpdateArticle(db *sql.DB, atype, slug, title, content string) (*Article, er
 	return a, nil
 }
 
+// renderAndSaveByID loads an article by ID and re-renders its cache.
+// Used during cascading invalidation when only the article ID is known.
+func renderAndSaveByID(db *sql.DB, id int) error {
+	var atype, slug string
+	err := db.QueryRow(`SELECT type, slug FROM articles WHERE id = ?`, id).Scan(&atype, &slug)
+	if err != nil {
+		return err
+	}
+	a, err := GetArticle(db, atype, slug)
+	if err != nil {
+		return err
+	}
+	return RenderAndSave(db, a)
+}
+
+// InvalidateArticleCache clears rendered_html for the given article and all
+// transitive dependents, then synchronously re-renders non-typst articles.
+// Typst articles have their caches cleared so the next read triggers
+// async re-compilation via the queue. Call this after any change that
+// affects rendered HTML but isn't a full content update (e.g. tag changes).
+func InvalidateArticleCache(db *sql.DB, articleID int) {
+	invalidated := InvalidateCacheCascading(db, articleID)
+	for _, did := range invalidated {
+		var atype string
+		if err := db.QueryRow(`SELECT type FROM articles WHERE id = ?`, did).Scan(&atype); err != nil {
+			continue
+		}
+		if atype == "typst" {
+			// Typst: delete old cache so the compile status shows "compiling..."
+			_, _ = db.Exec(`DELETE FROM typst_cache WHERE article_id = ?`, did)
+			_ = typst.EnqueueCompile(db, did)
+		} else {
+			if err := renderAndSaveByID(db, did); err != nil {
+				slog.Warn("InvalidateArticleCache: re-render failed", "article_id", did, "err", err)
+			}
+		}
+	}
+}
+
 // DeleteArticle removes an article and all associated data (CASCADE handles
-// comments, ratings, article_tags, typst_files, typst_cache, featured, and
-// compile_queue entries).
+// comments, ratings, article_tags, typst_files, typst_cache, article_deps,
+// featured, and compile_queue entries). Before deletion, dependent articles
+// (those that [[include]] or @import this one) have their caches invalidated
+// and are re-rendered so they don't permanently show stale content.
 func DeleteArticle(db *sql.DB, atype, slug string) (bool, error) {
 	// Load the article first so we can cascade-invalidate typst dependents
-	// before the row is gone (CASCADE will delete typst_cache but not
-	// invalidate or re-queue other articles' caches that depend on this one).
+	// and non-typst dependents before the row is gone.
 	a, _ := GetArticle(db, atype, slug)
 	res, err := db.Exec(`DELETE FROM articles WHERE type = ? AND slug = ?`, atype, slug)
 	if err != nil {
 		return false, err
 	}
 	n, _ := res.RowsAffected()
-	if n > 0 && a != nil && atype == "typst" {
-		// Cascade: enqueue dependents for re-compilation (their cached HTML
-		// imported this article and now needs updating).
-		if ierr := typst.EnqueueDependents(db, a.ID); ierr != nil {
-			slog.Warn("failed to enqueue typst dependents on delete", "article_id", a.ID, "err", ierr)
+	if n > 0 && a != nil {
+		// Cascade: invalidate dependents (both wikidot [[include]] and typst
+		// @import) and re-render non-typst ones.
+		invalidated := InvalidateCacheCascading(db, a.ID)
+		if atype == "typst" {
+			// Typst dependents need async re-compilation.
+			if ierr := typst.EnqueueDependents(db, a.ID); ierr != nil {
+				slog.Warn("failed to enqueue typst dependents on delete", "article_id", a.ID, "err", ierr)
+			}
+		}
+		// Re-render non-typst dependents that were invalidated.
+		for _, did := range invalidated {
+			if did == a.ID {
+				continue
+			}
+			// Skip typst dependents (they'll be handled by the worker).
+			var dtype string
+			if err := db.QueryRow(`SELECT type FROM articles WHERE id = ?`, did).Scan(&dtype); err == nil && dtype != "typst" {
+				if derr := renderAndSaveByID(db, did); derr != nil {
+					slog.Warn("deleteArticle: dependent re-render failed", "dep_id", did, "err", derr)
+				}
+			}
 		}
 	}
 	return n > 0, nil
@@ -300,7 +395,7 @@ func DeleteArticle(db *sql.DB, atype, slug string) (bool, error) {
 // ListRecentArticles returns the most recently updated articles across all types.
 func ListRecentArticles(db *sql.DB, limit int) ([]Article, error) {
 	rows, err := db.Query(
-		`SELECT a.id, a.type, a.slug, a.title, LEFT(a.content, 200) AS content, a.author_id,
+		`SELECT a.id, a.type, a.slug, a.title, LEFT(a.content, 200) AS content, NULL AS rendered_html, a.author_id,
 		        u.username, u.nickname, u.avatar, a.created_at, a.updated_at
 		 FROM articles a LEFT JOIN users u ON u.id = a.author_id
 		 ORDER BY a.updated_at DESC LIMIT ?`, limit)
@@ -362,7 +457,7 @@ func SearchArticles(db *sql.DB, q string, page, perPage int) (*ArticleListResult
 	}
 
 	rows, err := db.Query(
-		`SELECT a.id, a.type, a.slug, a.title, LEFT(a.content, 200) AS content, a.author_id,
+		`SELECT a.id, a.type, a.slug, a.title, LEFT(a.content, 200) AS content, NULL AS rendered_html, a.author_id,
 		        u.username, u.nickname, u.avatar, a.created_at, a.updated_at
 		 FROM articles a LEFT JOIN users u ON u.id = a.author_id
 		 WHERE MATCH(a.title, a.content) AGAINST(?)

@@ -22,8 +22,8 @@ import (
 //   - `%%created_at%%`     created-at date in YYYY-MM-DD form
 //   - `%%updated_at%%`     updated-at date in YYYY-MM-DD form
 //   - `%%tags%%`           comma-separated tag list
-//   - `%%rating%%`         current average rating, one decimal
-//   - `%%rating_count%%`   number of distinct raters
+//   - `%%rating%%`         hint to use the built-in rating system (replaced numeric rating)
+//   - `%%rating_count%%`   same hint as %%rating%%
 //   - `%%user_name%%`      current viewer's username (or "anonymous")
 //   - `%%user_nickname%%`  current viewer's display name (or "anonymous")
 //   - `%%user_id%%`        current viewer's id (or "")
@@ -34,7 +34,8 @@ import (
 // internal: from the renderer's perspective they're all just
 // `%%name%%` tokens. We pre-compute both halves here so the
 // per-render path is a single map allocation.
-func buildArticleVars(a *content.Article, u *user.User, rating *content.RatingSummary) map[string]string {
+func buildArticleVars(a *content.Article, u *user.User, _ *content.RatingSummary) map[string]string {
+	ratingHint := "请使用页面内置评分"
 	vars := make(map[string]string, 16)
 	vars["title"] = a.Title
 	vars["slug"] = a.Slug
@@ -43,13 +44,8 @@ func buildArticleVars(a *content.Article, u *user.User, rating *content.RatingSu
 	vars["created_at"] = a.CreatedAt.Format("2006-01-02")
 	vars["updated_at"] = a.UpdatedAt.Format("2006-01-02")
 	vars["tags"] = strings.Join(a.Tags, ", ")
-	if rating != nil {
-		vars["rating"] = fmt.Sprintf("%.1f", rating.Average)
-		vars["rating_count"] = fmt.Sprintf("%d", rating.TotalVoters)
-	} else {
-		vars["rating"] = "0.0"
-		vars["rating_count"] = "0"
-	}
+	vars["rating"] = ratingHint
+	vars["rating_count"] = ratingHint
 	if u != nil {
 		vars["user_name"] = u.Username
 		vars["user_nickname"] = u.Nickname

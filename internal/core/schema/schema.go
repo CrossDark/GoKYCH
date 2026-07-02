@@ -60,6 +60,15 @@ func runMigrations(db *sql.DB) error {
 		// login validation"). We never persisted it, so the stored value was
 		// always false, breaking login for any authenticator that sets BE=1.
 		{"webauthn_credentials", "backup_eligible", "ALTER TABLE webauthn_credentials ADD COLUMN backup_eligible TINYINT(1) NOT NULL DEFAULT 0 AFTER transports"},
+		// rendered_html stores the fully post-processed HTML for the public
+		// (anonymous) view of every article — md/wikidot/bbcode/html/typst alike.
+		// Pre-rendering at write time (and invalidating on every content/tag/
+		// rating change) lets the GET handler serve HTML directly from a single
+		// SELECT without re-parsing markdown/wikidot source. This is the core
+		// of the "compile once, serve forever" performance story: the Go API
+		// becomes a thin JSON assembler, and Next.js ISR + CDN cache the HTML
+		// indefinitely until the webhook triggers a revalidate.
+		{"articles", "rendered_html", "ALTER TABLE articles ADD COLUMN rendered_html MEDIUMTEXT DEFAULT NULL AFTER content"},
 	}
 	for _, m := range migrations {
 		var n int
@@ -351,5 +360,19 @@ var allTables = [...]string{
 		compiled_at   DATETIME DEFAULT NULL,
 		FOREIGN KEY (article_id) REFERENCES articles(id) ON DELETE CASCADE,
 		INDEX idx_status (status, created_at)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
+	// ═══ 16. article_deps — inter-article dependency tracking ═══
+	// Records which articles include/import which other articles
+	// (wikidot [[include]], typst @import). Used for cascading cache
+	// invalidation: when article X changes, every article that depends
+	// on X must have its rendered_html cleared and re-rendered.
+	`CREATE TABLE IF NOT EXISTS article_deps (
+		article_id    INT NOT NULL,
+		depends_on_id INT NOT NULL,
+		PRIMARY KEY (article_id, depends_on_id),
+		INDEX idx_depends_on (depends_on_id),
+		FOREIGN KEY (article_id)    REFERENCES articles(id) ON DELETE CASCADE,
+		FOREIGN KEY (depends_on_id) REFERENCES articles(id) ON DELETE CASCADE
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 }

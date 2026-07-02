@@ -266,9 +266,10 @@ export function listArticles(
   if (type) q.set("type", type);
   if (authorId) q.set("author_id", String(authorId));
   q.set("page", String(page));
-  // Article lists are public, ISR-cacheable for 60s. Anon = no cookie
+  // Article lists are public, ISR-cacheable. Anon = no cookie
   // forwarding so the cached HTML is identical for all visitors.
-  const opts: any = { anon: true };
+  // Tagged "articles" so article edits can purge all list caches.
+  const opts: any = { anon: true, next: { tags: ["articles"] } };
   if (authorId) {
     // "My articles" is user-specific; don't cache, forward cookie.
     opts.anon = false;
@@ -282,8 +283,14 @@ export function listArticles(
 // getArticle is the hottest SSR call (generateMetadata + page component
 // both call it for every article view). Wrap in React.cache so the two
 // callsites share one network round-trip. Anon = ISR-safe.
+// Cache tags enable on-demand revalidation: tagging with both a type-wide
+// tag ("articles") and a per-article tag ("article:type:slug") lets us
+// purge one article (after edit) or the whole list as needed.
 const _getArticleSSR = cache((type: string, slug: string) =>
-  request<import("./types").ArticleDetail>(`/articles/${type}/${slug}`, { anon: true })
+  request<import("./types").ArticleDetail>(`/articles/${type}/${slug}`, {
+    anon: true,
+    next: { tags: ["articles", `article:${type}:${slug}`], revalidate: 300 },
+  })
 );
 export function getArticle(type: string, slug: string) {
   if (isSSR) return _getArticleSSR(type, slug);

@@ -134,7 +134,12 @@ func SetArticleTags(db *sql.DB, articleID int, tagNames []string) error {
 			return err
 		}
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	// Invalidate render cache so %%tags%% reflects the new tag set.
+	InvalidateArticleCache(db, articleID)
+	return nil
 }
 
 // GetArticlesByTag returns paginated articles for a tag.
@@ -156,8 +161,10 @@ func GetArticlesByTag(db *sql.DB, tagName string, page, perPage int) (*ArticleLi
 	}
 
 	rows, err := db.Query(
-		`SELECT a.id, a.type, a.slug, a.title, a.content, a.author_id, a.created_at, a.updated_at
+		`SELECT a.id, a.type, a.slug, a.title, LEFT(a.content, 200) AS content, NULL AS rendered_html, a.author_id,
+		        u.username, u.nickname, u.avatar, a.created_at, a.updated_at
 		 FROM articles a
+		 LEFT JOIN users u ON u.id = a.author_id
 		 JOIN article_tags at ON a.id = at.article_id
 		 JOIN tags t ON t.id = at.tag_id
 		 WHERE t.name = ?
@@ -172,7 +179,7 @@ func GetArticlesByTag(db *sql.DB, tagName string, page, perPage int) (*ArticleLi
 	articles := make([]Article, 0)
 	for rows.Next() {
 		var a Article
-		if err := rows.Scan(&a.ID, &a.Type, &a.Slug, &a.Title, &a.Content, &a.AuthorID, &a.CreatedAt, &a.UpdatedAt); err != nil {
+		if err := scanArticleWithUser(rows, &a); err != nil {
 			return nil, err
 		}
 		articles = append(articles, a)

@@ -3,7 +3,7 @@ import { renderArticleDetailError } from "@/components/ArticleDetailError";
 import { ArticleView } from "@/components/ArticleView";
 import type { Metadata } from "next";
 
-export const revalidate = 60;
+export const revalidate = 300;
 
 interface Props {
   params: Promise<{ slug: string }>;

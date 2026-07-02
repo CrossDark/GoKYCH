@@ -441,6 +441,21 @@ func compileAndStore(dbx *sql.DB, articleID int) error {
 		return fmt.Errorf("cache write failed: %w", err)
 	}
 
+	// Sync dependencies to article_deps for cascading invalidation.
+	if _, derr := dbx.Exec(`DELETE FROM article_deps WHERE article_id = ?`, articleID); derr == nil {
+		for _, did := range depIDs {
+			_, _ = dbx.Exec(
+				`INSERT IGNORE INTO article_deps (article_id, depends_on_id) VALUES (?, ?)`,
+				articleID, did,
+			)
+		}
+	}
+
+	// Fire post-compile hook (syncs rendered_html, triggers CDN revalidation, etc.)
+	if AfterCompileFunc != nil {
+		AfterCompileFunc(articleID, html, depIDs)
+	}
+
 	// Re-compile any articles that depend on this one (cascade).
 	if err := EnqueueDependents(dbx, articleID); err != nil {
 		slog.Warn("typst: failed to enqueue dependents after compile", "article_id", articleID, "err", err)

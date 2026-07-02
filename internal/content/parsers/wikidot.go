@@ -2577,7 +2577,8 @@ func (p *wikidotParser) runListPages(attrs map[string]string, body string) strin
 			row = strings.ReplaceAll(row, "%%created_at%%", e.CreatedAt.Format("2006-01-02"))
 		}
 		row = strings.ReplaceAll(row, "%%tags%%", strings.Join(e.Tags, ", "))
-		row = strings.ReplaceAll(row, "%%rating%%", fmt.Sprintf("%.1f", e.Rating))
+		row = strings.ReplaceAll(row, "%%rating%%", "请使用页面内置评分")
+		row = strings.ReplaceAll(row, "%%rating_count%%", "请使用页面内置评分")
 		sb.WriteString("<li>")
 		sb.WriteString(inlineOnly(row))
 		sb.WriteString("</li>")
