@@ -6,7 +6,11 @@
     "dev": "next dev -p 3000",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "cf:build": "npx opennextjs-cloudflare build",
+    "cf:deploy": "npx wrangler deploy",
+    "cf:preview": "npx wrangler dev"
   },
   "dependencies": {
     "@types/dompurify": "^3.0.5",

@@ -58,7 +58,11 @@ data/settings/settings.yml
 # ── Web 前端 ──────────────────────────────────────────────────
 web/node_modules/
 web/.next/
+web/.open-next/
 web/*.log
+web/.wrangler/
+web/.dev.vars
+web/.env.local
 # TypeScript incremental build cache (regenerated on every build)
 web/tsconfig.tsbuildinfo
 web/tsconfig.tsbuildinfo.*

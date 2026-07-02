@@ -464,55 +464,70 @@ export function apiUrl(path: string): string {
 
 如果希望前端部署在 Cloudflare 而非 EdgeOne，可以使用 OpenNext 将 Next.js 构建为 Cloudflare Workers。
 
-**仓库已内置 `web/wrangler.jsonc` 配置**，不存在硬编码 Worker 名称的问题。配置中：
-- `name` 字段是 Cloudflare Worker 服务名称（默认 `gokych`）
-- `services[0].service` 必须与 `name` 完全一致（WORKER_SELF_REFERENCE 自绑定）
+**仓库已内置 `web/wrangler.jsonc` 配置**，Worker 名称和 `WORKER_SELF_REFERENCE` 绑定通过环境变量 `WORKER_NAME` 统一控制，无需手动改配置文件，不会出现 10143 错误。
 
-#### 修改 Worker 名称
+#### Worker 名称自动同步机制
 
-如果你在 Cloudflare 控制台使用自定义 Worker 名称（如 `created-rule-front`），必须同时修改 `web/wrangler.jsonc` 中的两个字段：
+`web/wrangler.jsonc` 使用 Wrangler 环境变量插值：
 
 ```jsonc
-{
-  "name": "created-rule-front",        // ← 改这里
-  // ...
-  "services": [
-    {
-      "binding": "WORKER_SELF_REFERENCE",
-      "service": "created-rule-front"  // ← 同时改这里，必须与 name 一致
-    }
-  ]
-}
+"name": "${WORKER_NAME:-gokych}",
+// ...
+"services": [
+  {
+    "binding": "WORKER_SELF_REFERENCE",
+    "service": "${WORKER_NAME:-gokych}"   // 自动与 name 同步
+  }
+]
 ```
 
-**两个字段必须完全一致**，否则会出现 `Service binding 'WORKER_SELF_REFERENCE' references Worker 'xxx' which was not found [code: 10143]` 错误。
+- `name` 和 `WORKER_SELF_REFERENCE.service` 引用**同一个环境变量** `WORKER_NAME`，永远一致
+- 不设置 `WORKER_NAME` 时默认为 `gokych`
+- 设置自定义名称只需：`WORKER_NAME=created-rule-front npm run cf:deploy`
 
-#### 部署步骤
+#### 部署步骤（3步）
 
 ```bash
 cd web/
 
-# 1. 安装依赖（如果还没装）
+# 1. 安装依赖（首次）
 npm install
 
-# 2. 安装 OpenNext Cloudflare 适配器（首次部署）
-npm install -D @opennextjs/cloudflare
+# 2. 配置后端 API 地址（创建 web/.env.local，已在 .gitignore）
+cat > .env.local <<EOF
+NEXT_PUBLIC_API_BASE_URL=https://api.example.com
+EOF
 
-# 3. 构建
-npx opennextjs-cloudflare build
-
-# 4. 登录 Cloudflare（如果还没登录）
+# 3. 登录 Cloudflare（首次）
 npx wrangler login
 
-# 5. 部署
-npx wrangler deploy
+# 4. 构建 + 部署
+#    默认 Worker 名称为 gokych：
+npm run cf:build && npm run cf:deploy
+
+#    使用自定义 Worker 名称：
+WORKER_NAME=created-rule-front npm run cf:build && WORKER_NAME=created-rule-front npm run cf:deploy
 ```
 
-环境变量配置（两种方式二选一）：
-- **方式 A**：修改 `web/wrangler.jsonc` 中的 `vars` 段
-- **方式 B**：在 Cloudflare 控制台 → Workers & Pages → 你的 Worker → Settings → Variables and Secrets 中添加 `NEXT_PUBLIC_API_BASE_URL`
+也可用一条命令指定名称并部署：
 
-> **重要**：后端 `CORS_ALLOWED_ORIGINS` 需要添加你的 Cloudflare Workers 域名（如 `https://created-rule-front.你的账号.workers.dev` 或自定义域名），否则跨域请求会被阻止。
+```bash
+WORKER_NAME=created-rule-front NEXT_PUBLIC_API_BASE_URL=https://api.kych.net \
+  sh -c 'npm run cf:build && npm run cf:deploy'
+```
+
+#### 可用 npm scripts
+
+| 命令 | 说明 |
+|------|------|
+| `npm run cf:build` | 使用 OpenNext 构建（读取 `.env.local` 或 shell 环境变量） |
+| `npm run cf:deploy` | 部署到 Cloudflare Workers（读取 `WORKER_NAME` 环境变量） |
+| `npm run cf:preview` | 本地预览 Worker（`npx wrangler dev`） |
+
+> **重要提示**：
+> - `NEXT_PUBLIC_API_BASE_URL` 是 Next.js **构建时**环境变量（会被 webpack 内联到客户端 bundle），必须在 `cf:build` 阶段设置（通过 `.env.local` 或 shell 环境变量）。**不能**通过 `wrangler secret put` 设置（那是运行时变量，构建阶段读不到）。
+> - 后端 `CORS_ALLOWED_ORIGINS` 需要添加你的 Cloudflare Workers 域名（如 `https://created-rule-front.你的账号.workers.dev` 或自定义域名），否则跨域请求会被阻止。
+> - EdgeOne 部署不受影响：EdgeOne 使用自身 Next.js 适配器，会忽略 `wrangler.jsonc`。
 
 ---
 
@@ -599,8 +614,9 @@ RPID 用了 `localhost` — 这只在 `APP_DOMAIN=localhost:3000` 时发生。
 | EdgeOne 上 `output: "standalone"` 干扰 | standalone 输出模式与 Makers 自带构建器冲突 | `web/next.config.ts` 已改成条件 opt-in（`STANDALONE=1` 才开），Makers 不设此环境变量，零冲突 |
 | EdgeOne 改了构建器默认行为 | 平台升级可能改变默认 Next.js 构建参数 | 锁定仓库 `package.json` 里 `next` 版本；如遇问题在控制台"构建设置"显式指定 |
 | CORS preflight 走错中间件 | OPTIONS 请求如果被 CSRF 中间件拦了，浏览器永远收不到 204 → 实际 mutation 也发不出去 | CORS 已在 `csrfMiddleware` 之前安装，preflight 直接 204 短路（commit `90498db`） |
-| Cloudflare WORKER_SELF_REFERENCE 错误 10143 | `wrangler.jsonc` 中 `name` 和 `services[0].service` 不一致；或控制台创建的 Worker 名称与配置文件不匹配 | 修改 `web/wrangler.jsonc` 确保 `name` === `services[0].service`；控制台创建的 Worker 名称必须与 `name` 字段一致 |
+| Cloudflare WORKER_SELF_REFERENCE 错误 10143 | 部署时设置的 `WORKER_NAME` 环境变量与控制台已存在的 Worker 不匹配（或先部署了不同名称后改名） | 部署时通过 `WORKER_NAME=xxx npm run cf:deploy` 指定名称；首次部署前确保控制台没有同名冲突的 Worker；`name` 和 `WORKER_SELF_REFERENCE.service` 通过同一环境变量自动同步，无需手动改两处 |
 | Cloudflare Workers 跨域失败 | 后端 `CORS_ALLOWED_ORIGINS` 未包含 workers.dev 域名或自定义域名 | 后端 `.env` 的 `CORS_ALLOWED_ORIGINS` 添加 Cloudflare 域名，逗号分隔 |
+| Cloudflare 构建后 API 请求仍指向 localhost | `NEXT_PUBLIC_API_BASE_URL` 未在构建时设置（这是构建时变量，不是运行时变量） | 创建 `web/.env.local` 写入 `NEXT_PUBLIC_API_BASE_URL=https://api.example.com`，或构建时通过 shell 环境变量传入；不要用 `wrangler secret put` 设置 NEXT_PUBLIC_* 变量 |
 
 ---
 

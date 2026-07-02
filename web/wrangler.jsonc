@@ -1,20 +1,31 @@
 {
-  // Cloudflare Workers 配置文件（用于 OpenNext / @cloudflare/next-on-pages 部署）
+  // Cloudflare Workers 配置文件（用于 OpenNext 部署）
   // 腾讯云 EdgeOne Makers 部署会忽略此文件，使用平台内置适配器。
   //
-  // 修改 name 后必须同时修改 services[0].service，两者必须一致 —
-  // WORKER_SELF_REFERENCE 是 OpenNext 用于 ISR 自调用的服务绑定，
-  // 必须指向当前 Worker 自身。
+  // ─── Worker 名称配置 ────────────────────────────────────
+  // 通过 WORKER_NAME 环境变量指定 Worker 名称，name 和 WORKER_SELF_REFERENCE
+  // 自动同步，不会出现 10143 错误。用法：
   //
-  // 部署命令（在 web/ 目录下）：
-  //   npx @cloudflare/next-on-pages@latest
-  //   npx wrangler pages deploy .vercel/output/static
-  // 或直接使用 opennext:
-  //   npx opennextjs-cloudflare build
-  //   npx wrangler deploy
+  //   WORKER_NAME=created-rule-front npm run cf:deploy
+  //
+  // 不设置则默认使用 "gokych"。
+  //
+  // ─── NEXT_PUBLIC_API_BASE_URL ───────────────────────────
+  // 这是 Next.js 构建时环境变量（会被内联到客户端 bundle），必须在
+  // 构建（cf:build）阶段通过环境变量传入：
+  //
+  //   NEXT_PUBLIC_API_BASE_URL=https://api.example.com npm run cf:build
+  //
+  // 生产推荐：创建 web/.env.local（已在 .gitignore）写入该变量，脚本会自动加载。
+  // 不要使用 wrangler secret put 设置 NEXT_PUBLIC_* 变量（构建时不读取）。
+  //
+  // ─── 部署命令 ───────────────────────────────────────────
+  //   npm run cf:install   # 首次：安装 OpenNext 适配器
+  //   npm run cf:build     # 构建（自动读取 .env.local）
+  //   npm run cf:deploy    # 部署到 Cloudflare（WORKER_NAME=xxx npm run cf:deploy）
 
   "$schema": "https://raw.githubusercontent.com/cloudflare/workers-sdk/main/packages/wrangler/config-schema.json",
-  "name": "gokych",
+  "name": "${WORKER_NAME:-gokych}",
   "main": ".open-next/worker.js",
   "compatibility_date": "2025-05-01",
   "compatibility_flags": ["nodejs_compat"],
@@ -27,14 +38,9 @@
   "services": [
     {
       "binding": "WORKER_SELF_REFERENCE",
-      "service": "gokych"
+      "service": "${WORKER_NAME:-gokych}"
     }
   ],
-
-  "vars": {
-    // 后端 API 地址（生产环境必须修改为你的后端域名）
-    "NEXT_PUBLIC_API_BASE_URL": "https://api.example.com"
-  },
 
   "observability": {
     "enabled": true
