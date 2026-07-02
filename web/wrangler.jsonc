@@ -28,7 +28,7 @@
   //   npm run cf:preview  # 本地预览 Workers 运行时
 
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "creater-rule-web",
+  "name": "ywda-web",
   "main": ".open-next/worker.js",
   "compatibility_date": "2026-03-01",
   "compatibility_flags": [
@@ -44,7 +44,7 @@
   "services": [
     {
       "binding": "WORKER_SELF_REFERENCE",
-      "service": "creater-rule-web"
+      "service": "ywda-web"
     }
   ],
 
