@@ -479,15 +479,17 @@ export function apiUrl(path: string): string {
 
 | 文件 | 作用 |
 |------|------|
-| `web/wrangler.jsonc` | Wrangler 配置（Worker 名称、绑定、兼容性标志） |
-| `web/open-next.config.ts` | OpenNext Cloudflare 适配器配置 |
+| `web/wrangler.jsonc` | Wrangler 配置（Worker 名称默认为 `gokych`，`name` 和 `WORKER_SELF_REFERENCE.service` 已同步） |
+| `web/open-next.config.ts` | OpenNext Cloudflare 适配器配置（必需，esbuild 构建时读取） |
 | `web/.dev.vars` | 本地开发环境变量（`NEXTJS_ENV=development`） |
 | `web/public/_headers` | Cloudflare Pages 静态资源缓存头 |
 | `web/next.config.ts` | 末尾可选加载 `initOpenNextCloudflareForDev()`（不影响 EdgeOne/Docker） |
+| `web/middleware.ts` | CSP nonce 生成（已使用 Web Crypto API，兼容 Edge Runtime） |
 | `.gitignore` | 已包含 `.open-next/`、`.wrangler/`、`.dev.vars`、`.env.local` |
 
-Worker 名称通过 `WORKER_NAME` 环境变量统一控制，`name` 和 `WORKER_SELF_REFERENCE.service`
-自动同步，从根本上避免错误 10143。
+`@opennextjs/cloudflare` 和 `wrangler` 已添加到 `dependencies`（确保云端生产构建时也会安装），`npm install` 时会自动安装。
+Worker 默认名称为 `gokych`（`name` 和 `WORKER_SELF_REFERENCE.service` 已同步为同一值），
+如需自定义名称，需同时修改 `web/wrangler.jsonc` 中的 `name` 和 `services[0].service` 两个字段（参考文件头部注释）。
 
 ---
 
@@ -527,9 +529,8 @@ cd GoKYCH/web
 npm install
 ```
 
-> 注：`@opennextjs/cloudflare` 和 `wrangler` 不需要预先 `npm install -D`，
-> 脚本使用 `npx` 调用时会自动下载最新版本。如果你想固定版本，可手动安装：
-> `npm install -D @opennextjs/cloudflare wrangler`
+> `@opennextjs/cloudflare` 和 `wrangler` 已在 `dependencies` 中，`npm install` 会自动安装，
+> 无需额外操作。
 
 ##### 步骤A3：配置前端环境变量
 
@@ -565,9 +566,7 @@ npx wrangler whoami
 
 ```bash
 cd web/
-WORKER_NAME=my-gokych npm run cf:preview
-# 或
-npm run preview
+npm run cf:preview
 ```
 
 Wrangler 会启动一个本地 Worker 模拟器（通常在 `http://localhost:8788`），
@@ -581,15 +580,11 @@ Wrangler 会启动一个本地 Worker 模拟器（通常在 `http://localhost:87
 ```bash
 cd web/
 
-# 方式A：使用默认 Worker 名称 "gokych"
-npm run deploy
+# 构建并部署（使用 wrangler.jsonc 中配置的 Worker 名称 "gokych"）
+npm run cf:deploy
 
-# 方式B：指定自定义 Worker 名称（推荐）
-WORKER_NAME=created-rule-front npm run deploy
-
-# 方式C：一条命令同时指定名称和API地址（不使用.env.local）
-WORKER_NAME=created-rule-front NEXT_PUBLIC_API_BASE_URL=https://api.kych.net \
-  npm run deploy
+# 如果需要自定义 Worker 名称，先修改 web/wrangler.jsonc 中的 name 和 services[0].service，
+# 提交后再运行部署命令
 ```
 
 部署成功后，Wrangler 会输出类似：
@@ -641,14 +636,15 @@ Cloudflare 的 Workers Builds 会在服务器上自动拉取代码、安装依�
 |--------|-----|
 | **Production branch**（生产分支） | `main`（或你的主分支名） |
 | **Root directory**（根目录） | `web`（**必须**，因为 wrangler.jsonc 在 web/ 子目录） |
-| **Build command**（构建命令） | `npx @opennextjs/cloudflare build` |
+| **Build command**（构建命令） | `npm run cf:build` |
 | **Deploy command**（部署命令） | 留空（Cloudflare 自动检测 wrangler.jsonc 并执行 `wrangler deploy`） |
 
 > **注意**：
 > - Root directory 必须设为 `web`，因为 `wrangler.jsonc` 和 `package.json` 在 `web/` 目录下。
 >   如果设为仓库根目录，Cloudflare 找不到 wrangler 配置文件会报错。
 > - Build command 不能直接写 `npm run deploy`（那会在构建步骤中就尝试部署，导致权限错误）。
->   正确做法是 build command 只做构建，部署由 Cloudflare 自动通过 wrangler 完成。
+>   正确做法是 build command 只做构建（使用本地 npm scripts，避免 npx 网络问题），部署由 Cloudflare 自动通过 wrangler 完成。
+> - 不要使用 `npx @opennextjs/cloudflare build`，因为 npx 会临时下载包，可能因网络问题或版本不一致导致构建失败。
 
 ##### 步骤B5：配置环境变量
 
@@ -657,20 +653,21 @@ Cloudflare 的 Workers Builds 会在服务器上自动拉取代码、安装依�
 | 变量名 | 值 | 说明 |
 |--------|-----|------|
 | `NEXT_PUBLIC_API_BASE_URL` | `https://api.kych.net` | **构建时必需**，后端API地址 |
-| `WORKER_NAME` | `created-rule-front`（或你想要的名称） | Worker名称，与wrangler.jsonc中`${WORKER_NAME:-gokych}`配合，不设则默认为`gokych` |
 
 > - `NEXT_PUBLIC_API_BASE_URL` 必须在 **Builds** 的环境变量中设置（不仅仅是 Worker runtime 的环境变量），
 >   因为它是构建时变量，需要在构建阶段被 webpack 读取。
 > - 如果需要设置 Secrets（如其他密钥），在同一页面的 **Secrets** 部分添加（加密存储，不出现在日志中）。
 > - 请勿使用 `wrangler secret put` 命令设置 `NEXT_PUBLIC_*` 变量（那是运行时变量，构建阶段读不到）。
+> - Worker 名称如需自定义，需在部署前修改 `web/wrangler.jsonc` 中的 `name` 和 `services[0].service` 字段，
+>   并将修改提交到 Git（不支持通过环境变量动态设置，因为 OpenNext 构建阶段不解析 wrangler.jsonc 中的环境变量插值）。
 
 ##### 步骤B6：部署
 
 点击 **Save and Deploy**（保存并部署）。Cloudflare 将：
 1. 拉取 GitHub 仓库代码
 2. 进入 `web/` 目录
-3. 执行 `npm install`（自动检测 package-lock.json）
-4. 执行 `npx @opennextjs/cloudflare build`（构建）
+3. 执行 `npm install`（自动检测 package-lock.json，安装所有 dependencies）
+4. 执行 `npm run cf:build`（构建，使用本地依赖，避免 npx 网络问题）
 5. 执行 `wrangler deploy`（部署，读取 wrangler.jsonc）
 6. 首次部署通常需要 2-5 分钟
 
@@ -717,39 +714,48 @@ sudo systemctl restart gokych
 | `npm run dev` | Next.js 开发服务器（localhost:3000），连接本地后端 |
 | `npm run build` | 纯 Next.js build（供 EdgeOne/Docker 使用，不做 OpenNext 转换） |
 | `npm run cf:build` | OpenNext 构建（先生成 `.next/`，再转换为 `.open-next/` Worker 格式） |
-| `npm run cf:deploy` | 部署已构建的 `.open-next/` 到 Cloudflare（不重新构建） |
-| `npm run deploy` | = cf:build + cf:deploy，构建+部署一步到位 |
-| `npm run cf:preview` | 本地预览 Workers 运行时（`npx @opennextjs/cloudflare preview`） |
-| `npm run preview` | = cf:build + cf:preview，构建+本地预览 |
+| `npm run cf:deploy` | 构建并部署到 Cloudflare Workers（= cf:build + 部署） |
+| `npm run cf:preview` | 本地预览 Workers 运行时（自动构建+启动本地模拟器） |
 | `npm run typecheck` | TypeScript 类型检查 |
 | `npm run lint` | ESLint 检查 |
 
 ---
 
-### 4.5 WORKER_NAME 环境变量详解
+### 4.5 自定义 Worker 名称
 
-`web/wrangler.jsonc` 使用 Wrangler 原生 `${ENV_VAR:-default}` 插值语法：
+`web/wrangler.jsonc` 使用静态名称配置（OpenNext 构建阶段不支持环境变量插值）：
 
 ```jsonc
-"name": "${WORKER_NAME:-gokych}",
+"name": "gokych",
 "services": [
   {
     "binding": "WORKER_SELF_REFERENCE",
-    "service": "${WORKER_NAME:-gokych}"
+    "service": "gokych"
   }
 ]
 ```
 
-| 场景 | 命令 | Worker 名称 |
-|------|------|-------------|
-| 不设置 WORKER_NAME | `npm run deploy` | `gokych` |
-| 临时指定名称 | `WORKER_NAME=my-frontend npm run deploy` | `my-frontend` |
-| 永久指定 | 在 shell 配置（如 `~/.zshrc`）中 `export WORKER_NAME=created-rule-front` | `created-rule-front` |
-| .dev.vars（仅本地） | 在 `web/.dev.vars` 中加 `WORKER_NAME=local-test` | 本地预览时生效 |
+如需自定义 Worker 名称（例如避免与已有 Worker 冲突），**必须同时修改以下两个字段**，否则会出现 10143 错误：
 
-`WORKER_SELF_REFERENCE` 是 OpenNext 用于 ISR（增量静态再生成）自调用的
-服务绑定，**必须**指向当前 Worker 自身。因为 `name` 和 `service` 引用同一个
-环境变量，两者永远一致，不会出现错误 10143。
+1. `"name": "your-custom-name"`
+2. `"services[0].service": "your-custom-name"`
+
+修改示例：
+```jsonc
+"name": "created-rule-front",
+"services": [
+  {
+    "binding": "WORKER_SELF_REFERENCE",
+    "service": "created-rule-front"
+  }
+]
+```
+
+> **重要**：
+> - 修改后必须将 `web/wrangler.jsonc` 的变更提交到 Git，云端构建时才能生效。
+> - `WORKER_SELF_REFERENCE` 是 OpenNext 用于 ISR（增量静态再生成）自调用的
+>   服务绑定，**必须**指向当前 Worker 自身。两个字段保持一致即可避免 10143 错误。
+> - CLI 本地部署时也会读取 wrangler.jsonc，无需通过环境变量指定名称。
 
 ---
 
@@ -814,13 +820,15 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - run: npm ci
       - name: Deploy
-        run: npx @opennextjs/cloudflare build && npx wrangler deploy
+        run: npm run cf:deploy
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          WORKER_NAME: created-rule-front
           NEXT_PUBLIC_API_BASE_URL: https://api.kych.net
 ```
+
+> 注意：Worker 名称在 `web/wrangler.jsonc` 中配置，GitHub Actions 不通过环境变量指定名称。
+> 如需自定义名称，先修改 wrangler.jsonc 并提交。
 
 ---
 
@@ -828,14 +836,14 @@ jobs:
 
 | 错误信息 | 原因 | 解决方法 |
 |----------|------|----------|
-| `Service binding 'WORKER_SELF_REFERENCE' references Worker 'xxx' which was not found [code: 10143]` | Worker 名称冲突：wrangler.jsonc 的 name 与控制台已有同名 Worker 不一致 | CLI：`WORKER_NAME=<新名字> npm run deploy`；Dashboard：修改构建设置中的 `WORKER_NAME` 环境变量为不冲突的名称，重新部署 |
+| `Service binding 'WORKER_SELF_REFERENCE' references Worker 'xxx' which was not found [code: 10143]` | Worker 名称冲突：wrangler.jsonc 的 name 与 services[0].service 不一致，或与控制台已有同名 Worker 冲突 | 修改 `web/wrangler.jsonc`，确保 `"name"` 和 `"services[0].service"` 两个字段值完全相同且不与已有Worker冲突，提交后重新部署 |
 | `Error: Workers Paid plan is required` | 免费计划不支持 Git 构建（Dashboard方式）或 Worker 体积超限 | 升级到 Workers Paid（$5/月）；CLI方式免费计划通常够用（gzip约600KB-2MB，在3MiB限制内） |
-| `Cannot find module '@opennextjs/cloudflare'` | npx 下载失败或网络问题 | CLI：手动安装 `npm install -D @opennextjs/cloudflare wrangler`；Dashboard：确认Build command是 `npx @opennextjs/cloudflare build`，Cloudflare构建环境能访问npm |
+| `Could not resolve "@opennextjs/cloudflare"` 或 `Cannot find module '@opennextjs/cloudflare'` | 构建依赖在 devDependencies 中，云端生产构建（NODE_ENV=production）时 npm 不安装 devDependencies；或使用 npx 导致网络问题/版本不一致 | 已修复：`@opennextjs/cloudflare` 和 `wrangler` 已移至 `dependencies`；确保 Build command 使用 `npm run cf:build`（本地依赖）而非 `npx @opennextjs/cloudflare build` |
 | Dashboard构建失败：`ENOENT: no such file or directory, open 'wrangler.jsonc'` | Root directory 设错了（设为仓库根目录而非web/） | Dashboard → Worker → Settings → Builds → Root directory 改为 `web`，重新部署 |
 | Dashboard构建失败：`npm ERR! enoent Could not read package.json` | 同上，根目录设错 | 同上，Root directory 必须设为 `web` |
-| Dashboard构建失败：`Unknown command: deploy` | Build command 写了 `npm run deploy`，导致在构建阶段就尝试wrangler deploy但没有API token | Build command 只写 `npx @opennextjs/cloudflare build`，部署由Cloudflare自动完成（Deploy command留空） |
+| Dashboard构建失败：`Unknown command: deploy` | Build command 写了 `npm run cf:deploy`，导致在构建阶段就尝试wrangler deploy但没有API token | Build command 只写 `npm run cf:build`，部署由Cloudflare自动完成（Deploy command留空） |
 | Dashboard部署成功但页面显示"文章不存在" | `NEXT_PUBLIC_API_BASE_URL` 未在**构建时**环境变量中设置（只设了运行时变量或用了secret） | Dashboard → Worker → Settings → Variables and Secrets → 在 **Environment Variables**（不是Secrets）中添加 `NEXT_PUBLIC_API_BASE_URL`，且确保在Build阶段可见；然后在Deployments中触发重新部署 |
-| CLI部署成功但页面显示"文章不存在" | `NEXT_PUBLIC_API_BASE_URL` 未在构建时设置，SSR fetch 打到 `localhost:8000` | 检查 `web/.env.local` 是否存在且正确，重新 `npm run deploy` |
+| CLI部署成功但页面显示"文章不存在" | `NEXT_PUBLIC_API_BASE_URL` 未在构建时设置，SSR fetch 打到 `localhost:8000` | 检查 `web/.env.local` 是否存在且正确，重新 `npm run cf:deploy` |
 | 登录后刷新显示未登录 | CORS 未配置 Workers 域名，Set-Cookie 被浏览器拦截 | 后端 `.env` 的 `CORS_ALLOWED_ORIGINS` 添加 Workers 域名，重启后端 |
 | `Authentication Error: Invalid API token` | wrangler login 过期或 token 无效（仅CLI） | 重新运行 `npx wrangler login` |
 | `A binding for ASSETS was not found` | `.open-next/assets/` 目录不存在或构建失败 | CLI：先运行 `npm run cf:build` 确认构建成功，再 `npm run cf:deploy`；Dashboard：查看Build logs确认构建步骤是否成功完成 |
@@ -927,7 +935,8 @@ RPID 用了 `localhost` — 这只在 `APP_DOMAIN=localhost:3000` 时发生。
 | EdgeOne 上 `output: "standalone"` 干扰 | standalone 输出模式与 Makers 自带构建器冲突 | `web/next.config.ts` 已改成条件 opt-in（`STANDALONE=1` 才开），Makers 不设此环境变量，零冲突 |
 | EdgeOne 改了构建器默认行为 | 平台升级可能改变默认 Next.js 构建参数 | 锁定仓库 `package.json` 里 `next` 版本；如遇问题在控制台"构建设置"显式指定 |
 | CORS preflight 走错中间件 | OPTIONS 请求如果被 CSRF 中间件拦了，浏览器永远收不到 204 → 实际 mutation 也发不出去 | CORS 已在 `csrfMiddleware` 之前安装，preflight 直接 204 短路（commit `90498db`） |
-| Cloudflare WORKER_SELF_REFERENCE 错误 10143 | 部署时设置的 `WORKER_NAME` 环境变量与控制台已存在的 Worker 不匹配（或先部署了不同名称后改名） | 部署时通过 `WORKER_NAME=xxx npm run cf:deploy` 指定名称；首次部署前确保控制台没有同名冲突的 Worker；`name` 和 `WORKER_SELF_REFERENCE.service` 通过同一环境变量自动同步，无需手动改两处 |
+| Cloudflare WORKER_SELF_REFERENCE 错误 10143 | wrangler.jsonc 中 `name` 和 `services[0].service` 字段值不一致，或与控制台已存在的 Worker 不匹配 | 确保 `web/wrangler.jsonc` 中 `"name"` 和 `"services[0].service"` 两个字段值完全相同；首次部署前确保控制台没有同名冲突的 Worker；修改后提交到 Git 再部署 |
+| Cloudflare 构建 `Could not resolve "@opennextjs/cloudflare"` | 构建依赖在 devDependencies 中，NODE_ENV=production 时 npm 不安装；或使用 npx 临时下载导致网络问题/版本不一致 | 已修复：`@opennextjs/cloudflare` 和 `wrangler` 在 `dependencies` 中；Dashboard Build command 使用 `npm run cf:build` |
 | Cloudflare Workers 跨域失败 | 后端 `CORS_ALLOWED_ORIGINS` 未包含 workers.dev 域名或自定义域名 | 后端 `.env` 的 `CORS_ALLOWED_ORIGINS` 添加 Cloudflare 域名，逗号分隔 |
 | Cloudflare 构建后 API 请求仍指向 localhost | `NEXT_PUBLIC_API_BASE_URL` 未在构建时设置（这是构建时变量，不是运行时变量） | 创建 `web/.env.local` 写入 `NEXT_PUBLIC_API_BASE_URL=https://api.example.com`，或构建时通过 shell 环境变量传入；不要用 `wrangler secret put` 设置 NEXT_PUBLIC_* 变量 |
 

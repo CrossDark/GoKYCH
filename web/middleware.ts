@@ -1,9 +1,18 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
-import crypto from "crypto";
+
+function generateNonce(): string {
+  const buf = new Uint8Array(16);
+  crypto.getRandomValues(buf);
+  let binary = "";
+  for (let i = 0; i < buf.length; i++) {
+    binary += String.fromCharCode(buf[i]);
+  }
+  return btoa(binary);
+}
 
 export function middleware(request: NextRequest) {
-  const nonce = crypto.randomBytes(16).toString("base64");
+  const nonce = generateNonce();
 
   const cspHeader = [
     "default-src 'self'",
