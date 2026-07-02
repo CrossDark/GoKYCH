@@ -114,6 +114,9 @@ func main() {
 	// "data/typst" which breaks when the binary isn't run from the project
 	// root (e.g. systemd, Docker, tests).
 	typst.SetWorkspaceDir(cfg.App.DataDir + "/typst")
+	// Link uploads/ and avatars/ into the typst workspace so typst
+	// articles can #image("uploads/foo.png") and #image("avatars/bar.jpg").
+	typst.SetAssetsDirs(cfg.App.DataDir+"/uploads", cfg.App.DataDir+"/avatars")
 	// One-shot CLI availability log (replaces the old package-init() side
 	// effect that fired on every import, surprising test binaries).
 	typst.LogCLIAvailability()

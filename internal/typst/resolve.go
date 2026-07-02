@@ -175,7 +175,9 @@ func resolveDependenciesCtx(ctx context.Context, dbx *sql.DB, workspaceDir strin
 		}
 
 		// Now rewrite this article's source (all children are in slugToID).
-		rewritten := rewriteImports(a.Content, slugToID)
+		// Also rewrite /uploads/ and /avatars/ asset paths so dep files
+		// can reference uploaded files the same way the main source does.
+		rewritten := rewriteAssetPaths(rewriteImports(a.Content, slugToID))
 		resolved[a.ID] = rewritten
 
 		// Write dep file (never for the current article being compiled).

@@ -138,3 +138,156 @@ This is body text with #hl[highlighted] word.
 	}
 	fmt.Printf("compilation ok, html=%d bytes\n", len(html))
 }
+
+func TestRewriteAssetPaths(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "image with double-quoted /uploads/",
+			in:   `#image("/uploads/photo.jpg")`,
+			want: `#image("uploads/photo.jpg")`,
+		},
+		{
+			name: "image with single-quoted /avatars/",
+			in:   `#image('/avatars/me.png')`,
+			want: `#image('avatars/me.png')`,
+		},
+		{
+			name: "image already relative (no leading slash) untouched",
+			in:   `#image("uploads/photo.jpg")`,
+			want: `#image("uploads/photo.jpg")`,
+		},
+		{
+			name: "non-asset path untouched",
+			in:   `#image("template.typ")`,
+			want: `#image("template.typ")`,
+		},
+		{
+			name: "external URL untouched",
+			in:   `#image("https://example.com/img.png")`,
+			want: `#image("https://example.com/img.png")`,
+		},
+		{
+			name: "multiple assets in one source",
+			in:   "#image(\"/uploads/a.jpg\")\n#image(\"/avatars/b.png\")",
+			want: "#image(\"uploads/a.jpg\")\n#image(\"avatars/b.png\")",
+		},
+		{
+			name: "leading slash in middle of path untouched",
+			in:   `#image("sub/path/with/uploads/init.jpg")`,
+			want: `#image("sub/path/with/uploads/init.jpg")`,
+		},
+		{
+			name: "#import /uploads/lib.typ",
+			in:   `#import "/uploads/my-lib.typ"`,
+			want: `#import "uploads/my-lib.typ"`,
+		},
+		{
+			name: "#import /uploads/lib.typ with items",
+			in:   `#import "/uploads/my-lib.typ": foo, bar`,
+			want: `#import "uploads/my-lib.typ": foo, bar`,
+		},
+		{
+			name: "#include /uploads/header.typ",
+			in:   `#include "/uploads/header.typ"`,
+			want: `#include "uploads/header.typ"`,
+		},
+		{
+			name: "#read /uploads/data.csv",
+			in:   `#read("/uploads/data.csv")`,
+			want: `#read("uploads/data.csv")`,
+		},
+		{
+			name: "#bibliography /uploads/refs.bib",
+			in:   `#bibliography("/uploads/refs.bib")`,
+			want: `#bibliography("uploads/refs.bib")`,
+		},
+		{
+			name: "named argument path: /uploads/",
+			in:   `#image(path: "/uploads/logo.png")`,
+			want: `#image(path: "uploads/logo.png")`,
+		},
+		{
+			name: "named argument no space after colon",
+			in:   `#image(path:"/uploads/logo.png")`,
+			want: `#image(path:"uploads/logo.png")`,
+		},
+		{
+			name: "single-quoted #import /avatars/avatar.typ",
+			in:   `#import '/avatars/avatar.typ'`,
+			want: `#import 'avatars/avatar.typ'`,
+		},
+		{
+			name: "prose string mentioning /uploads/ is NOT rewritten",
+			in:   `"See /uploads/help.pdf for details."`,
+			want: `"See /uploads/help.pdf for details."`,
+		},
+		{
+			name: "prose with #image and prose mixed",
+			in:   `#image("/uploads/a.jpg") + " see /uploads/notes"`,
+			want: `#image("uploads/a.jpg") + " see /uploads/notes"`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := rewriteAssetPaths(tt.in)
+			if got != tt.want {
+				t.Errorf("rewriteAssetPaths(%q)\n  got:  %q\n  want: %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestLinkAssetDirs(t *testing.T) {
+	tmp := t.TempDir()
+	ws := filepath.Join(tmp, "workspace")
+	uploads := filepath.Join(tmp, "my-uploads")
+	avatars := filepath.Join(tmp, "my-avatars")
+	if err := os.MkdirAll(ws, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(uploads, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(avatars, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// Drop a test file in uploads so we can verify the symlink resolves.
+	if err := os.WriteFile(filepath.Join(uploads, "test.txt"), []byte("hello"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Before SetAssetsDirs is called, dirs are empty → linkAssetDirs is a no-op.
+	linkAssetDirs(ws)
+	if _, err := os.Stat(filepath.Join(ws, "uploads", "test.txt")); err == nil {
+		t.Fatal("expected uploads symlink to not exist yet")
+	}
+
+	// Configure dirs and re-link.
+	uploadsDir = uploads
+	avatarsDir = avatars
+	t.Cleanup(func() { uploadsDir = ""; avatarsDir = "" })
+
+	linkAssetDirs(ws)
+
+	// Symlinks should now exist and resolve.
+	data, err := os.ReadFile(filepath.Join(ws, "uploads", "test.txt"))
+	if err != nil {
+		t.Fatalf("reading via uploads symlink: %v", err)
+	}
+	if string(data) != "hello" {
+		t.Errorf("got %q, want %q", data, "hello")
+	}
+	if fi, err := os.Stat(filepath.Join(ws, "avatars")); err != nil || !fi.IsDir() {
+		t.Errorf("avatars symlink not working: err=%v isDir=%v", err, fi != nil && fi.IsDir())
+	}
+
+	// Second call should be idempotent (no error, links still work).
+	linkAssetDirs(ws)
+	if _, err := os.ReadFile(filepath.Join(ws, "uploads", "test.txt")); err != nil {
+		t.Fatalf("after second linkAssetDirs: %v", err)
+	}
+}

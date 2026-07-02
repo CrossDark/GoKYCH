@@ -58,7 +58,26 @@ var compileSem = make(chan struct{}, maxConcurrent)
 var (
 	workspaceDirOnce sync.Once
 	workspaceDir     string
+	uploadsDir       string
+	avatarsDir       string
 )
+
+// SetAssetsDirs configures the on-disk paths for user-uploaded files and
+// avatars. Called once at startup after config load, alongside SetWorkspaceDir.
+// Symlinks are created *inside* the workspace dir so that typst source can
+// reference uploaded images via relative paths:
+//
+//	#image("uploads/photo.jpg")
+//	#image("avatars/avatar_xxx.jpg")
+//
+// A source-rewriting pass in compileBothCtx also translates the web-style
+// absolute paths "/uploads/..." and "/avatars/..." to their workspace-relative
+// equivalents, so authors can copy-paste the URL they see in the upload
+// picker without manual editing.
+func SetAssetsDirs(uploads, avatars string) {
+	uploadsDir = uploads
+	avatarsDir = avatars
+}
 
 // SetWorkspaceDir sets the absolute (or process-relative) path to the
 // typst workspace. Production binaries should call this once at startup
@@ -211,6 +230,18 @@ func compileBothCtx(ctx context.Context, dbx *sql.DB, currentArticleID int, sour
 	// Trigger lazy workspace setup (mkdir + materialize + leak cleanup) on
 	// first compile. Tests that don't call CompileHTML never hit this path.
 	ensureWorkspace()
+
+	// Ensure uploads/ and avatars/ symlinks exist inside the workspace.
+	// Called per-compile (not just at startup) so that the symlinks are
+	// created correctly regardless of whether SetAssetsDirs was called
+	// before or after SetWorkspaceDir. linkAssetDirs is idempotent — a
+	// correct existing symlink is left untouched.
+	linkAssetDirs(workspaceDir)
+
+	// Rewrite web-style absolute asset paths ("/uploads/...", "/avatars/...")
+	// to workspace-relative paths BEFORE dependency resolution, so that
+	// dependency articles also benefit from the rewrite.
+	source = rewriteAssetPaths(source)
 
 	// Resolve cross-article @imports (writes .dep_N.typ files into workspace).
 	var depFiles []string
@@ -595,6 +626,88 @@ func materializeAssets(dir string) {
 		}
 		slog.Info("typst: materialized asset", "file", dst)
 	}
+}
+
+// linkAssetDirs creates (or refreshes) symlinks inside the workspace dir so
+// that typst source can resolve relative paths like "uploads/foo.png" and
+// "avatars/bar.jpg" to the real upload/avatar directories on disk.
+//
+// Why symlinks instead of copying:
+//   - Uploads can be large (images, PDFs); copying on every startup wastes
+//     disk and time.
+//   - New uploads appear instantly without restarting the server.
+//   - Symlinks are removed and re-created each call, so pointing at a
+//     different directory (e.g. after a config reload) works cleanly.
+//
+// If the target directory doesn't exist (uploadsDir/avatarsDir not yet
+// configured, as in tests), the symlink is skipped — typst will surface a
+// clear "file not found" error for the referenced image, which is the
+// correct behaviour.
+func linkAssetDirs(workspace string) {
+	links := []struct {
+		linkName string
+		target   string
+	}{
+		{"uploads", uploadsDir},
+		{"avatars", avatarsDir},
+	}
+	for _, l := range links {
+		if l.target == "" {
+			continue
+		}
+		// Resolve to absolute so the symlink works regardless of cwd.
+		absTarget, err := filepath.Abs(l.target)
+		if err != nil {
+			slog.Warn("typst: resolve asset dir", "name", l.linkName, "err", err)
+			continue
+		}
+		linkPath := filepath.Join(workspace, l.linkName)
+		// Remove any existing symlink / stale file at that path.
+		if existing, err := os.Readlink(linkPath); err == nil {
+			if existing == absTarget {
+				continue // already correct
+			}
+			_ = os.Remove(linkPath)
+		} else {
+			// Not a symlink — if a regular file/dir exists here, remove
+			// it (it would shadow the symlink we want to create).
+			if _, serr := os.Stat(linkPath); serr == nil {
+				_ = os.RemoveAll(linkPath)
+			}
+		}
+		if err := os.Symlink(absTarget, linkPath); err != nil {
+			slog.Warn("typst: create asset symlink", "link", linkPath, "target", absTarget, "err", err)
+		} else {
+			slog.Debug("typst: linked asset dir", "link", linkPath, "target", absTarget)
+		}
+	}
+}
+
+// assetPathRe matches web-style absolute paths in typst string literals and
+// rewrites them to workspace-relative paths by stripping the leading slash:
+//
+//	#image("/uploads/foo.png")        →  #image("uploads/foo.png")
+//	#image('/avatars/bar.jpg')        →  #image('avatars/bar.jpg')
+//	#import "/uploads/lib.typ"        →  #import "uploads/lib.typ"
+//	#include "/uploads/header.typ"    →  #include "uploads/header.typ"
+//	#read("/uploads/data.csv")        →  #read("uploads/data.csv")
+//	#bibliography("/uploads/refs.bib") →  #bibliography("uploads/refs.bib")
+//
+// The leading character class (^|[\s(,:=]) ensures we only match paths in
+// positions where typst expects a filesystem path — function arguments,
+// import/include statements, named parameters (with or without space after
+// the colon), and variable assignments. Plain prose strings like
+// "see /uploads/help.pdf" are NOT rewritten because the opening quote is
+// preceded by a letter/surrogate, not a delimiter.
+var assetPathRe = regexp.MustCompile(`(^|[\s(,:=])("|')/(uploads/|avatars/)`)
+
+// rewriteAssetPaths translates web-style absolute asset paths
+// ("/uploads/...", "/avatars/...") to workspace-relative paths
+// ("uploads/...", "avatars/...") that resolve via the symlinks created
+// by linkAssetDirs. Works on both the main source and dependency content
+// (called from resolve.go for dep files too).
+func rewriteAssetPaths(src string) string {
+	return assetPathRe.ReplaceAllString(src, "$1$2$3")
 }
 
 // buildReverseDepMapCtx loads every typst_cache row with non-empty dependencies
