@@ -401,7 +401,7 @@ Middleware 全部保留。我们这边 zero config — 不用写 EdgeOne adapter
    默认的 SSR 模式构建。
 4. **自定义域名**：添加 `eo.kych.net`。EdgeOne 自动签发 / 续期
    该域名的边缘 HTTPS 证书，并在边缘绑好 CNAME 目标值。把这个
-   CNAME 加到 DNS（见 §4）。
+   CNAME 加到 DNS（见 §5）。
 5. **回源 / 函数配置**：留默认。Makers 自动处理 SSR 路由，
    不用配任何 rewrites。
 6. **预览环境**（可选但推荐）：开启 "Preview Deployments"，
@@ -460,7 +460,7 @@ export function apiUrl(path: string): string {
 - Session cookie 域：`api.kych.net`（后端 host），浏览器对
   `api.kych.net` 的 fetch 自动带上
 
-### 3.6 备选：Cloudflare Workers（OpenNext）详细部署指南
+## 4. 前端备选：Cloudflare Workers（OpenNext）部署
 
 如果希望前端部署在 Cloudflare 而非 EdgeOne，可以使用 `@opennextjs/cloudflare`
 将 Next.js 构建为 **Cloudflare Workers**（Workers Paid 计划，免费计划 Worker 体积上限 3 MiB 不够）。
@@ -473,7 +473,7 @@ export function apiUrl(path: string): string {
 
 ---
 
-#### 3.6.1 仓库内置文件说明
+### 4.1 仓库内置文件说明
 
 仓库已为 Cloudflare 部署准备好以下文件（**无需手动创建**）：
 
@@ -491,7 +491,7 @@ Worker 名称通过 `WORKER_NAME` 环境变量统一控制，`name` 和 `WORKER_
 
 ---
 
-#### 3.6.2 完整部署步骤（从零开始）
+### 4.2 完整部署步骤（从零开始）
 
 ##### 步骤 1：准备后端
 
@@ -596,7 +596,7 @@ Deployed created-rule-front triggers (0.78 sec)
 
 ---
 
-#### 3.6.3 自定义域名绑定（可选但推荐）
+### 4.3 自定义域名绑定（可选但推荐）
 
 Workers 默认分配的 `xxx.workers.dev` 域名在国内访问可能不稳定，建议绑定自定义域名：
 
@@ -619,7 +619,7 @@ sudo systemctl restart gokych
 
 ---
 
-#### 3.6.4 常用 npm scripts 说明
+### 4.4 常用 npm scripts 说明
 
 | 命令 | 说明 |
 |------|------|
@@ -635,7 +635,7 @@ sudo systemctl restart gokych
 
 ---
 
-#### 3.6.5 WORKER_NAME 环境变量详解
+### 4.5 WORKER_NAME 环境变量详解
 
 `web/wrangler.jsonc` 使用 Wrangler 原生 `${ENV_VAR:-default}` 插值语法：
 
@@ -662,7 +662,7 @@ sudo systemctl restart gokych
 
 ---
 
-#### 3.6.6 与 EdgeOne 部署的共存
+### 4.6 与 EdgeOne 部署的共存
 
 GoKYCH 同时支持三种前端部署方式，互不干扰：
 
@@ -680,7 +680,7 @@ GoKYCH 同时支持三种前端部署方式，互不干扰：
 
 ---
 
-#### 3.6.7 GitHub Actions 自动部署（可选）
+### 4.7 GitHub Actions 自动部署（可选）
 
 如果你想每次 push 到 main 分支自动部署到 Cloudflare Workers：
 
@@ -733,7 +733,7 @@ jobs:
 
 ---
 
-#### 3.6.8 常见错误排查
+### 4.8 常见错误排查
 
 | 错误信息 | 原因 | 解决方法 |
 |----------|------|----------|
@@ -748,7 +748,7 @@ jobs:
 
 ---
 
-## 4. DNS
+## 5. DNS
 
 | 记录 | 名称              | 类型  | 值                              |
 |------|-------------------|-------|---------------------------------|
@@ -764,7 +764,7 @@ jobs:
 
 ---
 
-## 5. 端到端验证清单
+## 6. 端到端验证清单
 
 部署完后按这个顺序过一遍：
 
@@ -797,7 +797,7 @@ RPID 用了 `localhost` — 这只在 `APP_DOMAIN=localhost:3000` 时发生。
 
 ---
 
-## 6. 监控（够用就行）
+## 7. 监控（够用就行）
 
 最小集：
 
@@ -813,7 +813,7 @@ RPID 用了 `localhost` — 这只在 `APP_DOMAIN=localhost:3000` 时发生。
 
 ---
 
-## 7. 已知坑（deploy 之前先扫一眼）
+## 8. 已知坑（deploy 之前先扫一眼）
 
 | 坑 | 说明 | 规避 |
 |----|------|------|
@@ -837,7 +837,7 @@ RPID 用了 `localhost` — 这只在 `APP_DOMAIN=localhost:3000` 时发生。
 
 ---
 
-## 8. 回滚预案
+## 9. 回滚预案
 
 | 场景                    | 怎么办                                              |
 |-------------------------|------------------------------------------------------|
@@ -850,7 +850,7 @@ RPID 用了 `localhost` — 这只在 `APP_DOMAIN=localhost:3000` 时发生。
 
 ---
 
-## 9. 一行话总结
+## 10. 一行话总结
 
 > **Ubuntu 24 VM 上跑 gokych 单实例（systemd + nginx + MySQL 8），
 > 前端 Next.js 部署在腾讯云 EdgeOne Makers 边缘（自动构建 + 自动
