@@ -460,6 +460,60 @@ export function apiUrl(path: string): string {
 - Session cookie 域：`api.kych.net`（后端 host），浏览器对
   `api.kych.net` 的 fetch 自动带上
 
+### 3.6 备选：Cloudflare Workers（OpenNext）部署
+
+如果希望前端部署在 Cloudflare 而非 EdgeOne，可以使用 OpenNext 将 Next.js 构建为 Cloudflare Workers。
+
+**仓库已内置 `web/wrangler.jsonc` 配置**，不存在硬编码 Worker 名称的问题。配置中：
+- `name` 字段是 Cloudflare Worker 服务名称（默认 `gokych`）
+- `services[0].service` 必须与 `name` 完全一致（WORKER_SELF_REFERENCE 自绑定）
+
+#### 修改 Worker 名称
+
+如果你在 Cloudflare 控制台使用自定义 Worker 名称（如 `created-rule-front`），必须同时修改 `web/wrangler.jsonc` 中的两个字段：
+
+```jsonc
+{
+  "name": "created-rule-front",        // ← 改这里
+  // ...
+  "services": [
+    {
+      "binding": "WORKER_SELF_REFERENCE",
+      "service": "created-rule-front"  // ← 同时改这里，必须与 name 一致
+    }
+  ]
+}
+```
+
+**两个字段必须完全一致**，否则会出现 `Service binding 'WORKER_SELF_REFERENCE' references Worker 'xxx' which was not found [code: 10143]` 错误。
+
+#### 部署步骤
+
+```bash
+cd web/
+
+# 1. 安装依赖（如果还没装）
+npm install
+
+# 2. 安装 OpenNext Cloudflare 适配器（首次部署）
+npm install -D @opennextjs/cloudflare
+
+# 3. 构建
+npx opennextjs-cloudflare build
+
+# 4. 登录 Cloudflare（如果还没登录）
+npx wrangler login
+
+# 5. 部署
+npx wrangler deploy
+```
+
+环境变量配置（两种方式二选一）：
+- **方式 A**：修改 `web/wrangler.jsonc` 中的 `vars` 段
+- **方式 B**：在 Cloudflare 控制台 → Workers & Pages → 你的 Worker → Settings → Variables and Secrets 中添加 `NEXT_PUBLIC_API_BASE_URL`
+
+> **重要**：后端 `CORS_ALLOWED_ORIGINS` 需要添加你的 Cloudflare Workers 域名（如 `https://created-rule-front.你的账号.workers.dev` 或自定义域名），否则跨域请求会被阻止。
+
 ---
 
 ## 4. DNS
@@ -545,6 +599,8 @@ RPID 用了 `localhost` — 这只在 `APP_DOMAIN=localhost:3000` 时发生。
 | EdgeOne 上 `output: "standalone"` 干扰 | standalone 输出模式与 Makers 自带构建器冲突 | `web/next.config.ts` 已改成条件 opt-in（`STANDALONE=1` 才开），Makers 不设此环境变量，零冲突 |
 | EdgeOne 改了构建器默认行为 | 平台升级可能改变默认 Next.js 构建参数 | 锁定仓库 `package.json` 里 `next` 版本；如遇问题在控制台"构建设置"显式指定 |
 | CORS preflight 走错中间件 | OPTIONS 请求如果被 CSRF 中间件拦了，浏览器永远收不到 204 → 实际 mutation 也发不出去 | CORS 已在 `csrfMiddleware` 之前安装，preflight 直接 204 短路（commit `90498db`） |
+| Cloudflare WORKER_SELF_REFERENCE 错误 10143 | `wrangler.jsonc` 中 `name` 和 `services[0].service` 不一致；或控制台创建的 Worker 名称与配置文件不匹配 | 修改 `web/wrangler.jsonc` 确保 `name` === `services[0].service`；控制台创建的 Worker 名称必须与 `name` 字段一致 |
+| Cloudflare Workers 跨域失败 | 后端 `CORS_ALLOWED_ORIGINS` 未包含 workers.dev 域名或自定义域名 | 后端 `.env` 的 `CORS_ALLOWED_ORIGINS` 添加 Cloudflare 域名，逗号分隔 |
 
 ---
 

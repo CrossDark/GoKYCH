@@ -1,0 +1,42 @@
+{
+  // Cloudflare Workers 配置文件（用于 OpenNext / @cloudflare/next-on-pages 部署）
+  // 腾讯云 EdgeOne Makers 部署会忽略此文件，使用平台内置适配器。
+  //
+  // 修改 name 后必须同时修改 services[0].service，两者必须一致 —
+  // WORKER_SELF_REFERENCE 是 OpenNext 用于 ISR 自调用的服务绑定，
+  // 必须指向当前 Worker 自身。
+  //
+  // 部署命令（在 web/ 目录下）：
+  //   npx @cloudflare/next-on-pages@latest
+  //   npx wrangler pages deploy .vercel/output/static
+  // 或直接使用 opennext:
+  //   npx opennextjs-cloudflare build
+  //   npx wrangler deploy
+
+  "$schema": "https://raw.githubusercontent.com/cloudflare/workers-sdk/main/packages/wrangler/config-schema.json",
+  "name": "gokych",
+  "main": ".open-next/worker.js",
+  "compatibility_date": "2025-05-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  "assets": {
+    "directory": ".open-next/assets",
+    "binding": "ASSETS"
+  },
+
+  "services": [
+    {
+      "binding": "WORKER_SELF_REFERENCE",
+      "service": "gokych"
+    }
+  ],
+
+  "vars": {
+    // 后端 API 地址（生产环境必须修改为你的后端域名）
+    "NEXT_PUBLIC_API_BASE_URL": "https://api.example.com"
+  },
+
+  "observability": {
+    "enabled": true
+  }
+}
