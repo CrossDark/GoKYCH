@@ -325,17 +325,19 @@ func renderBBCodeTable(content string) string {
 	rows := strings.Split(content, "[/tr]")
 	var sb strings.Builder
 	sb.WriteString(`<div class="bbcode-table-wrapper"><table class="bbcode-table">`)
+	// RE2 does not support backreferences (\1), so we match either
+	// open tag with a non-backreferencing close, using the opening
+	// tag name for output. Mismatched open/close (e.g. [td]...[/th])
+	// is an authoring error we tolerate gracefully.
+	cellRe := regexp.MustCompile(`(?is)\[(td|th)\](.*?)\[/(?:td|th)\]`)
 	for _, row := range rows {
 		row = strings.TrimSpace(row)
 		if row == "" {
 			continue
 		}
 		sb.WriteString("<tr>")
-		// Match [td]...[td] or [th]...[th]
-		cellRe := regexp.MustCompile(`(?is)\[(td|th)\](.*?)\[/\1\]`)
-		cells := cellRe.FindAllStringSubmatch(row, -1)
-		for _, cell := range cells {
-			sb.WriteString("<" + cell[1] + ">" + cell[2] + "</" + cell[1] + ">")
+		for _, m := range cellRe.FindAllStringSubmatch(row, -1) {
+			sb.WriteString("<" + m[1] + ">" + m[2] + "</" + m[1] + ">")
 		}
 		sb.WriteString("</tr>")
 	}
