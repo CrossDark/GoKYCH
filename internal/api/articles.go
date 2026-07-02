@@ -20,6 +20,7 @@ import (
 	"gokych/internal/content"
 	"gokych/internal/content/parsers"
 	coredb "gokych/internal/core/db"
+	"gokych/internal/core/settings"
 	"gokych/internal/typst"
 )
 
@@ -282,13 +283,7 @@ func (s *Server) getArticle(c *gin.Context) {
 	s.renderCommentHTML(comments)
 	s.renderCommentHTML(lineComments)
 
-	canEdit := false
-	if currentUser != nil {
-		if currentUser.Role == "admin" || currentUser.Role == "owner" ||
-			(a.AuthorID != nil && *a.AuthorID == currentUser.ID) {
-			canEdit = true
-		}
-	}
+	canEdit := s.canModifyArticle(currentUser, a)
 
 	c.JSON(http.StatusOK, ArticleDetail{
 		Article:           a,
@@ -313,18 +308,31 @@ type articleInput struct {
 }
 
 // canModifyArticle reports whether u is allowed to edit/delete the article.
-// Admin/owner always can; otherwise only the original author can. An article
+// Admin/owner always can; when features.allow_all_edit is enabled, any logged-in
+// user can edit any article; otherwise only the original author can. An article
 // with no author (created before author_id was tracked) can only be touched
-// by admin/owner — we don't want a regular user to be able to claim an
-// orphan row by getting its id into their session.
-func canModifyArticle(u *user.User, a *content.Article) bool {
+// by admin/owner even when allow_all_edit is on — we don't want a regular user
+// to be able to claim an orphan row by getting its id into their session.
+func (s *Server) canModifyArticle(u *user.User, a *content.Article) bool {
 	if u == nil || a == nil {
 		return false
 	}
 	if user.IsAdmin(u.Role) {
 		return true
 	}
-	return a.AuthorID != nil && *a.AuthorID == u.ID
+	if a.AuthorID != nil && *a.AuthorID == u.ID {
+		return true
+	}
+	// Check site setting: allow_all_edit lets any logged-in user edit articles.
+	cfg, err := settings.Load(s.DataDir)
+	if err == nil {
+		if features, ok := cfg["features"].(map[string]interface{}); ok {
+			if allow, ok := features["allow_all_edit"].(bool); ok && allow {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // POST /api/articles (any logged-in user)
@@ -414,7 +422,7 @@ func (s *Server) updateArticle(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载文章失败。"})
 		return
 	}
-	if !canModifyArticle(CurrentUserFromContext(c), a) {
+	if !s.canModifyArticle(CurrentUserFromContext(c), a) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "您没有权限编辑此文章。"})
 		return
 	}
@@ -467,7 +475,7 @@ func (s *Server) deleteArticle(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载文章失败。"})
 		return
 	}
-	if !canModifyArticle(CurrentUserFromContext(c), a) {
+	if !s.canModifyArticle(CurrentUserFromContext(c), a) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "您没有权限删除此文章。"})
 		return
 	}
@@ -586,7 +594,7 @@ func (s *Server) recompileArticle(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载文章失败。"})
 		return
 	}
-	if !canModifyArticle(CurrentUserFromContext(c), a) {
+	if !s.canModifyArticle(CurrentUserFromContext(c), a) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "您没有权限重新编译此文章。"})
 		return
 	}

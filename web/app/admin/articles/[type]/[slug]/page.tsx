@@ -4,7 +4,7 @@ import { useState, useEffect, use } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { getCsrf, getMe, getArticle, updateArticle, deleteArticle } from "@/lib/api";
-import type { Article, User } from "@/lib/types";
+import type { Article, User, ArticleDetail } from "@/lib/types";
 import { useToast, useBeforeUnload } from "@/lib/admin-feedback";
 import { AdminConfirm } from "@/components/admin/AdminConfirm";
 import { MarkdownEditor } from "@/components/admin/MarkdownEditor";
@@ -30,6 +30,7 @@ export default function AdminArticleDetail({ params }: PageProps) {
   const [csrf, setCsrf] = useState("");
   const [me, setMe] = useState<User | null>(null);
   const [article, setArticle] = useState<Article | null>(null);
+  const [canEdit, setCanEdit] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [forbidden, setForbidden] = useState(false);
   const [form, setForm] = useState({ title: "", content: "", tags: "" });
@@ -61,9 +62,10 @@ export default function AdminArticleDetail({ params }: PageProps) {
       if (r.user) setMe(r.user);
     }).catch(() => {});
     getArticle(type, slug)
-      .then((d) => {
+      .then((d: ArticleDetail) => {
         const a = d.article;
         setArticle(a);
+        setCanEdit(d.can_edit);
         const init = {
           title: a.title,
           content: a.content,
@@ -75,16 +77,13 @@ export default function AdminArticleDetail({ params }: PageProps) {
       .catch((err) => setLoadError(err.message || "加载失败。"));
   }, [type, slug]);
 
-  // Once we know both the article and the current user, decide whether the
-  // viewer is allowed to touch this row. The backend will 403 on save/delete
-  // regardless, but a friendly pre-check stops a regular user from landing
-  // on a useless editor for an article someone else owns.
+  // Use the server-returned can_edit flag (which already accounts for
+  // allow_all_edit, admin/owner status, and authorship) to decide whether
+  // to show the forbidden page.
   useEffect(() => {
-    if (!article || !me) return;
-    const isOwner = article.author_id != null && article.author_id === me.id;
-    const isAdmin = me.role === "admin" || me.role === "owner";
-    if (!isOwner && !isAdmin) setForbidden(true);
-  }, [article, me]);
+    if (!article || me === null) return;
+    if (!canEdit) setForbidden(true);
+  }, [article, me, canEdit]);
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();

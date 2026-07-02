@@ -177,6 +177,7 @@ export interface SiteConfig {
     enable_search: boolean;
     enable_tags_sidebar: boolean;
     posts_per_page: number;
+    allow_all_edit: boolean;
   };
   // NOTE: site-level `social` was removed — per-user social links now
   // live on `User.social_email / social_github / social_qq` and are
@@ -226,6 +227,7 @@ export interface SiteSettings {
     enable_search: boolean;
     enable_tags_sidebar: boolean;
     posts_per_page: number;
+    allow_all_edit: boolean;
   };
   subsite_links: SubsiteLink[];
 }

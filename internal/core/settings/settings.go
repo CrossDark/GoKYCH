@@ -39,6 +39,7 @@ func Default() map[string]interface{} {
 			"enable_search":       true,
 			"enable_tags_sidebar": true,
 			"posts_per_page":      10,
+			"allow_all_edit":      false,
 		},
 		// NOTE: there used to be a top-level "social" section here
 		// (email/github/twitter). It was moved to per-user fields on the

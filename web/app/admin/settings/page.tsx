@@ -1,8 +1,8 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { getCsrf, getSettings, updateSettings, listThemes, listAdminFiles } from "@/lib/api";
-import type { Theme, SiteSettings, AdminFile } from "@/lib/types";
+import { getCsrf, getMe, getSettings, updateSettings, listThemes, listAdminFiles } from "@/lib/api";
+import type { Theme, SiteSettings, AdminFile, User } from "@/lib/types";
 import { useToast, useBeforeUnload } from "@/lib/admin-feedback";
 import { AdminModal } from "@/components/admin/AdminModal";
 
@@ -30,6 +30,7 @@ const FIELD_LABELS: Record<string, string> = {
   enable_search: "启用搜索",
   enable_tags_sidebar: "启用标签侧栏",
   posts_per_page: "每页文章数",
+  allow_all_edit: "允许所有用户编辑所有文章（站长专属）",
 };
 
 const SECTION_ORDER = ["site", "appearance", "features"];
@@ -53,6 +54,7 @@ const SELECT_FIELDS: Record<string, { value: string; label: string }[]> = {
 
 export default function AdminSettings() {
   const [csrf, setCsrf] = useState("");
+  const [me, setMe] = useState<User | null>(null);
   const [settings, setSettings] = useState<SiteSettings | null>(null);
   const initialSettingsRef = useRef<SiteSettings | null>(null);
   const [availableThemes, setAvailableThemes] = useState<Theme[]>([]);
@@ -77,6 +79,9 @@ export default function AdminSettings() {
       }).catch(() => setLoading(false));
       listAdminFiles(r.csrf_token).then(setUploadedFiles).catch(() => {});
     });
+    getMe().then((r) => {
+      if (r.user) setMe(r.user);
+    }).catch(() => {});
     listThemes()
       .then((themes) => {
         setAvailableThemes(themes.filter((t) => t.has_css));
@@ -242,14 +247,25 @@ export default function AdminSettings() {
     }
 
     if (typeof value === "boolean") {
+      const isOwnerOnly = key === "allow_all_edit";
+      const isOwner = me?.role === "owner";
+      if (isOwnerOnly && !isOwner) {
+        return null;
+      }
       return (
         <label key={key} className="admin-setting-field">
           <span className="admin-setting-key">{label}</span>
           <input
             type="checkbox"
             checked={value}
+            disabled={isOwnerOnly && !isOwner}
             onChange={(e) => handleChange(section, key, e.target.checked)}
           />
+          {isOwnerOnly && (
+            <span className="admin-setting-hint">
+              开启后所有已登录用户都可以编辑、删除任意文章（包括管理员创建的文章），请谨慎操作。仅站长（owner）可修改此设置。
+            </span>
+          )}
         </label>
       );
     }

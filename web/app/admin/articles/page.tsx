@@ -3,8 +3,8 @@
 import { useState, useEffect, Suspense } from "react";
 import Link from "next/link";
 import { useSearchParams, useRouter } from "next/navigation";
-import { getCsrf, getMe, listArticles, getArticle, createArticle, updateArticle, deleteArticle } from "@/lib/api";
-import type { Article, ArticleListResult, User } from "@/lib/types";
+import { getCsrf, getMe, getSite, listArticles, getArticle, createArticle, updateArticle, deleteArticle } from "@/lib/api";
+import type { Article, ArticleListResult, User, SiteConfig } from "@/lib/types";
 import { useToast, useBeforeUnload } from "@/lib/admin-feedback";
 import { AdminConfirm } from "@/components/admin/AdminConfirm";
 import { MarkdownEditor } from "@/components/admin/MarkdownEditor";
@@ -34,6 +34,7 @@ function AdminArticlesInner() {
   const toast = useToast();
   const [csrf, setCsrf] = useState("");
   const [me, setMe] = useState<User | null>(null);
+  const [siteConfig, setSiteConfig] = useState<SiteConfig | null>(null);
   const [result, setResult] = useState<ArticleListResult | null>(null);
   const [page, setPage] = useState(1);
   const [filterType, setFilterType] = useState("");
@@ -45,13 +46,12 @@ function AdminArticlesInner() {
   const [pendingDelete, setPendingDelete] = useState<Article | null>(null);
   const isDirty = !!(form.title || form.content || form.slug || form.tags);
 
-  // Regular users see only their own articles; admin/owner see everything.
-  // The list label reflects that so the page reads as "我的文章" for the
-  // regular user and "文章管理" for the admin (label flip is local; the
-  // URL stays /admin/articles either way).
+  // Regular users see only their own articles by default, unless
+  // features.allow_all_edit is enabled — then everyone sees everything.
   const isRegular = me?.role === "user";
-  const myAuthorId = isRegular ? me?.id : undefined;
-  const pageTitle = isRegular ? "我的文章" : "文章管理";
+  const allowAllEdit = siteConfig?.features?.allow_all_edit === true;
+  const myAuthorId = (isRegular && !allowAllEdit) ? me?.id : undefined;
+  const pageTitle = isRegular && !allowAllEdit ? "我的文章" : "文章管理";
 
   const load = (p: number, t: string) => {
     listArticles(t || undefined, p, myAuthorId).then(setResult).catch(() => {});
@@ -64,15 +64,17 @@ function AdminArticlesInner() {
     getMe().then((r) => {
       if (r.user) setMe(r.user);
     }).catch(() => {});
+    getSite().then(setSiteConfig).catch(() => {});
   }, []);
 
   // Re-load when the author filter resolves (i.e. after /me returns) — the
   // first load uses myAuthorId=undefined which would over-fetch for
-  // regular users.
+  // regular users. When allow_all_edit is enabled, myAuthorId stays undefined
+  // for everyone so all articles are shown.
   useEffect(() => {
-    if (isRegular && myAuthorId === undefined) return;
+    if (isRegular && !allowAllEdit && myAuthorId === undefined) return;
     load(page, filterType);
-  }, [page, filterType, myAuthorId, isRegular]);
+  }, [page, filterType, myAuthorId, isRegular, allowAllEdit]);
 
   // Read ?type= from URL (dashboard links)
   useEffect(() => {
