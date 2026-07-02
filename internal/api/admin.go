@@ -15,10 +15,9 @@ import (
 	"gokych/internal/auth/user"
 	"gokych/internal/content"
 	"gokych/internal/content/parsers"
+	coredb "gokych/internal/core/db"
 	"gokych/internal/core/settings"
 )
-
-// ─── Users ───────────────────────────────────────────────────────────
 
 type userSummary struct {
 	ID        int       `json:"id"`
@@ -28,30 +27,25 @@ type userSummary struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// GET /api/admin/users
 func (s *Server) listUsers(c *gin.Context) {
-	rows, err := s.DB.Query(
-		`SELECT id, username, nickname, role, created_at FROM users ORDER BY created_at DESC`)
+	ctx := c.Request.Context()
+	users, err := user.ListCtx(ctx, s.DB)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载用户失败。"})
+		slog.Error("listUsers", "err", err)
+		respondInternalErr(c, "加载用户失败。")
 		return
 	}
-	defer rows.Close()
-	var users = make([]userSummary, 0)
-	for rows.Next() {
-		var u userSummary
-		if err := rows.Scan(&u.ID, &u.Username, &u.Nickname, &u.Role, &u.CreatedAt); err != nil {
-			slog.Error("listUsers: scan user row", "err", err)
-			continue
-		}
-		users = append(users, u)
+	out := make([]userSummary, 0, len(users))
+	for _, u := range users {
+		out = append(out, userSummary{
+			ID:        u.ID,
+			Username:  u.Username,
+			Nickname:  u.Nickname,
+			Role:      u.Role,
+			CreatedAt: u.CreatedAt,
+		})
 	}
-	if err := rows.Err(); err != nil {
-		slog.Error("listUsers: iterate rows", "err", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载用户失败。"})
-		return
-	}
-	c.JSON(http.StatusOK, users)
+	c.JSON(http.StatusOK, out)
 }
 
 type createUserInput struct {
@@ -61,7 +55,6 @@ type createUserInput struct {
 	Role     string `json:"role"`
 }
 
-// POST /api/admin/users
 func (s *Server) createUser(c *gin.Context) {
 	var in createUserInput
 	if err := c.ShouldBindJSON(&in); err != nil {
@@ -80,7 +73,6 @@ func (s *Server) createUser(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的角色。"})
 		return
 	}
-	// admin 不得创建 owner 账户（防止垂直提权）。owner 仅由 seed 或现有 owner 提权产生。
 	if in.Role == user.RoleOwner {
 		c.JSON(http.StatusForbidden, gin.H{"error": "不能创建 owner 账户。"})
 		return
@@ -90,16 +82,17 @@ func (s *Server) createUser(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "密码加密失败。"})
 		return
 	}
-	id, err := user.Create(s.DB, in.Username, hash, in.Nickname, in.Role)
+	ctx := c.Request.Context()
+	id, err := user.CreateCtx(ctx, s.DB, in.Username, hash, in.Nickname, in.Role)
 	if err != nil {
-		if isDuplicateEntry(err) {
+		if coredb.IsDuplicateEntry(err) {
 			c.JSON(http.StatusConflict, gin.H{"error": "用户名已存在。"})
 			return
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "创建用户失败。"})
 		return
 	}
-	u, _ := user.GetByID(s.DB, int(id))
+	u, _ := user.GetByIDCtx(ctx, s.DB, int(id))
 	c.JSON(http.StatusCreated, u)
 }
 
@@ -107,7 +100,6 @@ type updateRoleInput struct {
 	Role string `json:"role"`
 }
 
-// PUT /api/admin/users/:username/role
 func (s *Server) updateUserRole(c *gin.Context) {
 	username := c.Param("username")
 	var in updateRoleInput
@@ -119,9 +111,8 @@ func (s *Server) updateUserRole(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的角色。"})
 		return
 	}
-	// Refuse to change the role of an existing owner — demoting the only
-	// owner would lock the system out of owner-level operations.
-	target, err := user.GetByUsername(s.DB, username)
+	ctx := c.Request.Context()
+	target, err := user.GetByUsernameCtx(ctx, s.DB, username)
 	if err != nil || target == nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "用户不存在。"})
 		return
@@ -130,7 +121,7 @@ func (s *Server) updateUserRole(c *gin.Context) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "不能更改 owner 的角色。"})
 		return
 	}
-	ok, err := user.UpdateInfo(s.DB, username, "", in.Role)
+	ok, err := user.UpdateInfoCtx(ctx, s.DB, username, "", in.Role)
 	if err != nil || !ok {
 		c.JSON(http.StatusNotFound, gin.H{"error": "用户不存在。"})
 		return
@@ -138,31 +129,24 @@ func (s *Server) updateUserRole(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
-// DELETE /api/admin/users/:username
 func (s *Server) deleteUser(c *gin.Context) {
 	username := c.Param("username")
 	currentUser := CurrentUserFromContext(c)
-
-	// Prevent deleting yourself
 	if currentUser != nil && currentUser.Username == username {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "不能删除自己的账号。"})
 		return
 	}
-
-	// Load target user to check role
-	target, err := user.GetByUsername(s.DB, username)
+	ctx := c.Request.Context()
+	target, err := user.GetByUsernameCtx(ctx, s.DB, username)
 	if err != nil || target == nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "用户不存在。"})
 		return
 	}
-
-	// Prevent deleting owner accounts
 	if user.IsOwner(target.Role) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "不能删除所有者账号。"})
 		return
 	}
-
-	ok, err := user.Delete(s.DB, username)
+	ok, err := user.DeleteCtx(ctx, s.DB, username)
 	if err != nil || !ok {
 		c.JSON(http.StatusNotFound, gin.H{"error": "用户不存在。"})
 		return
@@ -170,17 +154,15 @@ func (s *Server) deleteUser(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
-// ─── Tags ────────────────────────────────────────────────────────────
-
-const tagNameMaxLen = 64 // schema: tags.name VARCHAR(64)
+const tagNameMaxLen = 64
 
 type tagInput struct {
 	Name string `json:"name"`
 }
 
-// GET /api/admin/tags — full tag list with article counts, ordered by usage.
 func (s *Server) listAdminTags(c *gin.Context) {
-	rows, err := s.DB.Query(
+	ctx := c.Request.Context()
+	rows, err := s.DB.QueryContext(ctx,
 		`SELECT t.id, t.name, COUNT(at.tag_id) AS cnt
 		 FROM tags t LEFT JOIN article_tags at ON t.id = at.tag_id
 		 GROUP BY t.id, t.name ORDER BY cnt DESC, t.name`)
@@ -210,9 +192,6 @@ func (s *Server) listAdminTags(c *gin.Context) {
 	c.JSON(http.StatusOK, out)
 }
 
-// POST /api/admin/tags — create a tag. Idempotent: if the name already
-// exists, returns the existing id with `existed: true` rather than 409, so
-// the admin UI's "create new" button can never fail loudly.
 func (s *Server) createTag(c *gin.Context) {
 	var in tagInput
 	if err := c.ShouldBindJSON(&in); err != nil {
@@ -228,11 +207,11 @@ func (s *Server) createTag(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("标签名不能超过 %d 个字符。", tagNameMaxLen)})
 		return
 	}
-	id, err := content.GetOrCreateTag(s.DB, in.Name)
+	ctx := c.Request.Context()
+	id, err := content.GetOrCreateTagCtx(ctx, s.DB, in.Name)
 	if err != nil {
-		// Race against a concurrent INSERT — refetch the existing row.
 		var existing int
-		if scanErr := s.DB.QueryRow(`SELECT id FROM tags WHERE name = ?`, in.Name).Scan(&existing); scanErr == nil {
+		if scanErr := s.DB.QueryRowContext(ctx, `SELECT id FROM tags WHERE name = ?`, in.Name).Scan(&existing); scanErr == nil {
 			c.JSON(http.StatusOK, gin.H{"id": existing, "status": "ok", "existed": true})
 			return
 		}
@@ -243,8 +222,6 @@ func (s *Server) createTag(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{"id": id, "status": "ok"})
 }
 
-// PUT /api/admin/tags/:id — rename a tag (cascades to article_tags via
-// the shared id, which is what we want — only the display name changes).
 func (s *Server) renameTag(c *gin.Context) {
 	id, err := strconv.Atoi(c.Param("id"))
 	if err != nil || id <= 0 {
@@ -265,9 +242,10 @@ func (s *Server) renameTag(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("标签名不能超过 %d 个字符。", tagNameMaxLen)})
 		return
 	}
-	res, err := s.DB.Exec(`UPDATE tags SET name = ? WHERE id = ?`, in.Name, id)
+	ctx := c.Request.Context()
+	res, err := s.DB.ExecContext(ctx, `UPDATE tags SET name = ? WHERE id = ?`, in.Name, id)
 	if err != nil {
-		if isDuplicateEntry(err) {
+		if coredb.IsDuplicateEntry(err) {
 			c.JSON(http.StatusConflict, gin.H{"error": "已存在同名标签。"})
 			return
 		}
@@ -283,27 +261,25 @@ func (s *Server) renameTag(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
-// DELETE /api/admin/tags/:id — drop the tag and unlink it from any articles.
-// Wrapped in a transaction so an article_tags delete failure doesn't leave
-// the tags row orphaned from its references.
 func (s *Server) deleteTag(c *gin.Context) {
 	id, err := strconv.Atoi(c.Param("id"))
 	if err != nil || id <= 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的标签 ID。"})
 		return
 	}
-	tx, err := s.DB.Begin()
+	ctx := c.Request.Context()
+	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "事务启动失败。"})
 		return
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec(`DELETE FROM article_tags WHERE tag_id = ?`, id); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM article_tags WHERE tag_id = ?`, id); err != nil {
 		slog.Error("deleteTag: clear article_tags", "id", id, "err", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "清理标签关联失败。"})
 		return
 	}
-	res, err := tx.Exec(`DELETE FROM tags WHERE id = ?`, id)
+	res, err := tx.ExecContext(ctx, `DELETE FROM tags WHERE id = ?`, id)
 	if err != nil {
 		slog.Error("deleteTag", "id", id, "err", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "删除失败。"})
@@ -322,9 +298,6 @@ func (s *Server) deleteTag(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
-// ─── Notifications ────────────────────────────────────────────────────
-
-// GET /api/admin/notifications
 func (s *Server) listAdminNotifications(c *gin.Context) {
 	type notif struct {
 		ID          int       `json:"id"`
@@ -335,7 +308,8 @@ func (s *Server) listAdminNotifications(c *gin.Context) {
 		IsActive    bool      `json:"is_active"`
 		UpdatedAt   time.Time `json:"updated_at"`
 	}
-	rows, err := s.DB.Query(
+	ctx := c.Request.Context()
+	rows, err := s.DB.QueryContext(ctx,
 		`SELECT id, title, content, is_important, is_active, updated_at
 		 FROM notifications ORDER BY updated_at DESC`)
 	if err != nil {
@@ -370,15 +344,11 @@ type notifInput struct {
 	IsActive    bool   `json:"is_active"`
 }
 
-// Max lengths for notification fields, aligned with the schema column widths
-// (title VARCHAR(255), content TEXT — capped to 2000 in the app layer to keep
-// payloads manageable and prevent DB growth from malicious admins).
 const (
 	notificationTitleMaxLen   = 255
 	notificationContentMaxLen = 2000
 )
 
-// POST /api/admin/notifications
 func (s *Server) createNotification(c *gin.Context) {
 	var in notifInput
 	if err := c.ShouldBindJSON(&in); err != nil {
@@ -403,8 +373,9 @@ func (s *Server) createNotification(c *gin.Context) {
 	if in.IsImportant {
 		imp = 1
 	}
-	act := 1 // always active on creation (toggle via update)
-	res, err := s.DB.Exec(
+	act := 1
+	ctx := c.Request.Context()
+	res, err := s.DB.ExecContext(ctx,
 		`INSERT INTO notifications (title, content, is_important, is_active) VALUES (?, ?, ?, ?)`,
 		in.Title, in.Content, imp, act)
 	if err != nil {
@@ -415,7 +386,6 @@ func (s *Server) createNotification(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{"id": id, "status": "ok"})
 }
 
-// PUT /api/admin/notifications/:id
 func (s *Server) updateNotification(c *gin.Context) {
 	id, err := strconv.Atoi(c.Param("id"))
 	if err != nil || id <= 0 {
@@ -449,7 +419,8 @@ func (s *Server) updateNotification(c *gin.Context) {
 	if in.IsActive {
 		act = 1
 	}
-	res, err := s.DB.Exec(
+	ctx := c.Request.Context()
+	res, err := s.DB.ExecContext(ctx,
 		`UPDATE notifications SET title=?, content=?, is_important=?, is_active=? WHERE id=?`,
 		in.Title, in.Content, imp, act, id)
 	if err != nil {
@@ -464,14 +435,14 @@ func (s *Server) updateNotification(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
-// DELETE /api/admin/notifications/:id
 func (s *Server) deleteNotification(c *gin.Context) {
 	id, err := strconv.Atoi(c.Param("id"))
 	if err != nil || id <= 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的通知 ID。"})
 		return
 	}
-	res, err := s.DB.Exec(`DELETE FROM notifications WHERE id = ?`, id)
+	ctx := c.Request.Context()
+	res, err := s.DB.ExecContext(ctx, `DELETE FROM notifications WHERE id = ?`, id)
 	if err != nil {
 		slog.Error("deleteNotification", "id", id, "err", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "删除通知失败。"})
@@ -485,9 +456,6 @@ func (s *Server) deleteNotification(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
-// ─── Settings ─────────────────────────────────────────────────────────
-
-// GET /api/admin/settings
 func (s *Server) getSettings(c *gin.Context) {
 	cfg, err := settings.Load(s.DataDir)
 	if err != nil {
@@ -498,7 +466,6 @@ func (s *Server) getSettings(c *gin.Context) {
 	c.JSON(http.StatusOK, cfg)
 }
 
-// PUT /api/admin/settings
 func (s *Server) updateSettings(c *gin.Context) {
 	var cfg map[string]interface{}
 	if err := c.ShouldBindJSON(&cfg); err != nil {
@@ -513,9 +480,6 @@ func (s *Server) updateSettings(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
-// ─── Home Management ──────────────────────────────────────────────────
-
-// GET /api/admin/home
 func (s *Server) getAdminHome(c *gin.Context) {
 	type link struct {
 		ID          int    `json:"id"`
@@ -525,7 +489,8 @@ func (s *Server) getAdminHome(c *gin.Context) {
 		SortOrder   int    `json:"sort_order"`
 	}
 	links := []link{}
-	rows, err := s.DB.Query(`SELECT id, name, url, description, sort_order FROM subsite_links ORDER BY sort_order`)
+	ctx := c.Request.Context()
+	rows, err := s.DB.QueryContext(ctx, `SELECT id, name, url, description, sort_order FROM subsite_links ORDER BY sort_order`)
 	if err != nil {
 		slog.Error("getAdminHome: list subsite_links", "err", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载子站点链接失败。"})
@@ -553,7 +518,7 @@ func (s *Server) getAdminHome(c *gin.Context) {
 		SortOrder int    `json:"sort_order"`
 	}
 	feat := []featured{}
-	rows2, err := s.DB.Query(
+	rows2, err := s.DB.QueryContext(ctx,
 		`SELECT fa.id, fa.article_id, a.title, a.type, a.slug, fa.sort_order
 		 FROM featured_articles fa JOIN articles a ON fa.article_id = a.id
 		 ORDER BY fa.sort_order`)
@@ -577,31 +542,21 @@ func (s *Server) getAdminHome(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"subsite_links": links, "featured_articles": feat})
 }
 
-// Max lengths for subsite link fields, kept in sync with the schema's column
-// widths. Returning 400 here gives a clearer error than letting MySQL truncate
-// silently.
 const (
 	subsiteLinkNameMaxLen        = 255
 	subsiteLinkDescriptionMaxLen = 500
 )
 
-// allowedSubsiteLinkSchemes is the URL scheme allowlist for nav links. Other
-// schemes (e.g. javascript:, data:, vbscript:) would let an admin XSS visitors
-// via the Header <a href={link.url}>. Path-only links ("/labels/...") are also
-// accepted.
 var allowedSubsiteLinkSchemes = map[string]bool{
 	"http":   true,
 	"https":  true,
 	"mailto": true,
 }
 
-// validateSubsiteLinkURL enforces the scheme allowlist and absolute-URL sanity.
-// Returns "" when valid, or a user-facing error message.
 func validateSubsiteLinkURL(raw string) string {
 	if raw == "" {
 		return "URL 不能为空。"
 	}
-	// Internal path-only links are allowed (must start with /, not //).
 	if strings.HasPrefix(raw, "/") && !strings.HasPrefix(raw, "//") {
 		return ""
 	}
@@ -622,7 +577,6 @@ type linkInput struct {
 	SortOrder   int    `json:"sort_order"`
 }
 
-// POST /api/admin/home/links
 func (s *Server) addSubsiteLink(c *gin.Context) {
 	var in linkInput
 	if err := c.ShouldBindJSON(&in); err != nil {
@@ -648,7 +602,8 @@ func (s *Server) addSubsiteLink(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": msg})
 		return
 	}
-	_, err := s.DB.Exec(
+	ctx := c.Request.Context()
+	_, err := s.DB.ExecContext(ctx,
 		`INSERT INTO subsite_links (name, url, description, sort_order) VALUES (?, ?, ?, ?)`,
 		in.Name, in.URL, in.Description, in.SortOrder)
 	if err != nil {
@@ -658,14 +613,14 @@ func (s *Server) addSubsiteLink(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{"status": "ok"})
 }
 
-// DELETE /api/admin/home/links/:id
 func (s *Server) deleteSubsiteLink(c *gin.Context) {
 	id, err := strconv.Atoi(c.Param("id"))
 	if err != nil || id <= 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的链接 ID。"})
 		return
 	}
-	res, err := s.DB.Exec(`DELETE FROM subsite_links WHERE id = ?`, id)
+	ctx := c.Request.Context()
+	res, err := s.DB.ExecContext(ctx, `DELETE FROM subsite_links WHERE id = ?`, id)
 	if err != nil {
 		slog.Error("deleteSubsiteLink", "id", id, "err", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "删除失败。"})
@@ -684,7 +639,6 @@ type featuredInput struct {
 	SortOrder int `json:"sort_order"`
 }
 
-// POST /api/admin/home/featured
 func (s *Server) addFeatured(c *gin.Context) {
 	var in featuredInput
 	if err := c.ShouldBindJSON(&in); err != nil {
@@ -695,7 +649,8 @@ func (s *Server) addFeatured(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的文章 ID。"})
 		return
 	}
-	_, err := s.DB.Exec(
+	ctx := c.Request.Context()
+	_, err := s.DB.ExecContext(ctx,
 		`INSERT INTO featured_articles (article_id, sort_order) VALUES (?, ?)`,
 		in.ArticleID, in.SortOrder)
 	if err != nil {
@@ -705,14 +660,14 @@ func (s *Server) addFeatured(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{"status": "ok"})
 }
 
-// DELETE /api/admin/home/featured/:id
 func (s *Server) deleteFeatured(c *gin.Context) {
 	id, err := strconv.Atoi(c.Param("id"))
 	if err != nil || id <= 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的推荐 ID。"})
 		return
 	}
-	res, err := s.DB.Exec(`DELETE FROM featured_articles WHERE id = ?`, id)
+	ctx := c.Request.Context()
+	res, err := s.DB.ExecContext(ctx, `DELETE FROM featured_articles WHERE id = ?`, id)
 	if err != nil {
 		slog.Error("deleteFeatured", "id", id, "err", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "删除失败。"})
@@ -726,9 +681,6 @@ func (s *Server) deleteFeatured(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
-// ─── Files ────────────────────────────────────────────────────────────
-
-// GET /api/admin/files
 func (s *Server) listFiles(c *gin.Context) {
 	type fileInfo struct {
 		ID           int       `json:"id"`
@@ -737,14 +689,10 @@ func (s *Server) listFiles(c *gin.Context) {
 		FileSize     int64     `json:"file_size"`
 		MimeType     string    `json:"mime_type"`
 		CreatedAt    time.Time `json:"created_at"`
-		// URL is the absolute public URL of the file (publicAssetURL
-		// prepends PublicURL when set; same as the field on the
-		// upload response). Frontend renders this directly so it works
-		// whether the API and frontend share an origin (dev) or not
-		// (CF Pages + Ubuntu VM in prod).
-		URL string `json:"url"`
+		URL          string    `json:"url"`
 	}
-	rows, err := s.DB.Query(
+	ctx := c.Request.Context()
+	rows, err := s.DB.QueryContext(ctx,
 		`SELECT id, filename, original_name, file_size, mime_type, created_at
 		 FROM static_files ORDER BY created_at DESC`)
 	if err != nil {
@@ -769,9 +717,6 @@ func (s *Server) listFiles(c *gin.Context) {
 	c.JSON(http.StatusOK, out)
 }
 
-// ─── Profile ──────────────────────────────────────────────────────────
-
-// GET /api/admin/profile
 func (s *Server) getProfile(c *gin.Context) {
 	u := CurrentUserFromContext(c)
 	if u == nil {
@@ -790,7 +735,6 @@ type profileInput struct {
 	SocialQQ     string `json:"social_qq"`
 }
 
-// PUT /api/admin/profile
 func (s *Server) updateProfile(c *gin.Context) {
 	u := CurrentUserFromContext(c)
 	if u == nil {
@@ -802,15 +746,16 @@ func (s *Server) updateProfile(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "请求格式错误。"})
 		return
 	}
-	if err := user.UpdateProfile(s.DB, u.ID, in.Avatar, in.Bio,
+	ctx := c.Request.Context()
+	if err := user.UpdateProfileCtx(ctx, s.DB, u.ID, in.Avatar, in.Bio,
 		in.SocialEmail, in.SocialGithub, in.SocialQQ); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "更新资料失败。"})
 		return
 	}
 	if in.Nickname != "" {
-		user.UpdateInfo(s.DB, u.Username, in.Nickname, u.Role)
+		_, _ = user.UpdateInfoCtx(ctx, s.DB, u.Username, in.Nickname, u.Role)
 	}
-	u2, _ := user.GetByID(s.DB, u.ID)
+	u2, _ := user.GetByIDCtx(ctx, s.DB, u.ID)
 	c.JSON(http.StatusOK, u2)
 }
 
@@ -819,17 +764,6 @@ type changePasswordInput struct {
 	NewPassword string `json:"new_password"`
 }
 
-// PUT /api/profile/password — self-service password change. Any authenticated
-// user (user / admin / owner) may change their own password; they must prove
-// knowledge of the current password first (defense against a shared-session
-// attacker silently hijacking the account).
-//
-// Passkey note: if the caller is not the owner AND has at least one passkey
-// registered, password login is normally disabled (see postLogin). That gate
-// only blocks the *public* login path — the still-valid credential here is
-// the existing session. We let users keep their password in sync even while
-// passkey-first; should they later remove all passkeys, password login
-// immediately works again with the new value.
 func (s *Server) changeMyPassword(c *gin.Context) {
 	u := CurrentUserFromContext(c)
 	if u == nil {
@@ -855,7 +789,8 @@ func (s *Server) changeMyPassword(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "新密码不能与旧密码相同。"})
 		return
 	}
-	cur, err := user.GetWithPassword(s.DB, u.Username)
+	ctx := c.Request.Context()
+	cur, err := user.GetWithPasswordCtx(ctx, s.DB, u.Username)
 	if err != nil || cur == nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载账号失败。"})
 		return
@@ -869,16 +804,10 @@ func (s *Server) changeMyPassword(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "密码加密失败。"})
 		return
 	}
-	if _, err := user.UpdatePassword(s.DB, u.Username, hash); err != nil {
+	if _, err := user.UpdatePasswordCtx(ctx, s.DB, u.Username, hash); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "更新密码失败。"})
 		return
 	}
 	slog.Info("user changed own password", "user_id", u.ID, "username", u.Username)
 	c.JSON(http.StatusOK, gin.H{"status": "ok", "message": "密码已修改。"})
 }
-
-// ─── Helpers ──────────────────────────────────────────────────────────
-//
-// (defaultSettings used to live here as a stub with only three fields — the
-// canonical version is now in internal/core/settings.Default() and is shared
-// with /api/site and the on-disk settings.yml bootstrap.)

@@ -24,11 +24,8 @@
 # ────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
-RED='\033[0;31m'; GRN='\033[0;32m'; YEL='\033[0;33m'; BLU='\033[0;34m'; NC='\033[0m'
-log()  { printf "${BLU}==>${NC} %s\n" "$*"; }
-ok()   { printf "${GRN}✓${NC} %s\n" "$*"; }
-warn() { printf "${YEL}!${NC} %s\n" "$*" >&2; }
-die()  { printf "${RED}✗${NC} %s\n" "$*" >&2; exit 1; }
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/lib.sh"
 
 # ── 解析参数 ──
 while [[ $# -gt 0 ]]; do
@@ -53,24 +50,9 @@ ASSET_PREFIX="gokych"
 ASSET_SUFFIX_SUMS="SHA256SUMS"
 
 # ── 1. 检测平台 ──
-detect_platform() {
-  local os arch
-  os="$(uname -s | tr '[:upper:]' '[:lower:]')"
-  arch="$(uname -m | tr '[:upper:]' '[:lower:]')"
-  case "$os" in
-    linux|darwin) ;;
-    *) die "unsupported OS: $os (script only supports linux + darwin)" ;;
-  esac
-  case "$arch" in
-    x86_64|amd64) arch="amd64" ;;
-    aarch64|arm64) arch="arm64" ;;
-    *) die "不支持的 arch: $arch" ;;
-  esac
-  echo "$os|$arch"
-}
 PLATFORM="$(detect_platform)"
-GOOS="${PLATFORM%|*}"
-GOARCH="${PLATFORM#*|}"
+GOOS="${PLATFORM%/*}"
+GOARCH="${PLATFORM#*/}"
 ASSET="${ASSET_PREFIX}-${GOOS}-${GOARCH}"
 # NOTE: bash 3.2 (the default on macOS) mangles multi-byte UTF-8 chars in
 # parameter expansion context — `$GOARCH（asset` reads as a separate var
@@ -168,23 +150,10 @@ ok "下载完成"
 
 # ── 4. SHA256 校验 ──
 log "校验 SHA256…"
-cd "$WORK"
-EXPECTED=$(grep -F "./$ASSET" "$ASSET_SUFFIX_SUMS" | awk '{print $1}')
-[[ -n "$EXPECTED" ]] || die "$ASSET_SUFFIX_SUMS 里找不到 ./$ASSET"
-
-ACTUAL=$(
-  if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$ASSET" | awk '{print $1}'
-  else
-    shasum -a 256 "$ASSET" | awk '{print $1}'
-  fi
-)
-if [[ "$EXPECTED" != "$ACTUAL" ]]; then
-  die "hash 不匹配！
-  expect: $EXPECTED
-  actual: $ACTUAL"
-fi
-ok "hash 一致 ($ACTUAL)"
+EXPECTED=$(grep -E "[[:space:]]\.?/?${ASSET}\$" "$WORK/$ASSET_SUFFIX_SUMS" | awk '{print $1}')
+[[ -n "$EXPECTED" ]] || die "$ASSET_SUFFIX_SUMS 里找不到 $ASSET"
+verify_sha256 "$WORK/$ASSET" "$EXPECTED"
+ACTUAL="$EXPECTED"
 
 # ── 5. 安装 ──
 chmod +x "$WORK/$ASSET"

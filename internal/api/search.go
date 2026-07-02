@@ -21,7 +21,7 @@ func (s *Server) search(c *gin.Context) {
 	if page < 1 {
 		page = 1
 	}
-	result, err := content.SearchArticles(s.DB, q, page, 10)
+	result, err := content.SearchArticlesCtx(c.Request.Context(), s.DB, q, page, 10)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "搜索失败。"})
 		return

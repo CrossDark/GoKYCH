@@ -5,10 +5,10 @@ services:
     ports:
       - "3307:3306"
     environment:
-      MYSQL_ROOT_PASSWORD: rootpassword
-      MYSQL_DATABASE: gokych
-      MYSQL_USER: gokych
-      MYSQL_PASSWORD: gokych
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?set me}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-gokych}
+      MYSQL_USER: ${MYSQL_USER:-gokych}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?set me}
     volumes:
       - mysql_data:/var/lib/mysql
     command: >
@@ -42,7 +42,10 @@ services:
       start_period: 10s
 
   frontend:
-    build: ./web
+    build:
+      context: ./web
+      args:
+        STANDALONE: "1"
     restart: unless-stopped
     ports:
       - "3000:3000"
@@ -52,6 +55,9 @@ services:
       # web/lib/api.ts already handles both.
       API_BASE_URL: http://backend:8000
       NODE_ENV: production
+      # NOTE: NEXT_PUBLIC_API_BASE_URL intentionally unset — browser fetches
+      # use same-origin /api (docker-compose serves frontend:3000 directly;
+      # there is no EdgeOne edge here). See web/next.config.ts guard.
     depends_on:
       backend:
         condition: service_healthy

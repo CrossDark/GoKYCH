@@ -158,7 +158,7 @@ export function MarkdownEditor({
             ],
             ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto):|[#/]|\.{1,2}\/)/i,
           });
-          html = postprocessMathBlocks(safe, blocks);
+          html = await postprocessMathBlocks(safe, blocks);
         } else if (type === "bbcode") {
           const rawHtml = renderBBCode(value || "");
           html = DOMPurify.sanitize(rawHtml, {

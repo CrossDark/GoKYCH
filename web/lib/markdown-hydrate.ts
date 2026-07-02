@@ -24,19 +24,69 @@
 //    → Solution: render KaTeX AFTER DOMPurify, then patch the result
 //    back into the HTML string just before `dangerouslySetInnerHTML`.
 //
-// 3. Mermaid is ~600KB and needs a DOM. We lazy-load it on first use
-//    so the editor's first paint isn't blocked.
+// 3. KaTeX (~200KB) and Mermaid (~600KB) are lazy-loaded on first use
+//    so the initial page paint isn't blocked. KaTeX CSS is also
+//    dynamically injected only when needed.
 
-import katex from "katex";
+// ── Dynamic KaTeX loader ───────────────────────────────────────────
+let katexPromise: Promise<typeof import("katex").default> | null = null;
+let katexCssLoaded = false;
+
+function loadKatexCss(): Promise<void> {
+  if (katexCssLoaded) return Promise.resolve();
+  return new Promise((resolve) => {
+    if (typeof document === "undefined") {
+      katexCssLoaded = true;
+      resolve();
+      return;
+    }
+    const existingLink = document.querySelector('link[href*="katex.min.css"]');
+    if (existingLink) {
+      katexCssLoaded = true;
+      resolve();
+      return;
+    }
+    const link = document.createElement("link");
+    link.rel = "stylesheet";
+    link.href = "https://cdn.jsdelivr.net/npm/katex@0.16.47/dist/katex.min.css";
+    link.integrity = "sha384-nB0miv6/jRmo5UMMR1wu3Gz6NLsoTkbqJghGIsx//Rlm+ZU03BU6SQNC66uf4l5+";
+    link.crossOrigin = "anonymous";
+    link.onload = () => {
+      katexCssLoaded = true;
+      resolve();
+    };
+    link.onerror = () => {
+      katexCssLoaded = true;
+      resolve();
+    };
+    document.head.appendChild(link);
+  });
+}
+
+async function getKatex(): Promise<typeof import("katex").default> {
+  if (!katexPromise) {
+    katexPromise = (async () => {
+      const [katexMod] = await Promise.all([
+        import("katex"),
+        loadKatexCss(),
+      ]);
+      return katexMod.default;
+    })();
+  }
+  return katexPromise;
+}
+
+function rootHasMathContent(root: HTMLElement): boolean {
+  if (root.querySelector("code.language-math")) return true;
+  const text = root.textContent ?? "";
+  if (/\$\$[^$]+\$\$/.test(text)) return true;
+  if (/\\\[[\s\S]+?\\\]/.test(text)) return true;
+  if (/\$[^$\n]+\$(?!\$)/.test(text)) return true;
+  if (/\\\([\s\S]+?\\\)/.test(text)) return true;
+  return false;
+}
 
 // ── Pre-process: extract block-math placeholders ───────────────────
-//
-// Two syntaxes supported at the block level:
-//   - `$$…$$` (GitHub-style, multi-line OK)
-//   - `\[…\]` (LaTeX-style, multi-line OK)
-//
-// Inline `$…$` and `\(…\)` are handled by the text-walker after
-// marked — they're always single-line so `<br>` doesn't split them.
 export interface MathBlock {
   type: "block" | "display-latex";
   tex: string;
@@ -48,9 +98,6 @@ export function preprocessMathBlocks(source: string): {
 } {
   const blocks: MathBlock[] = [];
   let i = 0;
-  // Run display-latex first because `\[` and `\]` would be eaten by
-  // `$$` matching otherwise (well, not really — `\`` is a backslash —
-  // but doing the more specific pattern first feels right).
   const out = source
     .replace(/\\\[([\s\S]+?)\\\]/g, (_, tex: string) => {
       blocks.push({ type: "display-latex", tex });
@@ -67,7 +114,9 @@ export function preprocessMathBlocks(source: string): {
  * Swap `@@MATHBLOCK<N>@@` placeholders in `html` for KaTeX HTML.
  * Runs AFTER DOMPurify so KaTeX's MathML tags survive untouched.
  */
-export function postprocessMathBlocks(html: string, blocks: MathBlock[]): string {
+export async function postprocessMathBlocks(html: string, blocks: MathBlock[]): Promise<string> {
+  if (blocks.length === 0) return html;
+  const katex = await getKatex();
   let out = html;
   for (let i = 0; i < blocks.length; i++) {
     const ph = `@@MATHBLOCK${i}@@`;
@@ -81,12 +130,8 @@ export function postprocessMathBlocks(html: string, blocks: MathBlock[]): string
         trust: false,
       });
     } catch {
-      // Should never happen with throwOnError:false, but be safe.
       rendered = `<span data-math-error="true">${escapeHtml(block.tex)}</span>`;
     }
-    // Wrap in a div so CSS can target it and so the placeholder text
-    // (which may sit inside a `<p>`) doesn't leave a stray empty `<p>`
-    // when replaced.
     const wrapped = `<div class="math-block" data-math-rendered="${block.type}">${rendered}</div>`;
     out = out.split(ph).join(wrapped);
   }
@@ -102,18 +147,6 @@ function escapeHtml(s: string): string {
 }
 
 // ── Text-walker: math in text nodes ($…$, \(…\), $$…$$, \[…\]) ────
-//
-// Runs after marked + DOMPurify. Walks text nodes outside of
-// <code>/<pre>/<a>/<script>/<style>/.katex and replaces math patterns
-// with KaTeX HTML.
-//
-// Block patterns ($$…$$, \[…\]) ONLY work here when they happen to
-// live in a single text node — Goldmark (server-side) emits them
-// this way, but `marked` with `breaks: true` (editor preview) splits
-// them across multiple nodes via <br>. The editor preview therefore
-// uses `preprocessMathBlocks` + `postprocessMathBlocks` to extract
-// block patterns before parsing; this walker is the fallback for the
-// public article view, where the server already gave us a clean DOM.
 type MathMatch = {
   start: number;
   end: number;
@@ -128,13 +161,12 @@ function isInsideForbiddenContext(el: Element | null): boolean {
   );
 }
 
-function processTextNodeForMath(text: Text): DocumentFragment | null {
+async function processTextNodeForMath(text: Text, katex: typeof import("katex").default): Promise<DocumentFragment | null> {
   const source = text.nodeValue;
   if (!source || (!source.includes("$") && !source.includes("\\"))) return null;
 
   const matches: MathMatch[] = [];
 
-  // Block math — `$$…$$`.
   const blockRe = /\$\$([^$]+?)\$\$(?!\$)/g;
   let m: RegExpExecArray | null;
   while ((m = blockRe.exec(source))) {
@@ -146,7 +178,6 @@ function processTextNodeForMath(text: Text): DocumentFragment | null {
     });
   }
 
-  // Display math — `\[…\]`.
   const displayRe = /\\\[([\s\S]+?)\\\]/g;
   while ((m = displayRe.exec(source))) {
     matches.push({
@@ -157,7 +188,6 @@ function processTextNodeForMath(text: Text): DocumentFragment | null {
     });
   }
 
-  // Inline math — `$…$` (no newlines inside).
   const inlineRe = /\$([^$\n]+?)\$(?!\$)/g;
   while ((m = inlineRe.exec(source))) {
     matches.push({
@@ -168,7 +198,6 @@ function processTextNodeForMath(text: Text): DocumentFragment | null {
     });
   }
 
-  // Inline math — `\(…\)` (LaTeX-style).
   const inlineParenRe = /\\\(([\s\S]+?)\\\)/g;
   while ((m = inlineParenRe.exec(source))) {
     matches.push({
@@ -181,7 +210,6 @@ function processTextNodeForMath(text: Text): DocumentFragment | null {
 
   if (matches.length === 0) return null;
 
-  // Sort by start, drop overlaps (first match wins).
   matches.sort((a, b) => a.start - b.start);
   const filtered: MathMatch[] = [];
   let lastEnd = -1;
@@ -200,10 +228,6 @@ function processTextNodeForMath(text: Text): DocumentFragment | null {
       frag.appendChild(document.createTextNode(source.slice(cursor, mt.start)));
     }
     if (mt.type === "block") {
-      // Block math — render in display mode, wrap in a div so it can
-      // sit comfortably inside an existing <p> (the browser will
-      // accept the div; some CSS may close the <p> first depending
-      // on context, but the visual result is fine).
       const div = document.createElement("div");
       div.className = "math-block";
       div.setAttribute("data-math-rendered", "block-walker");
@@ -248,7 +272,10 @@ function processTextNodeForMath(text: Text): DocumentFragment | null {
  * output. Safe to call multiple times — already-rendered spans are
  * skipped via the `data-math-rendered` attribute.
  */
-export function hydrateMath(root: HTMLElement): void {
+export async function hydrateMath(root: HTMLElement): Promise<void> {
+  if (!rootHasMathContent(root)) return;
+  const katex = await getKatex();
+
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
     acceptNode(node) {
       const parent = (node as Text).parentElement;
@@ -270,22 +297,19 @@ export function hydrateMath(root: HTMLElement): void {
   for (const text of targets) {
     const parent = text.parentElement;
     if (!parent) continue;
-    const frag = processTextNodeForMath(text);
+    const frag = await processTextNodeForMath(text, katex);
     if (frag) parent.replaceChild(frag, text);
   }
 }
 
 // ── Fenced math code block hydrator ────────────────────────────────
-//
-// Handles ` ```math ` fenced code blocks — a Markdown-extension
-// syntax recognised by neither marked nor Goldmark by default, but
-// commonly used in academic write-ups. Both produce identical
-// `<pre><code class="language-math">…</code></pre>` HTML so this
-// hydrator works on both editor preview and server-side renders.
-export function hydrateMathCodeBlocks(root: HTMLElement): void {
+export async function hydrateMathCodeBlocks(root: HTMLElement): Promise<void> {
   const codes = root.querySelectorAll<HTMLElement>(
     "pre > code.language-math",
   );
+  if (codes.length === 0) return;
+  const katex = await getKatex();
+
   codes.forEach((code) => {
     if (code.dataset.mathCodeRendered === "true") return;
     const pre = code.parentElement;
@@ -316,9 +340,11 @@ async function getMermaid(): Promise<typeof import("mermaid").default> {
     mermaidPromise = (async () => {
       const mermaidMod = await import("mermaid");
       const mermaid = mermaidMod.default;
+      const isDark = typeof document !== "undefined" &&
+        document.documentElement.getAttribute("data-theme") === "dark";
       mermaid.initialize({
         startOnLoad: false,
-        theme: "default",
+        theme: isDark ? "dark" : "default",
         securityLevel: "strict",
         fontFamily: "inherit",
       });
@@ -361,18 +387,21 @@ export async function hydrateMermaid(root: HTMLElement): Promise<void> {
 }
 
 /**
- * Run all DOM-side hydrators. Math is synchronous; mermaid is async
+ * Run all DOM-side hydrators. Math is synchronous after load; mermaid is async
  * because of the dynamic import.
- *
- * Note: this does NOT handle the block-math placeholders
- * (`$$...$$` / `\[...\]`) — those are pre/post-processed at the
- * string level by `preprocessMathBlocks` / `postprocessMathBlocks`
- * because marked's `breaks: true` splits them across text nodes.
- * This walker handles the inline cases (`$...$`, `\(...\)`) and the
- * fenced ` ```math ` blocks.
  */
 export async function hydrateMarkdown(root: HTMLElement): Promise<void> {
-  hydrateMathCodeBlocks(root);
-  hydrateMath(root);
-  await hydrateMermaid(root);
+  const hasMathCodeBlocks = root.querySelector("pre > code.language-math") !== null;
+  const hasMermaid = root.querySelector("pre > code.language-mermaid") !== null;
+  const hasMath = rootHasMathContent(root);
+
+  const tasks: Promise<void>[] = [];
+  if (hasMath || hasMathCodeBlocks) {
+    tasks.push(hydrateMathCodeBlocks(root));
+    tasks.push(hydrateMath(root));
+  }
+  if (hasMermaid) {
+    tasks.push(hydrateMermaid(root));
+  }
+  await Promise.all(tasks);
 }

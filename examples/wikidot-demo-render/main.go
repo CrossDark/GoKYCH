@@ -1,10 +1,10 @@
 // Demo renderer: takes a wikidot source file, runs it through
 // the wikidot parser, wraps in minimal page chrome, writes
-// the result to /tmp/wikidot-render.html for browser
-// verification.
+// the result to an HTML file for browser verification.
 //
-// Usage: go run ./cmd/wikidot-demo-render < source.wiki > /dev/null
-//   (HTML output is written to /tmp/wikidot-render.html)
+// Usage:
+//   go run ./examples/wikidot-demo-render -src input.wiki -out output.html
+//   go run ./examples/wikidot-demo-render -out output.html < input.wiki
 
 package main
 

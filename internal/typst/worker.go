@@ -6,22 +6,15 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
-	"sync"
 	"time"
+
+	coredb "gokych/internal/core/db"
 )
 
 const (
 	maxQueueAttempts    = 3
 	pollInterval        = 2 * time.Second
 	staleCompileTimeout = 5 * time.Minute
-)
-
-var (
-	workerOnce   sync.Once
-	workerWg     sync.WaitGroup
-	workerCtx    context.Context
-	workerCancel context.CancelFunc
 )
 
 // CompileStatus represents the async compilation status for a typst article.
@@ -39,15 +32,23 @@ type CompileStatus struct {
 // If the article is already in the queue, it resets the status to 'pending'
 // and clears any previous error (for re-compilation after edit).
 // Non-blocking: returns immediately after the queue row is upserted.
-func EnqueueCompile(dbx *sql.DB, articleID int) error {
-	if dbx == nil {
+//
+// Deprecated: Use EnqueueCompileCtx instead.
+func (w *Worker) EnqueueCompile(articleID int) error {
+	return w.EnqueueCompileCtx(context.TODO(), articleID)
+}
+
+// EnqueueCompileCtx is the context-aware version of EnqueueCompile.
+func (w *Worker) EnqueueCompileCtx(ctx context.Context, articleID int) error {
+	if w == nil || w.db == nil {
 		return errors.New("typst: db not configured")
 	}
 	if articleID <= 0 {
 		return errors.New("typst: invalid article id")
 	}
+	dbx := w.db
 	if !Available() {
-		_, err := dbx.Exec(
+		_, err := dbx.ExecContext(ctx,
 			`INSERT INTO typst_compile_queue (article_id, status, error_message, attempts)
 			 VALUES (?, 'failed', ?, 0)
 			 ON DUPLICATE KEY UPDATE
@@ -63,7 +64,7 @@ func EnqueueCompile(dbx *sql.DB, articleID int) error {
 		slog.Warn("typst: enqueued with failure (CLI not found)", "article_id", articleID)
 		return nil
 	}
-	_, err := dbx.Exec(
+	_, err := dbx.ExecContext(ctx,
 		`INSERT INTO typst_compile_queue (article_id, status, error_message, attempts, compiled_at)
 		 VALUES (?, 'pending', NULL, 0, NULL)
 		 ON DUPLICATE KEY UPDATE
@@ -80,68 +81,28 @@ func EnqueueCompile(dbx *sql.DB, articleID int) error {
 }
 
 // EnqueueDependents queues all articles that depend (via @import) on changedID
-// for re-compilation. Used after UpdateArticle/DeleteArticle to keep caches fresh.
-func EnqueueDependents(dbx *sql.DB, changedID int) error {
-	if dbx == nil || changedID <= 0 {
+// for re-compilation. Used after UpdateArticle/DeleteArticle to keep caches
+// fresh. Shares buildReverseDepMap + transitiveDependents with
+// InvalidateDependents so the two BFS walks stay identical.
+//
+// Deprecated: Use EnqueueDependentsCtx instead.
+func (w *Worker) EnqueueDependents(changedID int) error {
+	return w.EnqueueDependentsCtx(context.TODO(), changedID)
+}
+
+// EnqueueDependentsCtx is the context-aware version of EnqueueDependents.
+func (w *Worker) EnqueueDependentsCtx(ctx context.Context, changedID int) error {
+	if w == nil || w.db == nil || changedID <= 0 {
 		return nil
 	}
-	rows, err := dbx.Query(`SELECT article_id, dependencies FROM typst_cache WHERE dependencies IS NOT NULL AND dependencies != ''`)
+	reverseDep, err := buildReverseDepMapCtx(ctx, w.db)
 	if err != nil {
-		return fmt.Errorf("typst: query dependencies for enqueue: %w", err)
+		return err
 	}
-	reverseDep := make(map[int][]int)
-	for rows.Next() {
-		var aid int
-		var depsStr string
-		if err := rows.Scan(&aid, &depsStr); err != nil {
-			rows.Close()
-			return err
-		}
-		for _, part := range strings.Split(depsStr, ",") {
-			part = strings.TrimSpace(part)
-			if part == "" {
-				continue
-			}
-			var did int
-			if _, err := fmt.Sscanf(part, "%d", &did); err == nil && did > 0 {
-				reverseDep[did] = append(reverseDep[did], aid)
-			}
-		}
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("typst: iterate dependency rows: %w", err)
-	}
-
-	// BFS from changedID to find all transitively dependent articles.
-	// Start BFS by enqueuing articles that DIRECTLY depend on changedID,
-	// not changedID itself (the changed article is already being handled
-	// by the caller and must not be re-queued here — that would cause an
-	// infinite loop with circular @imports).
-	visited := make(map[int]bool)
-	var queue []int
-	var toEnqueue []int
-	for _, dep := range reverseDep[changedID] {
-		if !visited[dep] {
-			visited[dep] = true
-			toEnqueue = append(toEnqueue, dep)
-			queue = append(queue, dep)
-		}
-	}
-	for len(queue) > 0 {
-		cur := queue[0]
-		queue = queue[1:]
-		for _, dep := range reverseDep[cur] {
-			if !visited[dep] && dep != changedID {
-				visited[dep] = true
-				toEnqueue = append(toEnqueue, dep)
-				queue = append(queue, dep)
-			}
-		}
-	}
+	toEnqueue := transitiveDependents(reverseDep, changedID)
 
 	for _, aid := range toEnqueue {
-		if err := EnqueueCompile(dbx, aid); err != nil {
+		if err := w.EnqueueCompileCtx(ctx, aid); err != nil {
 			slog.Warn("typst: failed to enqueue dependent", "article_id", aid, "err", err)
 		}
 	}
@@ -149,7 +110,7 @@ func EnqueueDependents(dbx *sql.DB, changedID int) error {
 	// Also invalidate old caches for dependents so readers see the placeholder
 	// instead of stale HTML.
 	if len(toEnqueue) > 0 {
-		if err := InvalidateDependents(dbx, changedID); err != nil {
+		if err := w.InvalidateDependentsCtx(ctx, changedID); err != nil {
 			slog.Warn("typst: failed to invalidate dependent caches", "err", err)
 		}
 	}
@@ -161,14 +122,21 @@ func EnqueueDependents(dbx *sql.DB, changedID int) error {
 // Returns nil if no queue entry exists (meaning it was either never queued
 // or compiled successfully before the queue was introduced — treat as "ready"
 // if typst_cache has the content).
-func GetCompileStatus(dbx *sql.DB, articleID int) (*CompileStatus, error) {
-	if dbx == nil || articleID <= 0 {
+//
+// Deprecated: Use GetCompileStatusCtx instead.
+func (w *Worker) GetCompileStatus(articleID int) (*CompileStatus, error) {
+	return w.GetCompileStatusCtx(context.TODO(), articleID)
+}
+
+// GetCompileStatusCtx is the context-aware version of GetCompileStatus.
+func (w *Worker) GetCompileStatusCtx(ctx context.Context, articleID int) (*CompileStatus, error) {
+	if w == nil || w.db == nil || articleID <= 0 {
 		return nil, nil
 	}
 	var s CompileStatus
 	var errMsg sql.NullString
 	var compiledAt sql.NullTime
-	err := dbx.QueryRow(
+	err := w.db.QueryRowContext(ctx,
 		`SELECT article_id, status, error_message, attempts, created_at, updated_at, compiled_at
 		 FROM typst_compile_queue WHERE article_id = ?`,
 		articleID,
@@ -188,26 +156,34 @@ func GetCompileStatus(dbx *sql.DB, articleID int) (*CompileStatus, error) {
 
 // GetPendingCompileStatuses returns statuses for a batch of article IDs.
 // Articles with no queue entry or with 'success' status are omitted.
-func GetPendingCompileStatuses(dbx *sql.DB, articleIDs []int) (map[int]*CompileStatus, error) {
-	if dbx == nil || len(articleIDs) == 0 {
+//
+// Deprecated: Use GetPendingCompileStatusesCtx instead.
+func (w *Worker) GetPendingCompileStatuses(articleIDs []int) (map[int]*CompileStatus, error) {
+	return w.GetPendingCompileStatusesCtx(context.TODO(), articleIDs)
+}
+
+// GetPendingCompileStatusesCtx is the context-aware version of GetPendingCompileStatuses.
+func (w *Worker) GetPendingCompileStatusesCtx(ctx context.Context, articleIDs []int) (map[int]*CompileStatus, error) {
+	if w == nil || w.db == nil || len(articleIDs) == 0 {
 		return nil, nil
 	}
 	result := make(map[int]*CompileStatus)
-	placeholders := make([]string, len(articleIDs))
 	args := make([]any, len(articleIDs))
 	for i, id := range articleIDs {
-		placeholders[i] = "?"
 		args[i] = id
 	}
 	q := `SELECT article_id, status, error_message, attempts, created_at, updated_at, compiled_at
-	      FROM typst_compile_queue WHERE article_id IN (` + strings.Join(placeholders, ",") + `)
+	      FROM typst_compile_queue WHERE article_id IN (` + coredb.Placeholders(len(articleIDs)) + `)
 	      AND status IN ('pending','compiling','failed')`
-	rows, err := dbx.Query(q, args...)
+	rows, err := w.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		var s CompileStatus
 		var errMsg sql.NullString
 		var compiledAt sql.NullTime
@@ -224,48 +200,51 @@ func GetPendingCompileStatuses(dbx *sql.DB, articleIDs []int) (map[int]*CompileS
 }
 
 // StartWorker starts the background compilation worker pool. It is safe to
-// call multiple times (sync.Once-guarded). The worker picks up pending jobs,
-// runs compileBoth, and updates the queue row with success/failure. Call
-// StopWorker during graceful shutdown.
+// call multiple times (sync.Once-guarded on the Worker). The worker picks up
+// pending jobs, runs compileBoth, and updates the queue row with
+// success/failure. Call StopWorker during graceful shutdown.
 // numWorkers controls how many compilations run in parallel (bounded further
 // by compileSem in compileBoth to avoid fork bombs).
-func StartWorker(dbx *sql.DB, numWorkers int) {
-	workerOnce.Do(func() {
+func (w *Worker) StartWorker(numWorkers int) {
+	w.workerOnce.Do(func() {
 		if numWorkers < 1 {
 			numWorkers = 2
 		}
-		workerCtx, workerCancel = context.WithCancel(context.Background())
+		w.workerCtx, w.workerCancel = context.WithCancel(context.Background())
 
 		// Recover stale 'compiling' jobs from a previous crash — reset them
 		// to 'pending' so they get picked up immediately.
-		go recoverStaleJobs(dbx)
+		go w.recoverStaleJobs(w.workerCtx)
 
 		for i := 0; i < numWorkers; i++ {
-			workerWg.Add(1)
-			go runWorker(dbx, i)
+			w.workerWg.Add(1)
+			go w.runWorker(i)
 		}
 		slog.Info("typst: async compile worker started", "workers", numWorkers)
 	})
 }
 
 // StopWorker signals all workers to exit and waits for them to finish.
-// Called during graceful shutdown (Server.Close()).
-func StopWorker() {
-	if workerCancel != nil {
-		workerCancel()
+// Called during graceful shutdown. No-op if StartWorker was never called.
+func (w *Worker) StopWorker() {
+	w.workerMu.Lock()
+	cancel := w.workerCancel
+	w.workerMu.Unlock()
+	if cancel != nil {
+		cancel()
 	}
-	workerWg.Wait()
+	w.workerWg.Wait()
 	slog.Info("typst: async compile worker stopped")
 }
 
 // recoverStaleJobs resets any jobs stuck in 'compiling' state (from a
 // previous crash) back to 'pending' so they are re-processed.
-func recoverStaleJobs(dbx *sql.DB) {
-	if dbx == nil {
+func (w *Worker) recoverStaleJobs(ctx context.Context) {
+	if w.db == nil {
 		return
 	}
 	cutoff := time.Now().Add(-staleCompileTimeout)
-	res, err := dbx.Exec(
+	res, err := w.db.ExecContext(ctx,
 		`UPDATE typst_compile_queue SET status = 'pending', error_message = 'recovered from previous crash'
 		 WHERE status = 'compiling' AND updated_at < ?`,
 		cutoff,
@@ -281,21 +260,22 @@ func recoverStaleJobs(dbx *sql.DB) {
 }
 
 // runWorker is the main worker loop: poll for pending jobs, claim one, compile, update status.
-func runWorker(dbx *sql.DB, id int) {
-	defer workerWg.Done()
+func (w *Worker) runWorker(id int) {
+	defer w.workerWg.Done()
 	slog.Debug("typst: worker started", "worker_id", id)
+	ctx := w.workerCtx
 	for {
 		select {
-		case <-workerCtx.Done():
+		case <-ctx.Done():
 			slog.Debug("typst: worker exiting", "worker_id", id)
 			return
 		default:
 		}
 
-		job := claimNextJob(dbx)
+		job := w.claimNextJobCtx(ctx)
 		if job == nil {
 			select {
-			case <-workerCtx.Done():
+			case <-ctx.Done():
 				return
 			case <-time.After(pollInterval):
 				continue
@@ -303,7 +283,7 @@ func runWorker(dbx *sql.DB, id int) {
 		}
 
 		slog.Info("typst: worker compiling", "worker_id", id, "article_id", job.articleID, "attempt", job.attempts+1)
-		compileErr := compileAndStore(dbx, job.articleID)
+		compileErr := w.compileAndStoreCtx(ctx, job.articleID)
 
 		if compileErr != nil {
 			newAttempts := job.attempts + 1
@@ -317,13 +297,13 @@ func runWorker(dbx *sql.DB, id int) {
 			}
 			var updateErr error
 			if newAttempts < maxQueueAttempts {
-				_, updateErr = dbx.Exec(
+				_, updateErr = w.db.ExecContext(ctx,
 					`UPDATE typst_compile_queue SET status = ?, error_message = ?, attempts = ?
 					 WHERE article_id = ?`,
 					status, errMsg, newAttempts, job.articleID,
 				)
 			} else {
-				_, updateErr = dbx.Exec(
+				_, updateErr = w.db.ExecContext(ctx,
 					`UPDATE typst_compile_queue SET status = 'failed', error_message = ?, attempts = ?
 					 WHERE article_id = ?`,
 					errMsg, newAttempts, job.articleID,
@@ -334,7 +314,7 @@ func runWorker(dbx *sql.DB, id int) {
 			}
 			slog.Warn("typst: compile failed", "article_id", job.articleID, "attempt", newAttempts, "err", compileErr)
 		} else {
-			_, err := dbx.Exec(
+			_, err := w.db.ExecContext(ctx,
 				`UPDATE typst_compile_queue SET status = 'success', error_message = NULL,
 				   compiled_at = CURRENT_TIMESTAMP
 				 WHERE article_id = ?`,
@@ -353,16 +333,16 @@ type queuedJob struct {
 	attempts  int
 }
 
-// claimNextJob atomically claims the next pending job (oldest first) using
+// claimNextJobCtx atomically claims the next pending job (oldest first) using
 // MySQL's SELECT ... FOR UPDATE SKIP LOCKED. If two workers race, one will
 // get the row and mark it 'compiling'; the other will see no pending rows
 // and back off.
-func claimNextJob(dbx *sql.DB) *queuedJob {
-	if dbx == nil {
+func (w *Worker) claimNextJobCtx(ctx context.Context) *queuedJob {
+	if w.db == nil {
 		return nil
 	}
 
-	tx, err := dbx.Begin()
+	tx, err := w.db.BeginTx(ctx, nil)
 	if err != nil {
 		slog.Error("typst: begin tx for job claim", "err", err)
 		return nil
@@ -370,7 +350,7 @@ func claimNextJob(dbx *sql.DB) *queuedJob {
 	defer tx.Rollback()
 
 	var id, attempts int
-	err = tx.QueryRow(
+	err = tx.QueryRowContext(ctx,
 		`SELECT article_id, attempts FROM typst_compile_queue
 		 WHERE status = 'pending'
 		 ORDER BY created_at ASC LIMIT 1
@@ -383,7 +363,7 @@ func claimNextJob(dbx *sql.DB) *queuedJob {
 		return nil
 	}
 
-	_, err = tx.Exec(
+	_, err = tx.ExecContext(ctx,
 		`UPDATE typst_compile_queue SET status = 'compiling'
 		 WHERE article_id = ? AND status = 'pending'`,
 		id,
@@ -401,22 +381,27 @@ func claimNextJob(dbx *sql.DB) *queuedJob {
 	return &queuedJob{articleID: id, attempts: attempts}
 }
 
-// compileAndStore fetches the article source, compiles both HTML and PDF,
+// Deprecated: Use claimNextJobCtx instead.
+func (w *Worker) claimNextJob() *queuedJob {
+	return w.claimNextJobCtx(context.TODO())
+}
+
+// compileAndStoreCtx fetches the article source, compiles both HTML and PDF,
 // and writes the result to typst_cache. Returns the compile error (nil = success).
-func compileAndStore(dbx *sql.DB, articleID int) error {
+// Shares storeCompileResultCtx with CompileAndCacheCtx so the cache-write +
+// dep-sync + afterCompile hook logic isn't duplicated.
+func (w *Worker) compileAndStoreCtx(ctx context.Context, articleID int) error {
 	var source string
-	err := dbx.QueryRow(`SELECT content FROM articles WHERE id = ? AND type = 'typst'`, articleID).Scan(&source)
+	err := w.db.QueryRowContext(ctx, `SELECT content FROM articles WHERE id = ? AND type = 'typst'`, articleID).Scan(&source)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			_, _ = dbx.Exec(`DELETE FROM typst_compile_queue WHERE article_id = ?`, articleID)
+			_, _ = w.db.ExecContext(ctx, `DELETE FROM typst_compile_queue WHERE article_id = ?`, articleID)
 			return nil
 		}
 		return fmt.Errorf("fetch article source: %w", err)
 	}
 
-	// SetDB is called once at startup before StartWorker, so the package-level
-	// db is already configured and safe for concurrent use.
-	pdf, html, depIDs, err := compileBoth(articleID, source)
+	pdf, html, depIDs, err := compileBothCtx(ctx, w.db, articleID, source)
 	if err != nil {
 		return err
 	}
@@ -427,39 +412,19 @@ func compileAndStore(dbx *sql.DB, articleID int) error {
 		return errors.New("PDF compile produced empty output (typst CLI failed or syntax error)")
 	}
 
-	depStr := formatDepList(depIDs)
-	if _, err := dbx.Exec(
-		`INSERT INTO typst_cache (article_id, html_content, pdf_content, dependencies)
-		 VALUES (?, ?, ?, ?)
-		 ON DUPLICATE KEY UPDATE
-		   html_content = VALUES(html_content),
-		   pdf_content  = VALUES(pdf_content),
-		   dependencies = VALUES(dependencies),
-		   compiled_at  = CURRENT_TIMESTAMP`,
-		articleID, html, pdf, depStr,
-	); err != nil {
-		return fmt.Errorf("cache write failed: %w", err)
-	}
-
-	// Sync dependencies to article_deps for cascading invalidation.
-	if _, derr := dbx.Exec(`DELETE FROM article_deps WHERE article_id = ?`, articleID); derr == nil {
-		for _, did := range depIDs {
-			_, _ = dbx.Exec(
-				`INSERT IGNORE INTO article_deps (article_id, depends_on_id) VALUES (?, ?)`,
-				articleID, did,
-			)
-		}
-	}
-
-	// Fire post-compile hook (syncs rendered_html, triggers CDN revalidation, etc.)
-	if AfterCompileFunc != nil {
-		AfterCompileFunc(articleID, html, depIDs)
+	if err := w.storeCompileResultCtx(ctx, articleID, html, pdf, depIDs); err != nil {
+		return err
 	}
 
 	// Re-compile any articles that depend on this one (cascade).
-	if err := EnqueueDependents(dbx, articleID); err != nil {
+	if err := w.EnqueueDependentsCtx(ctx, articleID); err != nil {
 		slog.Warn("typst: failed to enqueue dependents after compile", "article_id", articleID, "err", err)
 	}
 
 	return nil
+}
+
+// Deprecated: Use compileAndStoreCtx instead.
+func (w *Worker) compileAndStore(articleID int) error {
+	return w.compileAndStoreCtx(context.TODO(), articleID)
 }

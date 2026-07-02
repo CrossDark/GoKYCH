@@ -6,7 +6,6 @@ import (
 	"log"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -16,6 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"gokych/internal/api"
+	"gokych/internal/auth/passkey"
 	"gokych/internal/auth/ratelimit"
 	"gokych/internal/auth/session"
 	"gokych/internal/config"
@@ -61,6 +61,17 @@ func main() {
 	if err := settings.Ensure(cfg.App.DataDir); err != nil {
 		slog.Warn("failed to create default settings.yml", "err", err)
 	}
+	siteSettings, err := settings.Load(cfg.App.DataDir)
+	if err != nil {
+		slog.Warn("failed to load settings.yml, using defaults", "err", err)
+		siteSettings = settings.Default()
+	}
+	siteTitle := "跨越晨昏"
+	if site, ok := siteSettings["site"].(map[string]interface{}); ok {
+		if t, ok := site["title"].(string); ok && t != "" {
+			siteTitle = t
+		}
+	}
 	// Seed the built-in "sunset" theme so the public /api/themes/:name.css
 	// endpoint always has at least one valid theme to serve on first boot.
 	if err := themes.EnsureDefault(cfg.App.DataDir); err != nil {
@@ -92,49 +103,57 @@ func main() {
 	sess := session.New(db, cfg.App.SessionSecret, secure, cfg.App.SessionCookieDomain)
 	limiter := ratelimit.New()
 	m := metrics.New()
-	// typst.SetDB lets typst.CompileHTMLCached consult typst_cache.
-	typst.SetDB(db)
+	// Construct the shared typst worker. The old API had package-level
+	// SetDB / AfterCompileFunc / StartWorker / StopWorker; consolidating
+	// them onto a Worker struct removes the global mutable state (race-free
+	// startup, testable with isolated DBs) and lets the same instance be
+	// injected into the API Server and the content layer.
+	typstW := typst.NewWorker(db)
 	// typst.SetWorkspaceDir pins the typst project root to an absolute path
 	// under DataDir. Without this, typst would fall back to a cwd-relative
 	// "data/typst" which breaks when the binary isn't run from the project
 	// root (e.g. systemd, Docker, tests).
 	typst.SetWorkspaceDir(cfg.App.DataDir + "/typst")
+	// One-shot CLI availability log (replaces the old package-init() side
+	// effect that fired on every import, surprising test binaries).
+	typst.LogCLIAvailability()
 
 	// Hook typst compilation success → sync post-processed HTML into
 	// articles.rendered_html so subsequent reads hit the DB cache directly
 	// without re-running typst or the post-processor.
-	typst.AfterCompileFunc = func(articleID int, htmlBody string, depIDs []int) {
-		if err := content.UpdateTypstHTML(db, articleID, htmlBody); err != nil {
+	typstW.SetAfterCompile(func(ctx context.Context, articleID int, htmlBody string, depIDs []int) {
+		if err := content.UpdateTypstHTMLCtx(ctx, db, articleID, htmlBody); err != nil {
 			slog.Warn("main: failed to sync typst rendered_html", "article_id", articleID, "err", err)
 		}
 		// Re-render any non-typst dependents whose cache was invalidated.
 		for _, did := range depIDs {
 			var dtype, dslug string
-			if err := db.QueryRow(`SELECT type, slug FROM articles WHERE id = ?`, did).Scan(&dtype, &dslug); err == nil {
+			if err := db.QueryRowContext(ctx, `SELECT type, slug FROM articles WHERE id = ?`, did).Scan(&dtype, &dslug); err == nil {
 				if dtype != "typst" {
-					if da, err := content.GetArticle(db, dtype, dslug); err == nil {
-						_ = content.RenderAndSave(db, da)
+					if da, err := content.GetArticleCtx(ctx, db, dtype, dslug); err == nil {
+						_ = content.RenderAndSaveCtx(ctx, db, typstW, da)
 					}
 				}
 			}
 		}
-	}
+	})
 
 	// Start the async typst compilation worker pool (2 workers = up to 2
 	// concurrent compilations, further bounded by compileSem at 4 in the
 	// typst package itself). This decouples HTTP request latency from
 	// compilation time — articles are saved immediately and compiled in
 	// the background.
-	typst.StartWorker(db, 2)
-	defer typst.StopWorker()
+	typstW.StartWorker(2)
+	defer typstW.StopWorker()
 
 	// Warm the article render cache at startup (non-blocking batch).
 	// Pre-populates articles.rendered_html for existing articles so the
 	// first visitor after deploy gets instant HTML.
 	go func() {
-		content.WarmCache(db, 50)
+		content.WarmCacheCtx(context.Background(), db, typstW, 50)
 	}()
 	srv := api.NewServer(db, sess, limiter, m, cfg.App.DataDir, cfg.App.TrustedProxies)
+	srv.Typst = typstW
 	// PublicURL is the absolute base URL the backend is reachable at
 	// from the public internet — used to build absolute /uploads/*
 	// responses for cross-origin frontends (Cloudflare Pages). Empty in
@@ -172,7 +191,7 @@ func main() {
 		// full scheme://host[:port] the auth flows run from — it must
 		// match the browser's window.origin byte-for-byte, port included,
 		// so the docker-compose frontend (http://localhost:3000) works.
-		rpid, origin := normalizeWebAuthnDomain(cfg.App.WebAuthnDomain)
+		rpid, origin := passkey.NormalizeDomain(cfg.App.WebAuthnDomain)
 		if rpid == "" {
 			slog.Warn("passkey disabled: APP_DOMAIN could not be parsed", "value", cfg.App.WebAuthnDomain)
 		} else {
@@ -190,8 +209,8 @@ func main() {
 			// — the operator is expected to set APP_DOMAIN to the real
 			// origin (port included if non-default), which already lives
 			// in the primary slot.
-			origins := buildWebAuthnOrigins(origin, rpid)
-			srv.ConfigureWebAuthn(rpid, "跨越晨昏", origins)
+			origins := passkey.BuildOrigins(origin, rpid)
+			srv.ConfigureWebAuthn(rpid, siteTitle, origins)
 			slog.Info("passkey configured", "rpid", rpid, "origins", origins)
 		}
 	} else {
@@ -264,7 +283,7 @@ func main() {
 				return
 			}
 			db.Close()
-			typst.StopWorker()
+			typstW.StopWorker()
 			if err := syscall.Exec(exePath, os.Args, os.Environ()); err != nil {
 				slog.Error("update: exec failed", "err", err)
 			}
@@ -287,108 +306,11 @@ func main() {
 	slog.Info("shutting down...")
 	// Stop the typst worker first so in-flight compilations finish or
 	// abort cleanly before we close the DB connection.
-	typst.StopWorker()
+	typstW.StopWorker()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := httpSrv.Shutdown(ctx); err != nil {
 		slog.Error("shutdown error", "err", err)
 	}
 	slog.Info("server stopped")
-}
-
-// normalizeWebAuthnDomain turns an APP_DOMAIN value (bare host, host:port,
-// or full origin with a scheme) into the (rpid, origin) pair the WebAuthn
-// library expects. Returns ("", "") when the input can't be parsed so the
-// caller can disable passkey rather than start with a broken RPID.
-func normalizeWebAuthnDomain(domain string) (rpid, origin string) {
-	d := strings.TrimSpace(domain)
-	if d == "" {
-		return "", ""
-	}
-	// url.Parse needs a scheme to populate Host; otherwise it puts the
-	// whole "host:port" into Path. Inject http:// when the caller omits
-	// one (dev default is a bare domain / host:port).
-	withScheme := d
-	if !strings.Contains(d, "://") {
-		withScheme = "http://" + d
-	}
-	u, err := url.Parse(withScheme)
-	if err != nil || u.Host == "" {
-		return "", ""
-	}
-	scheme := u.Scheme
-	if scheme == "" {
-		scheme = "http"
-	}
-	// Hostname() strips the port — that's exactly the bare RPID we want.
-	return u.Hostname(), scheme + "://" + u.Host
-}
-
-// buildWebAuthnOrigins expands a single primary origin (derived from
-// APP_DOMAIN) into the full set the webauthn library will accept during
-// FinishRegistration / FinishDiscoverableLogin. WebAuthn's origin check is
-// byte-exact: scheme, host AND port must each equal
-// clientDataJSON.origin. A bare APP_DOMAIN like "localhost" yields the
-// primary origin "http://localhost", yet the user is almost always reaching
-// the site through the Next.js dev server on :3000 (or the API on :8000) —
-// with only the primary in the list, every ceremony fails with
-// "Error validating origin".
-//
-// Strategy:
-//   - Always include the primary origin as-is (production deployments set
-//     APP_DOMAIN to the real origin and rely on this slot matching).
-//   - For the special "localhost" host, add http(s)://localhost with the
-//     common dev ports (3000, 8000, 8080) so the default dev setup works
-//     without the operator having to remember "APP_DOMAIN=localhost:3000".
-//   - For any other host, additionally add the same scheme + host with
-//     ports 3000/8000/8080 too. These are unlikely in production (the
-//     operator would set the real origin up front) and the cost is tiny;
-//     a misconfigured :8000-only deployment still works. We deliberately
-//     DON'T add cross-scheme (http://example.com when primary is
-//     https://example.com) variants for non-localhost hosts — that would
-//     silently allow plaintext-origin access on a production HTTPS site.
-//   - For localhost only, also add the http↔https counterpart so a dev
-//     box that mis-set APP_DOMAIN=https://localhost still works.
-//
-// Deduplicated and order-stable so the startup log line is readable.
-func buildWebAuthnOrigins(primary, rpid string) []string {
-	scheme := "http"
-	if strings.HasPrefix(primary, "https://") {
-		scheme = "https"
-	}
-	// Dev ports we tolerate as alternative origins for the same host. Kept
-	// short and explicit — these are the ports the project's own
-	// docker-compose / next dev default to.
-	devPorts := []string{"3000", "8000", "8080"}
-
-	out := []string{primary}
-	// localhost is special: it's never reachable over the public internet,
-	// always HTTP in dev, and a dev box might be TLS-terminated locally, so
-	// we don't gate the cross-scheme variant for it. For other hosts we
-	// keep scheme strict to avoid weakening production HTTPS sites.
-	schemes := []string{scheme}
-	if rpid == "localhost" {
-		if scheme == "http" {
-			schemes = append(schemes, "https")
-		} else {
-			schemes = append(schemes, "http")
-		}
-	}
-	seen := map[string]bool{primary: true}
-	add := func(o string) {
-		if o == "" || seen[o] {
-			return
-		}
-		seen[o] = true
-		out = append(out, o)
-	}
-	for _, sch := range schemes {
-		// bare-host variant (no port) — already covered by primary when
-		// APP_DOMAIN had no port; harmless to re-add once via dedup.
-		add(sch + "://" + rpid)
-		for _, p := range devPorts {
-			add(sch + "://" + rpid + ":" + p)
-		}
-	}
-	return out
 }

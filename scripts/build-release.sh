@@ -37,10 +37,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 DIST="$REPO_ROOT/dist"
 
-RED='\033[0;31m'; GRN='\033[0;32m'; YEL='\033[0;33m'; BLU='\033[0;34m'; NC='\033[0m'
-log()  { printf "${BLU}==>${NC} %s\n" "$*"; }
-ok()   { printf "${GRN}✓${NC} %s\n" "$*"; }
-die()  { printf "${RED}✗${NC} %s\n" "$*" >&2; exit 1; }
+source "$SCRIPT_DIR/lib.sh"
 
 # ── 校验 semver-ish 字符串 ──
 # 接受: v0.1.0, 0.1.0, 0.1.0-rc1, 0.1.0-alpha.1, 1.2.3+build.5

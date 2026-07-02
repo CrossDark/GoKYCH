@@ -5,6 +5,7 @@ import { getCsrf, listNotifications, createNotification, updateNotification, del
 import type { Notification } from "@/lib/types";
 import { useToast, useBeforeUnload } from "@/lib/admin-feedback";
 import { AdminConfirm } from "@/components/admin/AdminConfirm";
+import { fmtMonthDayTime } from "@/lib/format";
 
 export default function AdminNotifications() {
   const [csrf, setCsrf] = useState("");
@@ -224,7 +225,7 @@ export default function AdminNotifications() {
                           <span className="admin-badge admin-badge-neutral">已关闭</span>
                         )}
                       </td>
-                      <td className="col-date">{new Date(n.updated_at).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</td>
+                      <td className="col-date">{fmtMonthDayTime(n.updated_at)}</td>
                       <td className="col-actions">
                         <button
                           className="admin-btn admin-btn-outline admin-btn-sm"

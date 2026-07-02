@@ -3,37 +3,12 @@
 import { useState, useEffect, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { getCsrf, login, apiUrl, apiFetch } from "@/lib/api";
+import { supportsWebAuthn, arrayBufferToBase64Url, base64UrlToArrayBuffer } from "@/lib/webauthn";
 
-// Returns true if the browser can run WebAuthn (Touch ID / Windows Hello
-// / Android biometrics / hardware key). On non-supporting browsers we
-// hide the passkey button entirely rather than let the user click and
-// see a "navigator.credentials is undefined" error.
-function supportsWebAuthn() {
-  if (typeof window === "undefined") return false;
-  const w = window as any;
-  return !!(w.PublicKeyCredential && typeof w.PublicKeyCredential === "function");
-}
-
-function arrayBufferToBase64Url(buf: ArrayBuffer): string {
-  const bytes = new Uint8Array(buf);
-  let s = "";
-  for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
-  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
-function base64UrlToArrayBuffer(s: string): ArrayBuffer {
-  const padded = s.replace(/-/g, "+").replace(/_/g, "/") + "==".slice(0, (4 - (s.length % 4)) % 4);
-  const bin = atob(padded);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out.buffer;
-}
-
-async function loginWithPasskey() {
-  // 1. Get options from server.
+async function loginWithPasskey(csrfToken: string) {
   const begin = await apiFetch(apiUrl("/api/auth/passkey/login/begin"), {
     method: "POST",
-    headers: { "X-CSRF-Token": getCsrfToken() },
+    headers: { "X-CSRF-Token": csrfToken },
   });
   if (!begin.ok) {
     const err = await begin.json().catch(() => ({}));
@@ -76,7 +51,7 @@ async function loginWithPasskey() {
   };
   const finish = await apiFetch(apiUrl("/api/auth/passkey/login/finish"), {
     method: "POST",
-    headers: { "Content-Type": "application/json", "X-CSRF-Token": getCsrfToken() },
+    headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
     body: JSON.stringify({ credential: responsePayload }),
   });
   if (!finish.ok) {
@@ -86,16 +61,12 @@ async function loginWithPasskey() {
   return await finish.json();
 }
 
-let _csrfToken = "";
-function getCsrfToken() { return _csrfToken; }
-function setCsrfToken(t: string) { _csrfToken = t; }
-
 function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const next = searchParams.get("next") || "/admin";
 
-  const [csrfToken, setCsrfTokenState] = useState("");
+  const [csrfToken, setCsrfToken] = useState("");
   const [captchaQuestion, setCaptchaQuestion] = useState("");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -111,7 +82,6 @@ function LoginForm() {
     try {
       const resp = await getCsrf();
       setCsrfToken(resp.csrf_token);
-      setCsrfTokenState(resp.csrf_token);
       setCaptchaQuestion(resp.captcha.question);
     } catch {
       setError("无法连接服务器。");
@@ -154,15 +124,9 @@ function LoginForm() {
     setError("");
     setPasskeyLoading(true);
     try {
-      // Make sure we have a fresh CSRF token in the global slot the
-      // loginWithPasskey helper reads. (We can't pass it down cleanly
-      // through the helper without changing the signature, and the
-      // helper is also exported for symmetry with the registration
-      // flow which does the same.)
       const csrf = await getCsrf();
       setCsrfToken(csrf.csrf_token);
-      setCsrfTokenState(csrf.csrf_token);
-      const resp = await loginWithPasskey();
+      const resp = await loginWithPasskey(csrf.csrf_token);
       router.push(resp.next || next);
     } catch (err: any) {
       setError(err.message || "Passkey 登录失败。");

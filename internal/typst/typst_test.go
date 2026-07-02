@@ -65,13 +65,13 @@ func TestMaterializeAssetsRespectsUserEdits(t *testing.T) {
 func TestCleanupLeakedInputsRemovesTempFiles(t *testing.T) {
 	dir := t.TempDir()
 	files := map[string]string{
-		"template.typ":         "// keep me",
-		"foo.png":              "fake-png",
-		".input_123.typ":       "leak",
-		".input_99999.typ":     "leak",
-		".output_42.html":      "leak",
-		".output_42.pdf":       "leak",
-		"article-123.typ":      "should NOT be removed (no dot prefix)",
+		"template.typ":     "// keep me",
+		"foo.png":          "fake-png",
+		".input_123.typ":   "leak",
+		".input_99999.typ": "leak",
+		".output_42.html":  "leak",
+		".output_42.pdf":   "leak",
+		"article-123.typ":  "should NOT be removed (no dot prefix)",
 	}
 	for name, content := range files {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0644); err != nil {

@@ -13,11 +13,11 @@ import (
 func Default() map[string]interface{} {
 	return map[string]interface{}{
 		"site": map[string]interface{}{
-			"title":        "跨越晨昏",
-			"subtitle":     "个人网站",
-			"description":  "",
-			"language":     "zh-CN",
-			"timezone":     "Asia/Shanghai",
+			"title":       "跨越晨昏",
+			"subtitle":    "个人网站",
+			"description": "",
+			"language":    "zh-CN",
+			"timezone":    "Asia/Shanghai",
 			// Empty by default — older settings.yml shipped "/static/img/logo.png"
 			// which is a server-relative path that the EdgeOne-hosted SPA can't
 			// resolve (no /static rewrite on the frontend origin). Empty →

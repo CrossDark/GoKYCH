@@ -28,9 +28,9 @@ const (
 )
 
 var (
-	releaseCacheMu sync.RWMutex
-	releaseCache   *ghRelease
-	releaseCacheAt time.Time
+	releaseCacheMu  sync.RWMutex
+	releaseCache    *ghRelease
+	releaseCacheAt  time.Time
 	releaseCacheTTL = 5 * time.Minute
 )
 
@@ -242,13 +242,13 @@ func compareVersions(current, latest string) bool {
 type updateStatus string
 
 const (
-	updateIdle       updateStatus = "idle"
+	updateIdle        updateStatus = "idle"
 	updateDownloading updateStatus = "downloading"
-	updateVerifying  updateStatus = "verifying"
-	updateReplacing  updateStatus = "replacing"
-	updateRestarting updateStatus = "restarting"
-	updateDone       updateStatus = "done"
-	updateError      updateStatus = "error"
+	updateVerifying   updateStatus = "verifying"
+	updateReplacing   updateStatus = "replacing"
+	updateRestarting  updateStatus = "restarting"
+	updateDone        updateStatus = "done"
+	updateError       updateStatus = "error"
 )
 
 type updateJobState struct {
@@ -579,14 +579,14 @@ func (s *Server) runUpdate(goos, goarch, binPath, targetVersion string) {
 }
 
 type updateStatusResponse struct {
-	Status      string  `json:"status"`
-	Version     string  `json:"version,omitempty"`
-	Message     string  `json:"message"`
-	Error       string  `json:"error,omitempty"`
-	Backup      string  `json:"backup,omitempty"`
-	Progress    int64   `json:"progress"`
-	Total       int64   `json:"total"`
-	ElapsedSec  float64 `json:"elapsed_sec"`
+	Status     string  `json:"status"`
+	Version    string  `json:"version,omitempty"`
+	Message    string  `json:"message"`
+	Error      string  `json:"error,omitempty"`
+	Backup     string  `json:"backup,omitempty"`
+	Progress   int64   `json:"progress"`
+	Total      int64   `json:"total"`
+	ElapsedSec float64 `json:"elapsed_sec"`
 }
 
 func (s *Server) updateStatusHandler(c *gin.Context) {

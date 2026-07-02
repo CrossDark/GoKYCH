@@ -19,17 +19,8 @@ import (
 	"gokych/internal/auth/user"
 )
 
-// maxCredentialNameLen caps the user-supplied label for a new passkey.
 const maxCredentialNameLen = 64
 
-// ── Registration (requires login) ──────────────────────────────────────
-
-// POST /api/auth/passkey/register/begin
-//
-// Start a passkey registration. Returns a JSON-encoded
-// protocol.CredentialCreation (the client passes it to
-// navigator.credentials.create()). The session is updated with the
-// challenge so /finish can verify it.
 func (s *Server) beginPasskeyRegistration(c *gin.Context) {
 	u := CurrentUserFromContext(c)
 	if u == nil {
@@ -41,7 +32,8 @@ func (s *Server) beginPasskeyRegistration(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Passkey 未配置。"})
 		return
 	}
-	pkUser, err := passkey.LoadUser(s.DB, u.ID)
+	ctx := c.Request.Context()
+	pkUser, err := passkey.LoadUserCtx(ctx, s.DB, u.ID)
 	if err != nil {
 		slog.Error("beginPasskeyRegistration: load user", "user_id", u.ID, "err", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载用户失败。"})
@@ -53,8 +45,6 @@ func (s *Server) beginPasskeyRegistration(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "无法开始 Passkey 注册。"})
 		return
 	}
-	// Stash the SessionData so Finish can pick it up. We marshal it as JSON
-	// because gorilla/sessions values must be strings (no binary blobs).
 	if err := s.setSessionValueJSON(c, "webauthn_reg", sessionData); err != nil {
 		slog.Error("beginPasskeyRegistration: store session", "err", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "无法保存 challenge。"})
@@ -63,11 +53,6 @@ func (s *Server) beginPasskeyRegistration(c *gin.Context) {
 	c.JSON(http.StatusOK, options)
 }
 
-// POST /api/auth/passkey/register/finish { name, credential }
-//
-// Complete the registration: parse the client-side PublicKeyCredential,
-// verify the attestation against the in-flight challenge, and persist
-// the new credential.
 func (s *Server) finishPasskeyRegistration(c *gin.Context) {
 	u := CurrentUserFromContext(c)
 	if u == nil {
@@ -98,7 +83,8 @@ func (s *Server) finishPasskeyRegistration(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "注册会话已过期，请刷新页面后重试。"})
 		return
 	}
-	pkUser, err := passkey.LoadUser(s.DB, u.ID)
+	ctx := c.Request.Context()
+	pkUser, err := passkey.LoadUserCtx(ctx, s.DB, u.ID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载用户失败。"})
 		return
@@ -116,7 +102,7 @@ func (s *Server) finishPasskeyRegistration(c *gin.Context) {
 	if len(name) > maxCredentialNameLen {
 		name = name[:maxCredentialNameLen]
 	}
-	if err := passkey.SaveCredential(s.DB, u.ID, name, cred); err != nil {
+	if err := passkey.SaveCredentialCtx(ctx, s.DB, u.ID, name, cred); err != nil {
 		slog.Error("finishPasskeyRegistration: save", "user_id", u.ID, "err", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "保存 Passkey 失败。"})
 		return
@@ -125,13 +111,6 @@ func (s *Server) finishPasskeyRegistration(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok", "name": name})
 }
 
-// ── Login (discoverable, no username needed) ───────────────────────────
-
-// POST /api/auth/passkey/login/begin
-//
-// Start a discoverable-credential login. The client calls
-// navigator.credentials.get() with no allowList — the browser shows the
-// user a list of every passkey their device knows for this domain.
 func (s *Server) beginPasskeyLogin(c *gin.Context) {
 	wa, err := s.webAuthnInstance()
 	if err != nil {
@@ -152,25 +131,12 @@ func (s *Server) beginPasskeyLogin(c *gin.Context) {
 	c.JSON(http.StatusOK, options)
 }
 
-// POST /api/auth/passkey/login/finish { credential }
-//
-// Complete the login: look up the user by credential id, verify the
-// signature, and if it passes, log them in (same Session.Login the
-// password path uses).
 func (s *Server) finishPasskeyLogin(c *gin.Context) {
 	wa, err := s.webAuthnInstance()
 	if err != nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Passkey 未配置。"})
 		return
 	}
-	// Read the body once into memory: gin's ShouldBindJSON would consume
-	// c.Request.Body, and the go-webauthn library's FinishDiscoverableLogin
-	// re-reads that same stream — handing it an already-exhausted body
-	// produced an empty parse and every login failed. We parse the wrapper
-	// struct ourselves, then feed the captured credential bytes to the
-	// library's Body variant, and finally call ValidateDiscoverableLogin
-	// (which takes the parsed assertion instead of *http.Request) so there
-	// is no second body read at all.
 	bodyBytes, err := io.ReadAll(c.Request.Body)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "读取请求体失败。"})
@@ -194,33 +160,22 @@ func (s *Server) finishPasskeyLogin(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "登录会话已过期，请刷新页面后重试。"})
 		return
 	}
-	// Discoverable login: the authenticator only sends the credential id,
-	// so the lib calls our resolver to map id → user.
+	ctx := c.Request.Context()
 	resolver := func(rawID, userHandle []byte) (webauthn.User, error) {
-		// userHandle is what BeginDiscoverableLogin puts in options (we
-		// pass empty), so this callback rarely fires. For robustness,
-		// prefer the credential id when present.
 		if len(rawID) > 0 {
-			return passkey.LookupByCredentialID(s.DB, rawID)
+			return passkey.LookupByCredentialIDCtx(ctx, s.DB, rawID)
 		}
 		if len(userHandle) > 0 {
 			id, err := strconv.Atoi(string(userHandle))
 			if err != nil {
 				return nil, err
 			}
-			return passkey.LoadUser(s.DB, id)
+			return passkey.LoadUserCtx(ctx, s.DB, id)
 		}
 		return nil, errors.New("neither credential id nor user handle present")
 	}
-	// ValidateDiscoverableLogin takes the already-parsed assertion, so the
-	// library never touches c.Request (whose Body we consumed above). The
-	// resolver maps the credential id → user exactly as before.
 	cred, err := wa.ValidateDiscoverableLogin(resolver, *sessionData, parsedAssertion)
 	if err != nil {
-		// The credential_id the authenticator presented wasn't in our table —
-		// usually a stale browser cache pointing at a revoked passkey.
-		// Surface that specifically so the user knows to re-register or
-		// pick a different one, instead of a generic "验证失败".
 		if errors.Is(err, passkey.ErrCredentialNotFound) {
 			slog.Warn("finishPasskeyLogin: credential unknown to server", "err", err)
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "此 Passkey 已在本站撤销。请用密码登录后重新登记，或换一个 Passkey。"})
@@ -230,27 +185,22 @@ func (s *Server) finishPasskeyLogin(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Passkey 验证失败。"})
 		return
 	}
-	// Resolve the user id for the credential that matched, then establish
-	// a server session. The lib already ran our resolver and cached the
-	// user record, but we need the numeric id to drive the session call.
-	owner, err := passkey.LookupByCredentialID(s.DB, cred.ID)
+	owner, err := passkey.LookupByCredentialIDCtx(ctx, s.DB, cred.ID)
 	if err != nil || owner == nil {
 		slog.Error("finishPasskeyLogin: owner lookup", "err", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "用户查找失败。"})
 		return
 	}
-	// Persist the updated sign_count (anti-cloning signal).
-	if err := passkey.PersistSignCount(s.DB, cred.ID, cred.Authenticator.SignCount); err != nil {
+	if err := passkey.PersistSignCountCtx(ctx, s.DB, cred.ID, cred.Authenticator.SignCount); err != nil {
 		slog.Warn("finishPasskeyLogin: persist sign_count", "err", err)
 	}
-	// Establish a server session, same as the password path.
 	if err := s.sessions.Login(c.Writer, c.Request, owner.ID, owner.Username); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "登录失败。"})
 		return
 	}
 	ip := clientIP(c)
 	s.limiter.Reset(owner.Username, ip)
-	row, _ := user.GetByID(s.DB, owner.ID)
+	row, _ := user.GetByIDCtx(ctx, s.DB, owner.ID)
 	c.JSON(http.StatusOK, gin.H{
 		"status":  "ok",
 		"message": "登录成功。",
@@ -259,16 +209,14 @@ func (s *Server) finishPasskeyLogin(c *gin.Context) {
 	})
 }
 
-// ── Listing + revoke ───────────────────────────────────────────────────
-
-// GET /api/auth/passkey — list the current user's registered passkeys.
 func (s *Server) listMyPasskeys(c *gin.Context) {
 	u := CurrentUserFromContext(c)
 	if u == nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "请先登录。"})
 		return
 	}
-	keys, err := passkey.ListForUser(s.DB, u.ID)
+	ctx := c.Request.Context()
+	keys, err := passkey.ListForUserCtx(ctx, s.DB, u.ID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载失败。"})
 		return
@@ -279,7 +227,6 @@ func (s *Server) listMyPasskeys(c *gin.Context) {
 	c.JSON(http.StatusOK, keys)
 }
 
-// DELETE /api/auth/passkey/:id — revoke one of the caller's passkeys.
 func (s *Server) deleteMyPasskey(c *gin.Context) {
 	u := CurrentUserFromContext(c)
 	if u == nil {
@@ -291,7 +238,8 @@ func (s *Server) deleteMyPasskey(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的 ID。"})
 		return
 	}
-	ok, err := passkey.Delete(s.DB, u.ID, id)
+	ctx := c.Request.Context()
+	ok, err := passkey.DeleteCtx(ctx, s.DB, u.ID, id)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "删除失败。"})
 		return
@@ -303,17 +251,9 @@ func (s *Server) deleteMyPasskey(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
-// ── Owner-only: manage ANY user's passkeys ───────────────────────────
-
-// GET /api/admin/passkeys — list every passkey across all users, joined with
-// the owning username so the owner-side panel can show "device — belongs to
-// @user". Owner-only (route is gated with requireOwner).
-//
-// We deliberately don't expose the raw public key or credential bytes —
-// the per-row summary (id, user_id, user_name, name, credential_id preview,
-// transports, created_at) is enough for the admin UI.
 func (s *Server) listAllPasskeys(c *gin.Context) {
-	rows, err := s.DB.Query(
+	ctx := c.Request.Context()
+	rows, err := s.DB.QueryContext(ctx,
 		`SELECT wc.id, wc.user_id, u.username, u.nickname, wc.name,
 		        wc.credential_id, wc.transports, wc.sign_count, wc.created_at
 		 FROM webauthn_credentials wc
@@ -358,10 +298,6 @@ func (s *Server) listAllPasskeys(c *gin.Context) {
 	c.JSON(http.StatusOK, out)
 }
 
-// DELETE /api/admin/passkeys/:id — revoke any user's passkey by its DB id.
-// Owner-only. The WHERE clause is *not* scoped to the caller's user id (the
-// whole point is the owner can act on other accounts), but we still log the
-// caller + target so an audit trail exists.
 func (s *Server) deleteAnyPasskey(c *gin.Context) {
 	caller := CurrentUserFromContext(c)
 	if caller == nil {
@@ -373,18 +309,17 @@ func (s *Server) deleteAnyPasskey(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的 ID。"})
 		return
 	}
-	// Look up the owning user first, so the log entry is meaningful and we
-	// can return a 404 (rather than 200-with-no-rows) when the id is stale.
+	ctx := c.Request.Context()
 	var ownerID int
 	var ownerName string
-	err = s.DB.QueryRow(
+	err = s.DB.QueryRowContext(ctx,
 		`SELECT wc.user_id, u.username FROM webauthn_credentials wc
 		 JOIN users u ON u.id = wc.user_id WHERE wc.id = ?`, id).Scan(&ownerID, &ownerName)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Passkey 不存在。"})
 		return
 	}
-	res, err := s.DB.Exec(`DELETE FROM webauthn_credentials WHERE id = ?`, id)
+	res, err := s.DB.ExecContext(ctx, `DELETE FROM webauthn_credentials WHERE id = ?`, id)
 	if err != nil {
 		slog.Error("deleteAnyPasskey", "id", id, "err", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "删除失败。"})
@@ -398,10 +333,6 @@ func (s *Server) deleteAnyPasskey(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
-// ── session helpers (JSON-encoded) ─────────────────────────────────────
-
-// setSessionValueJSON marshals v to a string and stashes it under key.
-// gorilla/sessions only stores string values.
 func (s *Server) setSessionValueJSON(c *gin.Context, key string, v any) error {
 	sess, err := s.sessions.Session(c.Request)
 	if err != nil {
@@ -415,7 +346,6 @@ func (s *Server) setSessionValueJSON(c *gin.Context, key string, v any) error {
 	return sess.Save(c.Request, c.Writer)
 }
 
-// popSessionValueJSON unmarshals and removes key from the session.
 func (s *Server) popSessionValueJSON(c *gin.Context, key string) (*webauthn.SessionData, error) {
 	sess, err := s.sessions.Session(c.Request)
 	if err != nil {

@@ -1,30 +1,54 @@
 package content
 
 import (
+	"context"
 	"database/sql"
 	"math"
+
+	coredb "gokych/internal/core/db"
+	"gokych/internal/typst"
 )
 
-// Tag represents a tag row.
 type Tag struct {
 	ID   int    `json:"id"`
 	Name string `json:"name"`
 }
 
-// TagWithCount includes an article count.
 type TagWithCount struct {
 	Tag
 	Count int `json:"count"`
 }
 
-// Querier is satisfied by both *sql.DB and *sql.Tx.
 type Querier interface {
 	QueryRow(query string, args ...any) *sql.Row
 	Exec(query string, args ...any) (sql.Result, error)
 }
 
-// GetOrCreateTag ensures a tag exists and returns its ID.
+type QuerierCtx interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+func GetOrCreateTagCtx(ctx context.Context, q QuerierCtx, name string) (int, error) {
+	var id int
+	err := q.QueryRowContext(ctx, `SELECT id FROM tags WHERE name = ?`, name).Scan(&id)
+	if err == nil {
+		return id, nil
+	}
+	res, err := q.ExecContext(ctx, `INSERT INTO tags (name) VALUES (?)`, name)
+	if err != nil {
+		return 0, err
+	}
+	lid, _ := res.LastInsertId()
+	return int(lid), nil
+}
+
+// Deprecated: Use GetOrCreateTagCtx instead.
 func GetOrCreateTag(q Querier, name string) (int, error) {
+	return getOrCreateTagDeprecated(q, name)
+}
+
+func getOrCreateTagDeprecated(q Querier, name string) (int, error) {
 	var id int
 	err := q.QueryRow(`SELECT id FROM tags WHERE name = ?`, name).Scan(&id)
 	if err == nil {
@@ -38,9 +62,8 @@ func GetOrCreateTag(q Querier, name string) (int, error) {
 	return int(lid), nil
 }
 
-// GetAllTagsWithCounts returns all tags with article counts.
-func GetAllTagsWithCounts(db *sql.DB) ([]TagWithCount, error) {
-	rows, err := db.Query(
+func GetAllTagsWithCountsCtx(ctx context.Context, db *sql.DB) ([]TagWithCount, error) {
+	rows, err := db.QueryContext(ctx,
 		`SELECT t.id, t.name, COUNT(at.tag_id) AS cnt
 		 FROM tags t LEFT JOIN article_tags at ON t.id = at.tag_id
 		 GROUP BY t.id, t.name ORDER BY t.name`)
@@ -59,9 +82,13 @@ func GetAllTagsWithCounts(db *sql.DB) ([]TagWithCount, error) {
 	return out, rows.Err()
 }
 
-// GetTagsForArticle returns tag names for an article.
-func GetTagsForArticle(db *sql.DB, articleID int) ([]string, error) {
-	rows, err := db.Query(
+// Deprecated: Use GetAllTagsWithCountsCtx instead.
+func GetAllTagsWithCounts(db *sql.DB) ([]TagWithCount, error) {
+	return GetAllTagsWithCountsCtx(context.TODO(), db)
+}
+
+func GetTagsForArticleCtx(ctx context.Context, db *sql.DB, articleID int) ([]string, error) {
+	rows, err := db.QueryContext(ctx,
 		`SELECT t.name FROM tags t
 		 JOIN article_tags at ON t.id = at.tag_id
 		 WHERE at.article_id = ? ORDER BY t.name`, articleID)
@@ -80,8 +107,12 @@ func GetTagsForArticle(db *sql.DB, articleID int) ([]string, error) {
 	return names, rows.Err()
 }
 
-// GetTagsForArticlesBatch returns a map of articleID → tag names.
-func GetTagsForArticlesBatch(db *sql.DB, articles []Article) (map[int][]string, error) {
+// Deprecated: Use GetTagsForArticleCtx instead.
+func GetTagsForArticle(db *sql.DB, articleID int) ([]string, error) {
+	return GetTagsForArticleCtx(context.TODO(), db, articleID)
+}
+
+func GetTagsForArticlesBatchCtx(ctx context.Context, db *sql.DB, articles []Article) (map[int][]string, error) {
 	if len(articles) == 0 {
 		return nil, nil
 	}
@@ -89,15 +120,14 @@ func GetTagsForArticlesBatch(db *sql.DB, articles []Article) (map[int][]string, 
 	for i, a := range articles {
 		ids[i] = a.ID
 	}
-	// Build IN clause
 	query := `SELECT at.article_id, t.name FROM article_tags at
 		JOIN tags t ON t.id = at.tag_id
-		WHERE at.article_id IN (` + placeholders(len(ids)) + `) ORDER BY t.name`
+		WHERE at.article_id IN (` + coredb.Placeholders(len(ids)) + `) ORDER BY t.name`
 	args := make([]interface{}, len(ids))
 	for i, id := range ids {
 		args[i] = id
 	}
-	rows, err := db.Query(query, args...)
+	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -114,43 +144,50 @@ func GetTagsForArticlesBatch(db *sql.DB, articles []Article) (map[int][]string, 
 	return out, rows.Err()
 }
 
-// SetArticleTags replaces all tags for an article.
-func SetArticleTags(db *sql.DB, articleID int, tagNames []string) error {
-	tx, err := db.Begin()
+// Deprecated: Use GetTagsForArticlesBatchCtx instead.
+func GetTagsForArticlesBatch(db *sql.DB, articles []Article) (map[int][]string, error) {
+	return GetTagsForArticlesBatchCtx(context.TODO(), db, articles)
+}
+
+func SetArticleTagsCtx(ctx context.Context, db *sql.DB, w *typst.Worker, articleID int, tagNames []string) error {
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 
-	if _, err := tx.Exec(`DELETE FROM article_tags WHERE article_id = ?`, articleID); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM article_tags WHERE article_id = ?`, articleID); err != nil {
 		return err
 	}
 	for _, name := range tagNames {
-		tagID, err := GetOrCreateTag(tx, name)
+		tagID, err := GetOrCreateTagCtx(ctx, tx, name)
 		if err != nil {
 			return err
 		}
-		if _, err := tx.Exec(`INSERT INTO article_tags (article_id, tag_id) VALUES (?, ?)`, articleID, tagID); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO article_tags (article_id, tag_id) VALUES (?, ?)`, articleID, tagID); err != nil {
 			return err
 		}
 	}
 	if err := tx.Commit(); err != nil {
 		return err
 	}
-	// Invalidate render cache so %%tags%% reflects the new tag set.
-	InvalidateArticleCache(db, articleID)
+	InvalidateArticleCacheCtx(ctx, db, w, articleID)
 	return nil
 }
 
-// GetArticlesByTag returns paginated articles for a tag.
-func GetArticlesByTag(db *sql.DB, tagName string, page, perPage int) (*ArticleListResult, error) {
+// Deprecated: Use SetArticleTagsCtx instead.
+func SetArticleTags(db *sql.DB, w *typst.Worker, articleID int, tagNames []string) error {
+	return SetArticleTagsCtx(context.TODO(), db, w, articleID, tagNames)
+}
+
+func GetArticlesByTagCtx(ctx context.Context, db *sql.DB, tagName string, page, perPage int) (*ArticleListResult, error) {
 	if perPage <= 0 {
 		perPage = 10
 	}
 	offset := (page - 1) * perPage
 
 	var total int
-	err := db.QueryRow(
+	err := db.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM article_tags at
 		 JOIN tags t ON t.id = at.tag_id
 		 JOIN articles a ON a.id = at.article_id
@@ -160,7 +197,7 @@ func GetArticlesByTag(db *sql.DB, tagName string, page, perPage int) (*ArticleLi
 		return nil, err
 	}
 
-	rows, err := db.Query(
+	rows, err := db.QueryContext(ctx,
 		`SELECT a.id, a.type, a.slug, a.title, LEFT(a.content, 200) AS content, NULL AS rendered_html, a.author_id,
 		        u.username, u.nickname, u.avatar, a.created_at, a.updated_at
 		 FROM articles a
@@ -188,8 +225,7 @@ func GetArticlesByTag(db *sql.DB, tagName string, page, perPage int) (*ArticleLi
 		return nil, err
 	}
 
-	// Batch-fetch tags for all articles.
-	tagMap, err := GetTagsForArticlesBatch(db, articles)
+	tagMap, err := GetTagsForArticlesBatchCtx(ctx, db, articles)
 	if err != nil {
 		return nil, err
 	}
@@ -210,17 +246,7 @@ func GetArticlesByTag(db *sql.DB, tagName string, page, perPage int) (*ArticleLi
 	}, nil
 }
 
-// placeholders returns a comma-separated "?,?,?" string.
-func placeholders(n int) string {
-	if n <= 0 {
-		return ""
-	}
-	b := make([]byte, 0, n*2-1)
-	for i := 0; i < n; i++ {
-		if i > 0 {
-			b = append(b, ',')
-		}
-		b = append(b, '?')
-	}
-	return string(b)
+// Deprecated: Use GetArticlesByTagCtx instead.
+func GetArticlesByTag(db *sql.DB, tagName string, page, perPage int) (*ArticleListResult, error) {
+	return GetArticlesByTagCtx(context.TODO(), db, tagName, page, perPage)
 }

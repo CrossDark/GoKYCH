@@ -1,8 +1,8 @@
 import type { Metadata } from "next";
+import { headers } from "next/headers";
 import { ThemeProvider } from "@/components/ThemeProvider";
 import { ThemeStylesheet } from "@/components/ThemeStylesheet";
 import { LayoutWrapper } from "./LayoutWrapper";
-import "katex/dist/katex.min.css";
 import "@/styles/globals.css";
 
 export const metadata: Metadata = {
@@ -10,16 +10,19 @@ export const metadata: Metadata = {
   description: "个人网站",
 };
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
+  const headersList = await headers();
+  const nonce = headersList.get("X-Nonce") || undefined;
+
   return (
     <html lang="zh-CN" suppressHydrationWarning>
       <head>
-        {/* Prevent flash of unstyled content for dark mode. */}
         <script
+          nonce={nonce}
           dangerouslySetInnerHTML={{
             __html: `
               (function() {

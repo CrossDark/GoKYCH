@@ -35,12 +35,8 @@
 # ────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
-# ── 颜色 ──
-RED=$'\033[0;31m'; GRN=$'\033[0;32m'; YEL=$'\033[0;33m'; BLU=$'\033[0;34m'; NC=$'\033[0m'
-log()  { printf "${BLU}==>${NC} %s\n" "$*"; }
-ok()   { printf "${GRN}✓${NC} %s\n" "$*"; }
-warn() { printf "${YEL}!${NC} %s\n" "$*" >&2; }
-die()  { printf "${RED}✗${NC} %s\n" "$*" >&2; exit 1; }
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/lib.sh"
 
 # ── 必须 sudo (但 --help 可以免 sudo) ──
 if [[ $EUID -ne 0 ]]; then
@@ -159,23 +155,6 @@ fi
 # ── 工具函数 ──
 gen_secret() { LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 48 || true; }
 
-# ── 系统检测 ──
-detect_platform() {
-  local os arch
-  os="$(uname -s | tr '[:upper:]' '[:lower:]')"
-  arch="$(uname -m)"
-  case "$os" in
-    linux) ;;
-    *) die "只支持 Linux, 当前: $os (macOS 跑 install-backend.sh)" ;;
-  esac
-  case "$arch" in
-    x86_64|amd64)   arch=amd64 ;;
-    aarch64|arm64)  arch=arm64 ;;
-    *) die "不支持架构: $arch" ;;
-  esac
-  echo "linux-${arch}"
-}
-
 # ── 卸载分支 ──
 do_uninstall() {
   log "卸载 gokych (数据保留: $DATA_DIR)"
@@ -232,8 +211,9 @@ echo
 # ── 1. 平台检测 ──
 log "检测平台…"
 PLATFORM="$(detect_platform)"
-GOOS="${PLATFORM%-*}"   # linux
-GOARCH="${PLATFORM#*-}" # amd64 / arm64
+GOOS="${PLATFORM%/*}"
+GOARCH="${PLATFORM#*/}"
+[[ "$GOOS" == "linux" ]] || die "只支持 Linux (当前: $GOOS), macOS 请用 install-backend.sh"
 ok "$GOOS / $GOARCH"
 
 # ── 2. 安装系统包 ──
@@ -297,13 +277,9 @@ curl -fsSL -o "${TMPDIR_DL}/${SUMS_FILE}" "${URL_BASE}/${SUMS_FILE}"
 ok "下载完成 (${ASSET})"
 
 # 校验 hash (从 SHA256SUMS 里 grep 我们的 asset)
-EXPECTED="$(grep -E "[[:space:]]${ASSET}\$" "${TMPDIR_DL}/${SUMS_FILE}" | awk '{print $1}' || true)"
+EXPECTED="$(grep -E "[[:space:]]\.?/?${ASSET}\$" "${TMPDIR_DL}/${SUMS_FILE}" | awk '{print $1}' || true)"
 if [[ -n "$EXPECTED" ]]; then
-  ACTUAL="$(sha256sum "${TMPDIR_DL}/${ASSET}" | awk '{print $1}')"
-  if [[ "$EXPECTED" != "$ACTUAL" ]]; then
-    die "SHA256 不匹配!\n  expected: $EXPECTED\n  actual:   $ACTUAL"
-  fi
-  ok "SHA256 校验通过"
+  verify_sha256 "${TMPDIR_DL}/${ASSET}" "$EXPECTED"
 else
   warn "SHA256SUMS 里找不到 ${ASSET} — 跳过 hash 校验"
 fi

@@ -1,0 +1,9 @@
+import { request, cache, isSSR } from "./client";
+import type { HomeData } from "@/lib/types";
+
+const _getHomeSSR = cache(() => request<HomeData>("/home", { anon: true }));
+
+export function getHome() {
+  if (isSSR) return _getHomeSSR();
+  return request<HomeData>("/home");
+}

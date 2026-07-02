@@ -1,6 +1,7 @@
 package typst
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"os"
@@ -56,9 +57,9 @@ type articleStub struct {
 
 // lookupArticle fetches a typst article by slug. Returns nil, nil if not
 // found (caller produces a friendly "unknown slug" error).
-func lookupArticle(dbx *sql.DB, slug string) (*articleStub, error) {
+func lookupArticleCtx(ctx context.Context, dbx *sql.DB, slug string) (*articleStub, error) {
 	var a articleStub
-	err := dbx.QueryRow(
+	err := dbx.QueryRowContext(ctx,
 		`SELECT id, slug, content FROM articles WHERE type = 'typst' AND slug = ?`,
 		slug,
 	).Scan(&a.ID, &a.Slug, &a.Content)
@@ -69,6 +70,11 @@ func lookupArticle(dbx *sql.DB, slug string) (*articleStub, error) {
 		return nil, err
 	}
 	return &a, nil
+}
+
+// Deprecated: Use lookupArticleCtx instead.
+func lookupArticle(dbx *sql.DB, slug string) (*articleStub, error) {
+	return lookupArticleCtx(context.TODO(), dbx, slug)
 }
 
 // resolveResult holds the output of a dependency-resolution pass.
@@ -94,10 +100,10 @@ func rewriteImports(src string, slugToID map[string]int) string {
 	})
 }
 
-// resolveDependencies parses source, recursively resolves all @-prefixed
+// resolveDependenciesCtx parses source, recursively resolves all @-prefixed
 // imports from the database, writes dep files into workspaceDir, and
 // returns the rewritten source. currentArticleID prevents self-import.
-func resolveDependencies(dbx *sql.DB, workspaceDir string, currentArticleID int, source string) (*resolveResult, error) {
+func resolveDependenciesCtx(ctx context.Context, dbx *sql.DB, workspaceDir string, currentArticleID int, source string) (*resolveResult, error) {
 	if dbx == nil {
 		return &resolveResult{source: source}, nil
 	}
@@ -130,6 +136,9 @@ func resolveDependencies(dbx *sql.DB, workspaceDir string, currentArticleID int,
 	// deps, writing the dep file AFTER children are resolved.
 	var resolveOne func(a *articleStub, path []int) error
 	resolveOne = func(a *articleStub, path []int) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		// Cycle detection: a is already on the current recursion path.
 		if resolving[a.ID] {
 			return fmt.Errorf("typst import cycle detected: %s → @%s",
@@ -146,7 +155,7 @@ func resolveDependencies(dbx *sql.DB, workspaceDir string, currentArticleID int,
 
 		// Recursively resolve children first (depth-first, post-order).
 		for _, slug := range findSlugs(a.Content) {
-			dep, err := lookupArticle(dbx, slug)
+			dep, err := lookupArticleCtx(ctx, dbx, slug)
 			if err != nil {
 				return fmt.Errorf("lookup @%s: %w", slug, err)
 			}
@@ -183,7 +192,7 @@ func resolveDependencies(dbx *sql.DB, workspaceDir string, currentArticleID int,
 
 	// Resolve all top-level imports from the main source.
 	for _, slug := range findSlugs(source) {
-		dep, err := lookupArticle(dbx, slug)
+		dep, err := lookupArticleCtx(ctx, dbx, slug)
 		if err != nil {
 			return nil, fmt.Errorf("lookup @%s: %w", slug, err)
 		}
@@ -206,6 +215,11 @@ func resolveDependencies(dbx *sql.DB, workspaceDir string, currentArticleID int,
 		depIDs:   depIDOrder,
 		depFiles: depFiles,
 	}, nil
+}
+
+// Deprecated: Use resolveDependenciesCtx instead.
+func resolveDependencies(dbx *sql.DB, workspaceDir string, currentArticleID int, source string) (*resolveResult, error) {
+	return resolveDependenciesCtx(context.TODO(), dbx, workspaceDir, currentArticleID, source)
 }
 
 // formatChain formats a chain of article IDs for error messages,

@@ -30,6 +30,7 @@ var safeFilenameRe = regexp.MustCompile(`[^a-zA-Z0-9._-]+`)
 // rather than silently re-compiling, because the read path is supposed
 // to be fast.
 func (s *Server) getArticlePDF(c *gin.Context) {
+	ctx := c.Request.Context()
 	atype := c.Param("type")
 	slug := c.Param("slug")
 	if !parsers.IsValidType(atype) {
@@ -37,8 +38,6 @@ func (s *Server) getArticlePDF(c *gin.Context) {
 		return
 	}
 	if atype != "typst" {
-		// Be loud about the misroute — /api/articles/md/foo/pdf shouldn't
-		// silently 200 with an empty PDF.
 		c.JSON(http.StatusNotFound, gin.H{"error": "仅 typst 文章支持 PDF 下载。"})
 		return
 	}
@@ -46,20 +45,16 @@ func (s *Server) getArticlePDF(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "typst CLI 未安装。"})
 		return
 	}
-	a, err := content.GetArticle(s.DB, atype, slug)
+	a, err := content.GetArticleCtx(ctx, s.DB, atype, slug)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "文章不存在。"})
 		return
 	}
-	pdf, err := typst.CompilePDFCached(a.ID, a.Content)
+	pdf, err := s.Typst.CompilePDFCachedCtx(ctx, a.ID, a.Content)
 	if err != nil {
-		// Cache miss = compilation hasn't finished yet (async queue).
-		// Auto-enqueue for compilation and return a 503 so the client
-		// knows to retry, rather than 404 which implies the PDF is
-		// permanently unavailable.
 		if strings.Contains(err.Error(), "no cached PDF") {
 			slog.Info("getArticlePDF: cache miss, enqueuing compile", "article_id", a.ID)
-			if qerr := typst.EnqueueCompile(s.DB, a.ID); qerr != nil {
+			if qerr := s.Typst.EnqueueCompileCtx(ctx, a.ID); qerr != nil {
 				slog.Warn("getArticlePDF: auto-enqueue failed", "article_id", a.ID, "err", qerr)
 			}
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "PDF 正在编译中，请稍后再试。"})
@@ -73,9 +68,6 @@ func (s *Server) getArticlePDF(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "PDF 生成失败（可能是源文件语法错误）。"})
 		return
 	}
-	// Sanitize slug for Content-Disposition — should already be safe but we
-	// don't want a future slug rule change to leak header-injection
-	// characters (CR/LF/quote) into the response.
 	filename := safeFilenameRe.ReplaceAllString(slug, "_")
 	if filename == "" || filename == "_" {
 		filename = "article"

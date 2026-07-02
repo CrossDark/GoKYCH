@@ -8,6 +8,7 @@ import type { Article, ArticleListResult, User } from "@/lib/types";
 import { useToast, useBeforeUnload } from "@/lib/admin-feedback";
 import { AdminConfirm } from "@/components/admin/AdminConfirm";
 import { MarkdownEditor } from "@/components/admin/MarkdownEditor";
+import { fmtDate } from "@/lib/format";
 
 const TYPES = [
   { key: "md", label: "Markdown" },
@@ -367,7 +368,7 @@ function AdminArticlesInner() {
                         ))}
                       </div>
                     </td>
-                    <td className="col-date">{new Date(a.updated_at).toLocaleDateString("zh-CN")}</td>
+                    <td className="col-date">{fmtDate(a.updated_at)}</td>
                     <td className="col-actions">
                       <Link href={`/${a.type}/${a.slug}`} target="_blank" className="admin-btn admin-btn-outline admin-btn-sm" title="查看">👁</Link>
                       <Link

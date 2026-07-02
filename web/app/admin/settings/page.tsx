@@ -1,12 +1,11 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { getCsrf, getSettings, updateSettings, listThemes, apiUrl, apiFetch } from "@/lib/api";
-import type { Theme } from "@/lib/types";
+import { getCsrf, getSettings, updateSettings, listThemes, listAdminFiles } from "@/lib/api";
+import type { Theme, SiteSettings, AdminFile } from "@/lib/types";
 import { useToast, useBeforeUnload } from "@/lib/admin-feedback";
 import { AdminModal } from "@/components/admin/AdminModal";
 
-// Chinese translations for section names and field keys
 const SECTION_LABELS: Record<string, string> = {
   site: "站点信息",
   appearance: "外观设置",
@@ -35,7 +34,6 @@ const FIELD_LABELS: Record<string, string> = {
 
 const SECTION_ORDER = ["site", "appearance", "features"];
 
-// Fields that should use special input types
 const COLOR_FIELDS = ["primary_color"];
 const SELECT_FIELDS: Record<string, { value: string; label: string }[]> = {
   theme: [
@@ -51,13 +49,12 @@ const SELECT_FIELDS: Record<string, { value: string; label: string }[]> = {
     { value: "Asia/Shanghai", label: "Asia/Shanghai" },
     { value: "UTC", label: "UTC" },
   ],
-  // style_theme is populated dynamically from /api/themes — see useEffect below.
 };
 
 export default function AdminSettings() {
   const [csrf, setCsrf] = useState("");
-  const [settings, setSettings] = useState<Record<string, any> | null>(null);
-  const initialSettingsRef = useRef<Record<string, any> | null>(null);
+  const [settings, setSettings] = useState<SiteSettings | null>(null);
+  const initialSettingsRef = useRef<SiteSettings | null>(null);
   const [availableThemes, setAvailableThemes] = useState<Theme[]>([]);
   const toast = useToast();
   const [loading, setLoading] = useState(true);
@@ -66,10 +63,9 @@ export default function AdminSettings() {
     && settings !== null
     && JSON.stringify(settings) !== JSON.stringify(initialSettingsRef.current);
 
-  // File picker state
   const [filePickerOpen, setFilePickerOpen] = useState(false);
   const [filePickerTarget, setFilePickerTarget] = useState<string>("");
-  const [uploadedFiles, setUploadedFiles] = useState<import("@/lib/types").AdminFile[]>([]);
+  const [uploadedFiles, setUploadedFiles] = useState<AdminFile[]>([]);
 
   useEffect(() => {
     getCsrf().then((r) => {
@@ -79,20 +75,10 @@ export default function AdminSettings() {
         initialSettingsRef.current = s;
         setLoading(false);
       }).catch(() => setLoading(false));
-      // Load uploaded files for file picker
-      apiFetch(apiUrl("/api/admin/files"), { headers: { "X-CSRF-Token": r.csrf_token } })
-        .then(res => res.json())
-        .then(setUploadedFiles)
-        .catch(() => {});
+      listAdminFiles(r.csrf_token).then(setUploadedFiles).catch(() => {});
     });
-    // Load themes for the style_theme dropdown. /api/themes is public and
-    // changes only when the admin drops a new directory under data/themes/,
-    // so a one-shot read on mount is fine.
     listThemes()
       .then((themes) => {
-        // Only themes with CSS can be selected — a theme directory without
-        // a static/theme.css would render as 404 in the layout, which is
-        // confusing for the admin.
         setAvailableThemes(themes.filter((t) => t.has_css));
       })
       .catch(() => setAvailableThemes([]));
@@ -100,15 +86,18 @@ export default function AdminSettings() {
 
   useBeforeUnload(isDirty && !saving);
 
+  const refreshFiles = async (token: string) => {
+    try {
+      const files = await listAdminFiles(token);
+      setUploadedFiles(files);
+    } catch {}
+  };
+
   const openFilePicker = (section: string, key: string) => {
     setFilePickerTarget(`${section}.${key}`);
     setFilePickerOpen(true);
-    // Refresh file list
     if (csrf) {
-      apiFetch(apiUrl("/api/admin/files"), { headers: { "X-CSRF-Token": csrf } })
-        .then(res => res.json())
-        .then(setUploadedFiles)
-        .catch(() => {});
+      refreshFiles(csrf);
     }
   };
 
@@ -118,7 +107,7 @@ export default function AdminSettings() {
     const path = `/uploads/${filename}`;
     setSettings({
       ...settings,
-      [section]: { ...settings[section], [key]: path },
+      [section]: { ...(settings as any)[section], [key]: path },
     });
     setFilePickerOpen(false);
   };
@@ -127,7 +116,7 @@ export default function AdminSettings() {
     if (!settings) return;
     setSettings({
       ...settings,
-      [section]: { ...settings[section], [key]: value },
+      [section]: { ...(settings as any)[section], [key]: value },
     });
   };
 
@@ -140,7 +129,7 @@ export default function AdminSettings() {
     }
     setSettings({
       ...settings,
-      [section]: { ...settings[section], [key]: converted },
+      [section]: { ...(settings as any)[section], [key]: converted },
     });
   };
 
@@ -164,7 +153,6 @@ export default function AdminSettings() {
   const renderField = (section: string, key: string, value: any) => {
     const label = FIELD_LABELS[key] || key;
 
-    // Color picker
     if (COLOR_FIELDS.includes(key)) {
       return (
         <label key={key} className="admin-setting-field">
@@ -186,7 +174,6 @@ export default function AdminSettings() {
       );
     }
 
-    // Select dropdown
     if (SELECT_FIELDS[key]) {
       return (
         <label key={key} className="admin-setting-field">
@@ -203,7 +190,6 @@ export default function AdminSettings() {
       );
     }
 
-    // Dynamic select for style_theme — options come from GET /api/themes.
     if (key === "style_theme") {
       return (
         <label key={key} className="admin-setting-field">
@@ -227,7 +213,6 @@ export default function AdminSettings() {
       );
     }
 
-    // File path fields
     if (key === "logo_path" || key === "favicon_path") {
       return (
         <label key={key} className="admin-setting-field">
@@ -256,7 +241,6 @@ export default function AdminSettings() {
       );
     }
 
-    // Boolean toggle
     if (typeof value === "boolean") {
       return (
         <label key={key} className="admin-setting-field">
@@ -270,7 +254,6 @@ export default function AdminSettings() {
       );
     }
 
-    // Default: text input
     return (
       <label key={key} className="admin-setting-field">
         <span className="admin-setting-key">{label}</span>
@@ -293,7 +276,7 @@ export default function AdminSettings() {
       </div>
 
       {SECTION_ORDER.map((section) => {
-        const fields = settings[section];
+        const fields = (settings as any)[section];
         if (!fields) return null;
         return (
           <section key={section} className="admin-card">
@@ -317,7 +300,6 @@ export default function AdminSettings() {
         💾 保存设置
       </button>
 
-      {/* File Picker Modal */}
       <AdminModal
         open={filePickerOpen}
         onClose={() => setFilePickerOpen(false)}

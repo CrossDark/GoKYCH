@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"golang.org/x/crypto/bcrypt"
 )
@@ -51,9 +52,9 @@ func runMigrations(db *sql.DB) error {
 		// settings.yml `social` section so each user owns their own contact
 		// info. Each column is NULL-tolerant; an empty profile renders no
 		// social links at all.
-		{"users", "social_email",  "ALTER TABLE users ADD COLUMN social_email  VARCHAR(255) DEFAULT NULL AFTER bio"},
+		{"users", "social_email", "ALTER TABLE users ADD COLUMN social_email  VARCHAR(255) DEFAULT NULL AFTER bio"},
 		{"users", "social_github", "ALTER TABLE users ADD COLUMN social_github VARCHAR(255) DEFAULT NULL AFTER social_email"},
-		{"users", "social_qq",     "ALTER TABLE users ADD COLUMN social_qq     VARCHAR(255) DEFAULT NULL AFTER social_github"},
+		{"users", "social_qq", "ALTER TABLE users ADD COLUMN social_qq     VARCHAR(255) DEFAULT NULL AFTER social_github"},
 		// backup_eligible: the go-webauthn lib compares the stored credential's
 		// Flags.BackupEligible against the assertion's authenticator-data flag
 		// on every login ("Backup Eligible flag inconsistency detected during
@@ -98,28 +99,18 @@ func runMigrations(db *sql.DB) error {
 	addIndexes := []string{
 		"ALTER TABLE comments ADD INDEX idx_comment_user (user_id)",
 		"ALTER TABLE ratings ADD INDEX idx_rating_user (user_id)",
+		"ALTER TABLE articles ADD FULLTEXT INDEX ft_title_content (title, content)",
 	}
 	for _, s := range addIndexes {
 		if _, err := db.Exec(s); err != nil {
 			// 1061 = ER_DUP_KEYNAME. Tolerate it; log anything else.
 			msg := err.Error()
-			if !contains(msg, "Duplicate key name") && !contains(msg, "1061") {
+			if !strings.Contains(msg, "Duplicate key name") && !strings.Contains(msg, "1061") {
 				slog.Warn("index add failed", "stmt", s, "err", err)
 			}
 		}
 	}
 	return nil
-}
-
-// contains is a tiny substring helper to avoid dragging in strings just
-// for the index-migration log filter.
-func contains(s, sub string) bool {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
-	}
-	return false
 }
 
 // SeedAdmin inserts the default admin user if the users table is empty.

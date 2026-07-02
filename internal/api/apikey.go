@@ -11,20 +11,16 @@ import (
 	"gokych/internal/auth/apikey"
 )
 
-// apiKeyTTL is how long newly created keys live. 0 = never expire.
-// Owners can always delete a key earlier; the default is "indefinite"
-// so a script running for a year doesn't get cut off, but admins are
-// encouraged to rotate.
 const apiKeyTTL = 0 * time.Second
 
-// GET /api/admin/api-keys — list keys owned by the caller.
 func (s *Server) listAPIKeys(c *gin.Context) {
 	u := CurrentUserFromContext(c)
 	if u == nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "请先登录。"})
 		return
 	}
-	keys, err := apikey.List(s.DB, u.ID)
+	ctx := c.Request.Context()
+	keys, err := apikey.ListCtx(ctx, s.DB, u.ID)
 	if err != nil {
 		slog.Error("listAPIKeys", "user_id", u.ID, "err", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载 API Key 失败。"})
@@ -38,14 +34,9 @@ func (s *Server) listAPIKeys(c *gin.Context) {
 
 type createAPIKeyInput struct {
 	Name string `json:"name"`
-	// TTL days; 0 = never expire. Exposed for forward-compatibility; the
-	// current default is 0 (no expiry).
 	TTLDays int `json:"ttl_days"`
 }
 
-// POST /api/admin/api-keys — create a new key. The plaintext is returned
-// in plaintext_key on this single response — the admin must copy it then;
-// we never store it.
 func (s *Server) createAPIKey(c *gin.Context) {
 	u := CurrentUserFromContext(c)
 	if u == nil {
@@ -61,7 +52,8 @@ func (s *Server) createAPIKey(c *gin.Context) {
 	if in.TTLDays > 0 {
 		ttl = time.Duration(in.TTLDays) * 24 * time.Hour
 	}
-	key, plaintext, err := apikey.Create(s.DB, u.ID, in.Name, ttl)
+	ctx := c.Request.Context()
+	key, plaintext, err := apikey.CreateCtx(ctx, s.DB, u.ID, in.Name, ttl)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -78,7 +70,6 @@ func (s *Server) createAPIKey(c *gin.Context) {
 	})
 }
 
-// DELETE /api/admin/api-keys/:id — revoke one of the caller's keys.
 func (s *Server) deleteAPIKey(c *gin.Context) {
 	u := CurrentUserFromContext(c)
 	if u == nil {
@@ -90,7 +81,8 @@ func (s *Server) deleteAPIKey(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的 ID。"})
 		return
 	}
-	ok, err := apikey.Delete(s.DB, u.ID, id)
+	ctx := c.Request.Context()
+	ok, err := apikey.DeleteCtx(ctx, s.DB, u.ID, id)
 	if err != nil {
 		slog.Error("deleteAPIKey", "user_id", u.ID, "id", id, "err", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "删除失败。"})

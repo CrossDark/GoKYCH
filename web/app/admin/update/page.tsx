@@ -1,153 +1,16 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef, type ReactNode } from "react";
-import { getCsrf, apiUrl, apiFetch } from "@/lib/api";
+import { useState, useEffect, useCallback, useRef } from "react";
+import { getCsrf, getUpdateStatus, checkUpdate, applyUpdate } from "@/lib/api";
+import type { UpdateCheckInfo, UpdateStatus } from "@/lib/types";
 import { useToast } from "@/lib/admin-feedback";
-
-interface UpdateCheckInfo {
-  current_version: string;
-  latest_version: string;
-  update_available: boolean;
-  platform: string;
-  os: string;
-  arch: string;
-  binary_path: string;
-  can_write: boolean;
-  can_write_error?: string;
-  write_err_category?: "erofs" | "eacces" | "eperm" | "other" | string;
-  process_user?: string;
-  dir_permissions?: string;
-  in_container?: boolean;
-  mount_options?: string;
-  published_at?: string;
-  release_url?: string;
-  release_notes?: string;
-  download_size?: number;
-  error?: string;
-}
-
-interface ApplyResult {
-  success: boolean;
-  message: string;
-}
-
-interface UpdateStatus {
-  status: "idle" | "downloading" | "verifying" | "replacing" | "restarting" | "done" | "error";
-  version?: string;
-  message: string;
-  error?: string;
-  backup?: string;
-  progress: number;
-  total: number;
-  elapsed_sec: number;
-}
+import { fmtDateTime } from "@/lib/format";
+import { UpdateWriteErrorPanel } from "@/components/admin/UpdateWriteErrorPanel";
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return bytes + " B";
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
   return (bytes / (1024 * 1024)).toFixed(1) + " MB";
-}
-
-function WriteErrorPanel({ info }: { info: UpdateCheckInfo }) {
-  const cat = info.write_err_category || "other";
-  const dir = info.binary_path ? info.binary_path.substring(0, info.binary_path.lastIndexOf("/")) : "";
-  const binName = info.binary_path ? info.binary_path.substring(info.binary_path.lastIndexOf("/") + 1) : "gokych";
-
-  let title = "写入失败";
-  let diagnosis: React.ReactNode = null;
-  let solutions: React.ReactNode[] = [];
-
-  if (cat === "erofs") {
-    title = "🔒 只读文件系统（read-only file system）";
-    diagnosis = (
-      <>
-        <p>文件权限 <code>{info.dir_permissions || "0777"}</code> 没有问题——<strong>chmod / chown 无法解决这个问题</strong>。
-        写入失败是因为该目录所在的文件系统被<strong>挂载为只读</strong>，操作系统从内核层面拒绝了所有写操作。</p>
-        {info.mount_options && info.mount_options.includes("ro") && (
-          <p>检测到挂载选项包含 <code>ro</code>（read-only）：<code>{info.mount_options}</code></p>
-        )}
-      </>
-    );
-    if (info.in_container) {
-      solutions = [
-        <>这是<strong>容器环境</strong>：二进制在镜像层中本身就是只读的。自更新功能不适用于容器部署——请通过重建/拉取新镜像来更新，或将二进制放在可写 volume 挂载路径下。</>,
-      ];
-    } else {
-      solutions = [
-        <>
-          <strong>检查 systemd 服务配置</strong>（最常见原因）：运行 <code style={{background:"#fee2e2",padding:"0.1rem 0.3rem",borderRadius:3}}>systemctl cat {binName}</code>，查看是否有 <code>ProtectSystem=strict</code>、<code>ProtectSystem=full</code>、<code>ReadOnlyPaths=-/opt</code>、<code>ReadOnlyPaths={dir}</code> 等指令。这些会将 <code>/opt</code> 以只读方式挂载到服务命名空间中。修复方法：在服务文件中添加 <code>ReadWritePaths={dir}</code> 然后 <code>systemctl daemon-reload && systemctl restart {binName}</code>。
-        </>,
-        <>
-          <strong>检查 /etc/fstab</strong>：运行 <code style={{background:"#fee2e2",padding:"0.1rem 0.3rem",borderRadius:3}}>mount | grep '{dir}'</code> 或 <code>findmnt {dir}</code> 查看挂载选项是否包含 <code>ro</code>。
-        </>,
-        <>
-          <strong>检查内核日志</strong>：运行 <code style={{background:"#fee2e2",padding:"0.1rem 0.3rem",borderRadius:3}}>dmesg | tail -30</code>，如果看到 "remounted read-only" 或 EXT4/XFS error，说明磁盘有 I/O 错误导致内核自动保护，先修复磁盘问题。
-        </>,
-      ];
-    }
-  } else if (cat === "eacces") {
-    title = "🚫 权限不足（permission denied）";
-    diagnosis = (
-      <p>进程用户 <code>{info.process_user}</code> 对目录 <code>{dir}</code>（权限 <code>{info.dir_permissions}</code>）没有写入权限。</p>
-    );
-    solutions = [
-      <>修改目录权限：<code style={{background:"#fee2e2",padding:"0.1rem 0.3rem",borderRadius:3}}>chmod 775 {dir}</code></>,
-      <>修改目录所有者：<code style={{background:"#fee2e2",padding:"0.1rem 0.3rem",borderRadius:3}}>chown {info.process_user || "$USER"} {dir}</code></>,
-      <>如使用 systemd：确保服务 <code>User=</code> 与目录所有者一致。</>,
-    ];
-  } else if (cat === "eperm") {
-    title = "⛔ 操作被拒绝（operation not permitted）";
-    diagnosis = (
-      <p>操作系统安全模块拒绝了写入操作，这通常不是普通文件权限问题。</p>
-    );
-    solutions = [
-      <>检查文件不可变标志：<code style={{background:"#fee2e2",padding:"0.1rem 0.3rem",borderRadius:3}}>lsattr {dir}/{binName}</code>，如果有 <code>i</code> 标志（immutable），用 <code>chattr -i {dir}/{binName}</code> 解除。</>,
-      <>检查 SELinux/AppArmor 状态：<code style={{background:"#fee2e2",padding:"0.1rem 0.3rem",borderRadius:3}}>getenforce</code> 或 <code>aa-status</code>。</>,
-      <>macOS 上检查 SIP（系统完整性保护）：二进制路径如果在受 SIP 保护的目录（如 <code>/System</code>、<code>/usr</code>）下，即使是 root 也无法写入。</>,
-    ];
-  } else {
-    diagnosis = <p>错误信息：<code>{info.can_write_error}</code></p>;
-    solutions = [
-      <>检查磁盘空间是否充足（<code>df -h {dir}</code>）。</>,
-      <>检查目录是否存在且可访问（<code>ls -la {dir}</code>）。</>,
-    ];
-  }
-
-  return (
-    <div style={{
-      marginTop: "0.5rem",
-      padding: "0.65rem 0.85rem",
-      background: "#fef2f2",
-      border: "1px solid #fecaca",
-      borderRadius: 6,
-      fontSize: "0.82rem",
-      color: "#991b1b",
-      lineHeight: 1.7,
-    }}>
-      <div style={{ fontWeight: 700, fontSize: "0.85rem", marginBottom: "0.35rem" }}>{title}</div>
-      {diagnosis}
-      {info.can_write_error && cat !== "other" && (
-        <div style={{ fontSize: "0.78rem", color: "#7f1d1d", marginTop: "0.25rem", fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }}>
-          系统错误: {info.can_write_error}
-        </div>
-      )}
-      {solutions.length > 0 && (
-        <div style={{ marginTop: "0.5rem" }}>
-          <div style={{ fontWeight: 600, marginBottom: "0.25rem", color: "#7f1d1d" }}>🔧 解决方法：</div>
-          <ul style={{ margin: 0, paddingLeft: "1.2rem" }}>
-            {solutions.map((s, i) => <li key={i} style={{ margin: "0.25rem 0" }}>{s}</li>)}
-          </ul>
-        </div>
-      )}
-      {(info.process_user || info.dir_permissions) && (
-        <div style={{ marginTop: "0.5rem", fontSize: "0.78rem", color: "#7f1d1d", borderTop: "1px solid #fecaca", paddingTop: "0.4rem" }}>
-          {info.process_user && <>进程用户: <code>{info.process_user}</code>{"　"}</>}
-          {info.dir_permissions && <>目录权限: <code>{info.dir_permissions}</code>{"　"}</>}
-          {info.mount_options && <>挂载选项: <code>{info.mount_options}</code></>}
-        </div>
-      )}
-    </div>
-  );
 }
 
 function ReleaseNotesHtml({ markdown }: { markdown: string }) {
@@ -217,7 +80,6 @@ function ReleaseNotesHtml({ markdown }: { markdown: string }) {
   );
 }
 
-// ProgressBar renders a download/processing indicator.
 function ProgressBar({ status }: { status: UpdateStatus }) {
   const isDownload = status.status === "downloading" && status.total > 0;
   const pct = isDownload ? Math.min(100, Math.round((status.progress / status.total) * 100)) : 0;
@@ -327,29 +189,22 @@ export default function AdminUpdate() {
 
   const pollStatus = useCallback(async () => {
     try {
-      const res = await apiFetch(apiUrl("/api/admin/update/status"));
-      if (res.ok) {
-        const data: UpdateStatus = await res.json();
-        setUpdStatus(data);
+      const data = await getUpdateStatus();
+      setUpdStatus(data);
 
-        // Terminal states: stop polling
-        if (data.status === "done") {
-          setApplying(false);
-          toast.success(data.message);
-          // Wait for restart, then reload
-          setTimeout(() => window.location.reload(), 5000);
-          return;
-        }
-        if (data.status === "error") {
-          setApplying(false);
-          toast.error(data.error || "更新失败");
-          return;
-        }
+      if (data.status === "done") {
+        setApplying(false);
+        toast.success(data.message);
+        setTimeout(() => window.location.reload(), 5000);
+        return;
+      }
+      if (data.status === "error") {
+        setApplying(false);
+        toast.error(data.error || "更新失败");
+        return;
       }
     } catch {
-      // ignore polling errors
     }
-    // Continue polling
     pollTimerRef.current = setTimeout(pollStatus, 1000);
   }, [toast]);
 
@@ -361,17 +216,11 @@ export default function AdminUpdate() {
   const check = useCallback(async () => {
     setChecking(true);
     try {
-      const res = await apiFetch(apiUrl("/api/admin/update/check"));
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || `HTTP ${res.status}`);
-      }
-      const data: UpdateCheckInfo = await res.json();
+      const data = await checkUpdate();
       setInfo(data);
       if (data.error) {
         toast.error("检查完成但有警告: " + data.error);
       } else if (data.update_available) {
-        // found new version, no toast needed (UI shows it)
       } else {
         toast.success(`当前版本 ${data.current_version} 已是最新`);
       }
@@ -382,17 +231,13 @@ export default function AdminUpdate() {
     }
   }, [toast]);
 
-  // Auto-check on mount
   useEffect(() => {
     if (csrf) check();
   }, [csrf, check]);
 
-  // Check for in-progress update on mount
   useEffect(() => {
     if (!csrf) return;
-    apiFetch(apiUrl("/api/admin/update/status")).then(async (res) => {
-      if (!res.ok) return;
-      const data: UpdateStatus = await res.json();
+    getUpdateStatus().then((data) => {
       if (data.status !== "idle" && data.status !== "done" && data.status !== "error") {
         setApplying(true);
         setUpdStatus(data);
@@ -403,7 +248,7 @@ export default function AdminUpdate() {
     }).catch(() => {});
   }, [csrf, pollStatus]);
 
-  const apply = useCallback(async () => {
+  const handleApply = useCallback(async () => {
     if (!info?.update_available) return;
     if (!info.can_write) {
       toast.error("二进制目录不可写，请检查进程权限");
@@ -414,19 +259,10 @@ export default function AdminUpdate() {
     }
     setApplying(true);
     try {
-      const res = await apiFetch(apiUrl("/api/admin/update/apply"), {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-CSRF-Token": csrf,
-        },
-        body: JSON.stringify({}),
-      });
-      const data: ApplyResult = await res.json();
-      if (!res.ok || !data.success) {
-        throw new Error((data as any).error || data.message || `HTTP ${res.status}`);
+      const data = await applyUpdate(csrf);
+      if (!data.success) {
+        throw new Error(data.error || data.message || "更新失败");
       }
-      // Start polling for progress
       setUpdStatus({
         status: "downloading",
         message: data.message,
@@ -452,7 +288,6 @@ export default function AdminUpdate() {
 
       <div className="admin-card" style={{ maxWidth: 720 }}>
         <div className="admin-card-body" style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
-          {/* Status panel */}
           <div style={{
             display: "grid",
             gridTemplateColumns: "120px 1fr",
@@ -534,14 +369,14 @@ export default function AdminUpdate() {
                 }}>容器环境</span>
               )}
               {info && !info.can_write && (
-                <WriteErrorPanel info={info} />
+                <UpdateWriteErrorPanel info={info} />
               )}
             </div>
 
             {info?.published_at && (
               <>
                 <div style={{ color: "var(--text-muted)" }}>发布时间</div>
-                <div>{new Date(info.published_at).toLocaleString("zh-CN")}</div>
+                <div>{fmtDateTime(info.published_at)}</div>
               </>
             )}
 
@@ -553,7 +388,6 @@ export default function AdminUpdate() {
             ) : null}
           </div>
 
-          {/* Release notes */}
           {info?.release_notes && info.update_available && !isInProgress && (
             <div>
               <div style={{ fontWeight: 600, marginBottom: "0.4rem", fontSize: "0.9rem" }}>
@@ -569,12 +403,10 @@ export default function AdminUpdate() {
             </div>
           )}
 
-          {/* Progress / status panel during update */}
           {updStatus && (updStatus.status !== "idle" || applying) && (
             <ProgressBar status={updStatus} />
           )}
 
-          {/* Action buttons */}
           <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
             <button
               className="btn"
@@ -585,7 +417,7 @@ export default function AdminUpdate() {
             </button>
             <button
               className="btn btn-primary"
-              onClick={apply}
+              onClick={handleApply}
               disabled={!info?.update_available || checking || applying || !info?.can_write}
               title={!info?.can_write ? "二进制目录不可写" : ""}
             >

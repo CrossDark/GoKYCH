@@ -5434,3 +5434,74 @@ body.admin-modal-open { overflow: hidden; }
 .release-notes-md input[type="checkbox"] { margin-right: 0.3rem; }
 [data-theme="dark"] .release-notes-md pre { background: rgba(255,255,255,0.06); }
 
+/* ── Error chip (inline code in error diagnostics) ── */
+.err-chip {
+    background: #fee2e2;
+    padding: 0.1rem 0.3rem;
+    border-radius: 3px;
+}
+[data-theme="dark"] .err-chip {
+    background: rgba(239, 68, 68, 0.2);
+    color: #fca5a5;
+}
+
+/* ── Write Error Panel (admin update page) ── */
+.write-error-panel {
+    margin-top: 0.5rem;
+    padding: 0.65rem 0.85rem;
+    background: #fef2f2;
+    border: 1px solid #fecaca;
+    border-radius: 6px;
+    font-size: 0.82rem;
+    color: #991b1b;
+    line-height: 1.7;
+}
+[data-theme="dark"] .write-error-panel {
+    background: rgba(239, 68, 68, 0.08);
+    border-color: rgba(239, 68, 68, 0.2);
+    color: #fca5a5;
+}
+.write-error-title {
+    font-weight: 700;
+    font-size: 0.85rem;
+    margin-bottom: 0.35rem;
+}
+.write-error-sysmsg {
+    font-size: 0.78rem;
+    color: #7f1d1d;
+    margin-top: 0.25rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+[data-theme="dark"] .write-error-sysmsg {
+    color: #f87171;
+}
+.write-error-solutions {
+    margin-top: 0.5rem;
+}
+.write-error-solutions-title {
+    font-weight: 600;
+    margin-bottom: 0.25rem;
+    color: #7f1d1d;
+}
+[data-theme="dark"] .write-error-solutions-title {
+    color: #f87171;
+}
+.write-error-list {
+    margin: 0;
+    padding-left: 1.2rem;
+}
+.write-error-list li {
+    margin: 0.25rem 0;
+}
+.write-error-meta {
+    margin-top: 0.5rem;
+    font-size: 0.78rem;
+    color: #7f1d1d;
+    border-top: 1px solid #fecaca;
+    padding-top: 0.4rem;
+}
+[data-theme="dark"] .write-error-meta {
+    color: #f87171;
+    border-top-color: rgba(239, 68, 68, 0.2);
+}
+

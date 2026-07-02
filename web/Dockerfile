@@ -15,7 +15,14 @@ COPY . .
 
 # Standalone output drops node_modules from the runtime image (~95% smaller)
 # and bundles only the dependencies Next.js actually uses. Requires the
-# matching `output: "standalone"` setting in next.config.js.
+# matching `output: "standalone"` setting in next.config.ts.
+#
+# STANDALONE=1 opts into `output: "standalone"` in next.config.ts AND bypasses
+# the production guard that otherwise requires NEXT_PUBLIC_API_BASE_URL (the
+# docker-compose path talks to the backend over the docker network via
+# API_BASE_URL=backend:8000, so the public env is intentionally unset).
+ARG STANDALONE=1
+ENV STANDALONE=${STANDALONE}
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 

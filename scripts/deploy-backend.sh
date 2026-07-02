@@ -64,11 +64,8 @@
 # ────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
-RED='\033[0;31m'; GRN='\033[0;32m'; YEL='\033[0;33m'; BLU='\033[0;34m'; NC='\033[0m'
-log()  { printf "${BLU}==>${NC} %s\n" "$*"; }
-ok()   { printf "${GRN}✓${NC} %s\n" "$*"; }
-warn() { printf "${YEL}!${NC} %s\n" "$*" >&2; }
-die()  { printf "${RED}✗${NC} %s\n" "$*" >&2; exit 1; }
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/lib.sh"
 
 # ── 解析参数 ──
 UPDATE_ONLY=0

@@ -173,7 +173,8 @@ func (s *Server) postLogin(c *gin.Context) {
 	}
 
 	// 5. Credential lookup.
-	uwp, err := user.GetWithPassword(s.DB, username)
+	ctx := c.Request.Context()
+	uwp, err := user.GetWithPasswordCtx(ctx, s.DB, username)
 	if err != nil && err != sql.ErrNoRows {
 		s.loginError(c, http.StatusInternalServerError, "服务器错误，请稍后重试。")
 		return
@@ -188,7 +189,7 @@ func (s *Server) postLogin(c *gin.Context) {
 	// disabled — passkey is the only way in. Owner is exempt so the
 	// bootstrap admin can never lock themselves out of the system.
 	if !user.IsOwner(uwp.Role) {
-		has, err := passkey.HasAny(s.DB, uwp.ID)
+		has, err := passkey.HasAnyCtx(ctx, s.DB, uwp.ID)
 		if err != nil {
 			slog.Error("postLogin: passkey check", "user_id", uwp.ID, "err", err)
 		} else if has {

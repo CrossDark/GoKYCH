@@ -15,6 +15,8 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+
+	coredb "gokych/internal/core/db"
 )
 
 // MaxUploadSize caps a single multipart upload at 10 MB. Anything larger is
@@ -135,6 +137,7 @@ func extFromMIME(m string) string {
 
 // POST /api/admin/files — multipart upload of a single file (form field: file).
 func (s *Server) uploadFile(c *gin.Context) {
+	ctx := c.Request.Context()
 	if err := c.Request.ParseMultipartForm(MaxUploadSize); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "文件过大或请求格式错误（上限 10MB）。"})
 		return
@@ -236,14 +239,14 @@ func (s *Server) uploadFile(c *gin.Context) {
 		uid := u.ID
 		uploadedBy = &uid
 	}
-	_, err = s.DB.Exec(
+	_, err = s.DB.ExecContext(ctx,
 		`INSERT INTO static_files (filename, original_name, file_path, file_size, mime_type, uploaded_by)
 		 VALUES (?, ?, ?, ?, ?, ?)`,
 		filename, fileHeader.Filename, filePath, fileHeader.Size, detected, uploadedBy)
 	if err != nil {
 		// Likely a UNIQUE-collision on filename (duplicate upload); surface the
 		// existing record instead of failing the request.
-		if isDuplicateEntry(err) {
+		if coredb.IsDuplicateEntry(err) {
 			c.JSON(http.StatusOK, gin.H{
 				"status":   "ok",
 				"filename": filename,
@@ -267,18 +270,19 @@ func (s *Server) uploadFile(c *gin.Context) {
 // table. DB delete first so we never have a dangling record pointing at a file
 // we still need to inspect; filesystem delete is best-effort and logs on error.
 func (s *Server) deleteFile(c *gin.Context) {
+	ctx := c.Request.Context()
 	id, err := strconv.Atoi(c.Param("id"))
 	if err != nil || id <= 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的文件 ID。"})
 		return
 	}
 	var filename, filePath string
-	err = s.DB.QueryRow(`SELECT filename, file_path FROM static_files WHERE id = ?`, id).Scan(&filename, &filePath)
+	err = s.DB.QueryRowContext(ctx, `SELECT filename, file_path FROM static_files WHERE id = ?`, id).Scan(&filename, &filePath)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "文件不存在。"})
 		return
 	}
-	if _, err := s.DB.Exec(`DELETE FROM static_files WHERE id = ?`, id); err != nil {
+	if _, err := s.DB.ExecContext(ctx, `DELETE FROM static_files WHERE id = ?`, id); err != nil {
 		slog.Error("deleteFile: db", "id", id, "err", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "删除文件记录失败。"})
 		return

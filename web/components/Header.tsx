@@ -1,12 +1,14 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import Link from "next/link";
 import { useTheme } from "next-themes";
 import type { User, SubsiteLink } from "@/lib/types";
 import { getMe, listLabels, getSite } from "@/lib/api";
 import type { TagWithCount, SiteConfig } from "@/lib/types";
 import { UserAvatar } from "@/components/admin/UserAvatar";
+
+const LABELS_CACHE_TTL = 5 * 60 * 1000;
 
 export function Header() {
   const [user, setUser] = useState<User | null>(null);
@@ -16,6 +18,7 @@ export function Header() {
   // Tag sidebar state
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [tags, setTags] = useState<TagWithCount[]>([]);
+  const tagsCacheRef = useRef<{ data: TagWithCount[]; timestamp: number } | null>(null);
 
   // Subsite links (admin-editable nav links, served from /api/site so we
   // don't double-fetch with the homepage).
@@ -28,25 +31,33 @@ export function Header() {
   const [logoFailed, setLogoFailed] = useState(false);
   useEffect(() => { setLogoFailed(false); }, [site?.logo_path]);
 
+  const fetchLabels = useCallback(() => {
+    const now = Date.now();
+    if (tagsCacheRef.current && now - tagsCacheRef.current.timestamp < LABELS_CACHE_TTL) {
+      setTags(tagsCacheRef.current.data);
+      return Promise.resolve();
+    }
+    return listLabels()
+      .then((data) => {
+        tagsCacheRef.current = { data, timestamp: now };
+        setTags(data);
+      })
+      .catch(() => {});
+  }, []);
+
   useEffect(() => {
     setMounted(true);
     getMe()
       .then((r) => setUser(r.user))
       .catch(() => {});
-    // Preload tags
-    listLabels()
-      .then(setTags)
-      .catch(() => {});
-    // Load subsite links (and other nav config) from /api/site — one
-    // round-trip covers title/theme/footer-ICP/subsite_links/logo for the
-    // whole header+layout.
+    fetchLabels();
     getSite()
       .then((d) => {
         setSubsiteLinks(d.subsite_links ?? []);
         setSite(d.site ?? null);
       })
       .catch(() => {});
-  }, []);
+  }, [fetchLabels]);
 
   const toggleTheme = () => {
     setTheme(theme === "dark" ? "light" : "dark");
@@ -54,12 +65,9 @@ export function Header() {
 
   const openSidebar = useCallback(() => {
     setSidebarOpen(true);
-    // Refresh tags
-    listLabels()
-      .then(setTags)
-      .catch(() => {});
+    fetchLabels();
     document.body.style.overflow = "hidden";
-  }, []);
+  }, [fetchLabels]);
 
   const closeSidebar = useCallback(() => {
     setSidebarOpen(false);

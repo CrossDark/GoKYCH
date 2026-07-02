@@ -1,9 +1,9 @@
 package content
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"regexp"
 	"strings"
@@ -12,9 +12,8 @@ import (
 	"gokych/internal/typst"
 )
 
-// ── PageLookup for anon pre-render ──────────────────────────────────
-
 type anonRenderLookup struct {
+	ctx         context.Context
 	db          *sql.DB
 	currentType string
 	currentSlug string
@@ -33,7 +32,7 @@ func (l *anonRenderLookup) IncludeBySlug(atype, slug string) *parsers.IncludedPa
 	if atype == l.currentType && slug == l.currentSlug {
 		return nil
 	}
-	a, err := GetArticle(l.db, atype, slug)
+	a, err := GetArticleCtx(l.ctx, l.db, atype, slug)
 	if err != nil {
 		return nil
 	}
@@ -57,10 +56,9 @@ func (l *anonRenderLookup) IncludeBySlug(atype, slug string) *parsers.IncludedPa
 func (l *anonRenderLookup) ListPages(string, int, string) []parsers.ListPageEntry { return nil }
 func (l *anonRenderLookup) RandomPage(string) *parsers.ListPageEntry              { return nil }
 
-// ── UserLookup for anon pre-render ──────────────────────────────────
-
 type anonUserLookup struct {
-	db *sql.DB
+	ctx context.Context
+	db  *sql.DB
 }
 
 func (l *anonUserLookup) UserByName(name string) *parsers.UserProfile {
@@ -78,7 +76,7 @@ func (l *anonUserLookup) UserByName(name string) *parsers.UserProfile {
 		role     sql.NullString
 		avatar   sql.NullString
 	)
-	err := l.db.QueryRow(
+	err := l.db.QueryRowContext(l.ctx,
 		`SELECT id, username, nickname, role, avatar FROM users
 		 WHERE LOWER(username) = LOWER(?) LIMIT 1`, name,
 	).Scan(&id, &username, &nickname, &role, &avatar)
@@ -94,9 +92,7 @@ func (l *anonUserLookup) UserByName(name string) *parsers.UserProfile {
 	}
 }
 
-// ── Public render-cache API ─────────────────────────────────────────
-
-func renderArticleAnon(db *sql.DB, a *Article) (html string, depIDs []int, err error) {
+func renderArticleAnonCtx(ctx context.Context, db *sql.DB, w *typst.Worker, a *Article) (html string, depIDs []int, err error) {
 	switch a.Type {
 	case "md", "bbcode", "html":
 		rendered := parsers.Render(parsers.ArticleType(a.Type), a.ID, a.Content)
@@ -104,27 +100,32 @@ func renderArticleAnon(db *sql.DB, a *Article) (html string, depIDs []int, err e
 
 	case "wikidot":
 		lookup := &anonRenderLookup{
+			ctx:         ctx,
 			db:          db,
 			currentType: a.Type,
 			currentSlug: a.Slug,
 			currentID:   a.ID,
 		}
-		userLookup := &anonUserLookup{db: db}
+		userLookup := &anonUserLookup{ctx: ctx, db: db}
 		vars := buildAnonVars(a)
-		ctx := &parsers.RenderContext{
+		renderCtx := &parsers.RenderContext{
 			PageLookup:  lookup,
 			UserLookup:  userLookup,
 			Vars:        vars,
 			ArticleType: a.Type,
+			Typst:       w,
 		}
-		rendered := parsers.RenderCtx(parsers.ArticleType(a.Type), a.ID, a.Content, ctx)
+		rendered := parsers.RenderCtx(parsers.ArticleType(a.Type), a.ID, a.Content, renderCtx)
 		return string(rendered), lookup.depIDs, nil
 
 	case "typst":
 		if !typst.Available() {
 			return parsers.PostProcessArticleHTML(`<p><em>Typst 编译器未安装。</em></p>`, "typst-content"), nil, nil
 		}
-		body, err := typst.CompileHTMLCached(a.ID, "")
+		if w == nil {
+			return parsers.PostProcessArticleHTML(`<p><em>本文档尚未编译完成,请稍后再试。</em></p>`, "typst-content"), nil, nil
+		}
+		body, err := w.CompileHTMLCached(a.ID, "")
 		if err != nil {
 			return "", nil, nil
 		}
@@ -133,6 +134,10 @@ func renderArticleAnon(db *sql.DB, a *Article) (html string, depIDs []int, err e
 	default:
 		return `<p>不支持的格式。</p>`, nil, nil
 	}
+}
+
+func renderArticleAnon(db *sql.DB, w *typst.Worker, a *Article) (html string, depIDs []int, err error) {
+	return renderArticleAnonCtx(context.TODO(), db, w, a)
 }
 
 func buildAnonVars(a *Article) map[string]string {
@@ -156,74 +161,65 @@ func buildAnonVars(a *Article) map[string]string {
 	return vars
 }
 
-func saveRenderedHTML(db *sql.DB, articleID int, html string, depIDs []int) error {
-	_, err := db.Exec(
+func saveRenderedHTMLCtx(ctx context.Context, db *sql.DB, articleID int, html string, depIDs []int) error {
+	_, err := db.ExecContext(ctx,
 		`UPDATE articles SET rendered_html = ? WHERE id = ?`,
 		html, articleID,
 	)
 	if err != nil {
 		return err
 	}
-	_, _ = db.Exec(`DELETE FROM article_deps WHERE article_id = ?`, articleID)
+	if _, derr := db.ExecContext(ctx, `DELETE FROM article_deps WHERE article_id = ?`, articleID); derr != nil {
+		slog.Warn("rendercache: clear article_deps failed", "article_id", articleID, "err", derr)
+	}
 	for _, did := range depIDs {
-		_, _ = db.Exec(
+		if _, ierr := db.ExecContext(ctx,
 			`INSERT IGNORE INTO article_deps (article_id, depends_on_id) VALUES (?, ?)`,
 			articleID, did,
-		)
+		); ierr != nil {
+			slog.Warn("rendercache: insert article_deps failed", "article_id", articleID, "dep_id", did, "err", ierr)
+		}
 	}
 	return nil
 }
 
-// invalidateCacheOne clears rendered_html for a single article and returns
-// IDs of articles that DIRECTLY depend on it (one level — BFS caller
-// InvalidateCacheCascading walks transitively).
-func invalidateCacheOne(db *sql.DB, articleID int) ([]int, error) {
-	_, err := db.Exec(`UPDATE articles SET rendered_html = NULL WHERE id = ?`, articleID)
+func saveRenderedHTML(db *sql.DB, articleID int, html string, depIDs []int) error {
+	return saveRenderedHTMLCtx(context.TODO(), db, articleID, html, depIDs)
+}
+
+func invalidateCacheOneCtx(ctx context.Context, db *sql.DB, articleID int) ([]int, error) {
+	_, err := db.ExecContext(ctx, `UPDATE articles SET rendered_html = NULL WHERE id = ?`, articleID)
 	if err != nil {
 		return nil, err
 	}
-	depSet := map[int]bool{}
-	rows, err := db.Query(
+	rows, err := db.QueryContext(ctx,
 		`SELECT article_id FROM article_deps WHERE depends_on_id = ?`, articleID,
 	)
-	if err == nil {
-		for rows.Next() {
-			var id int
-			if err := rows.Scan(&id); err == nil {
-				depSet[id] = true
-			}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var deps []int
+	for rows.Next() {
+		var id int
+		if err := rows.Scan(&id); err == nil {
+			deps = append(deps, id)
 		}
-		rows.Close()
 	}
-	rows2, err := db.Query(
-		`SELECT article_id FROM typst_cache WHERE dependencies LIKE ?`,
-		`%`+fmt.Sprintf("%d", articleID)+`%`,
-	)
-	if err == nil {
-		for rows2.Next() {
-			var id int
-			if err := rows2.Scan(&id); err == nil {
-				depSet[id] = true
-			}
-		}
-		rows2.Close()
-	}
-	deps := make([]int, 0, len(depSet))
-	for id := range depSet {
-		deps = append(deps, id)
-	}
-	return deps, nil
+	return deps, rows.Err()
 }
 
-// InvalidateCacheCascading BFS-clears rendered_html for the article
-// and all transitive dependents.
-func InvalidateCacheCascading(db *sql.DB, articleID int) []int {
+func invalidateCacheOne(db *sql.DB, articleID int) ([]int, error) {
+	return invalidateCacheOneCtx(context.TODO(), db, articleID)
+}
+
+func InvalidateCacheCascadingCtx(ctx context.Context, db *sql.DB, articleID int) []int {
 	visited := map[int]bool{articleID: true}
 	queue := []int{articleID}
 	for len(queue) > 0 {
 		cur := queue[0]
 		queue = queue[1:]
-		deps, err := invalidateCacheOne(db, cur)
+		deps, err := invalidateCacheOneCtx(ctx, db, cur)
 		if err != nil {
 			slog.Warn("rendercache: invalidate failed", "article_id", cur, "err", err)
 			continue
@@ -242,30 +238,40 @@ func InvalidateCacheCascading(db *sql.DB, articleID int) []int {
 	return result
 }
 
-// RenderAndSave renders the article for anon view and persists the result.
-func RenderAndSave(db *sql.DB, a *Article) error {
-	html, deps, err := renderArticleAnon(db, a)
+// Deprecated: Use InvalidateCacheCascadingCtx instead.
+func InvalidateCacheCascading(db *sql.DB, articleID int) []int {
+	return InvalidateCacheCascadingCtx(context.TODO(), db, articleID)
+}
+
+func RenderAndSaveCtx(ctx context.Context, db *sql.DB, w *typst.Worker, a *Article) error {
+	html, deps, err := renderArticleAnonCtx(ctx, db, w, a)
 	if err != nil {
 		return err
 	}
 	if a.Type == "typst" && html == "" {
 		return nil
 	}
-	return saveRenderedHTML(db, a.ID, html, deps)
+	return saveRenderedHTMLCtx(ctx, db, a.ID, html, deps)
 }
 
-// UpdateTypstHTML is called by the typst background worker after a
-// successful compilation, to sync the post-processed compiled HTML into
-// articles.rendered_html.
-func UpdateTypstHTML(db *sql.DB, articleID int, rawHTML string) error {
+// Deprecated: Use RenderAndSaveCtx instead.
+func RenderAndSave(db *sql.DB, w *typst.Worker, a *Article) error {
+	return RenderAndSaveCtx(context.TODO(), db, w, a)
+}
+
+func UpdateTypstHTMLCtx(ctx context.Context, db *sql.DB, articleID int, rawHTML string) error {
 	processed := parsers.PostProcessArticleHTML(rawHTML, "typst-content")
-	_, err := db.Exec(`UPDATE articles SET rendered_html = ? WHERE id = ?`, processed, articleID)
+	_, err := db.ExecContext(ctx, `UPDATE articles SET rendered_html = ? WHERE id = ?`, processed, articleID)
 	return err
 }
 
-// WarmCache backfills rendered_html for articles where it's still NULL.
-func WarmCache(db *sql.DB, batchSize int) int {
-	rows, err := db.Query(
+// Deprecated: Use UpdateTypstHTMLCtx instead.
+func UpdateTypstHTML(db *sql.DB, articleID int, rawHTML string) error {
+	return UpdateTypstHTMLCtx(context.TODO(), db, articleID, rawHTML)
+}
+
+func WarmCacheCtx(ctx context.Context, db *sql.DB, w *typst.Worker, batchSize int) int {
+	rows, err := db.QueryContext(ctx,
 		`SELECT id, type, slug FROM articles
 		 WHERE rendered_html IS NULL AND type != 'typst'
 		 ORDER BY updated_at DESC LIMIT ?`, batchSize,
@@ -274,8 +280,10 @@ func WarmCache(db *sql.DB, batchSize int) int {
 		slog.Error("rendercache: warm query failed", "err", err)
 		return 0
 	}
-	defer rows.Close()
-	type ref struct{ id int; atype, slug string }
+	type ref struct {
+		id          int
+		atype, slug string
+	}
 	var refs []ref
 	for rows.Next() {
 		var r ref
@@ -286,34 +294,33 @@ func WarmCache(db *sql.DB, batchSize int) int {
 	if err := rows.Err(); err != nil {
 		slog.Warn("rendercache: warm rows error", "err", err)
 	}
+	rows.Close()
 	count := 0
 	for _, r := range refs {
-		a, err := GetArticle(db, r.atype, r.slug)
+		a, err := GetArticleCtx(ctx, db, r.atype, r.slug)
 		if err != nil {
 			continue
 		}
-		if err := RenderAndSave(db, a); err != nil {
+		if err := RenderAndSaveCtx(ctx, db, w, a); err != nil {
 			slog.Warn("rendercache: render failed", "article_id", a.ID, "slug", a.Slug, "err", err)
 			continue
 		}
 		count++
 	}
-	rows.Close()
 
-	trows, terr := db.Query(
+	trows, terr := db.QueryContext(ctx,
 		`SELECT a.id, tc.html_content
 		 FROM articles a JOIN typst_cache tc ON tc.article_id = a.id
 		 WHERE a.rendered_html IS NULL AND a.type = 'typst'
 		 LIMIT ?`, batchSize,
 	)
 	if terr == nil {
-		defer trows.Close()
 		for trows.Next() {
 			var id int
 			var rawHTML string
 			if err := trows.Scan(&id, &rawHTML); err == nil && rawHTML != "" {
 				processed := parsers.PostProcessArticleHTML(rawHTML, "typst-content")
-				if _, err := db.Exec(`UPDATE articles SET rendered_html = ? WHERE id = ?`, processed, id); err == nil {
+				if _, err := db.ExecContext(ctx, `UPDATE articles SET rendered_html = ? WHERE id = ?`, processed, id); err == nil {
 					count++
 				}
 			}
@@ -327,7 +334,11 @@ func WarmCache(db *sql.DB, batchSize int) int {
 	return count
 }
 
-// DepsTableDDL returns the CREATE TABLE for article_deps.
+// Deprecated: Use WarmCacheCtx instead.
+func WarmCache(db *sql.DB, w *typst.Worker, batchSize int) int {
+	return WarmCacheCtx(context.TODO(), db, w, batchSize)
+}
+
 func DepsTableDDL() string {
 	return `CREATE TABLE IF NOT EXISTS article_deps (
 		article_id    INT NOT NULL,

@@ -24,6 +24,7 @@ import (
 // author-card endpoint. Settings read failures degrade gracefully to
 // defaults — a broken YAML shouldn't 500 the home page.
 func (s *Server) getSite(c *gin.Context) {
+	ctx := c.Request.Context()
 	cfg, err := settings.Load(s.DataDir)
 	if err != nil {
 		slog.Warn("getSite: settings.Load failed; serving defaults", "err", err)
@@ -36,7 +37,7 @@ func (s *Server) getSite(c *gin.Context) {
 		Description string `json:"description"`
 	}
 	subLinks := []subsiteLink{}
-	rows, err := s.DB.Query(`SELECT name, url, description FROM subsite_links ORDER BY sort_order`)
+	rows, err := s.DB.QueryContext(ctx, `SELECT name, url, description FROM subsite_links ORDER BY sort_order`)
 	if err != nil {
 		slog.Warn("getSite: subsite_links query failed", "err", err)
 	} else {
@@ -52,6 +53,7 @@ func (s *Server) getSite(c *gin.Context) {
 		}
 	}
 
+	c.Header("Cache-Control", "public, max-age=120, stale-while-revalidate=600")
 	c.JSON(http.StatusOK, gin.H{
 		"site":          cfg["site"],
 		"appearance":    cfg["appearance"],
@@ -74,6 +76,7 @@ func (s *Server) getSite(c *gin.Context) {
 // than a half-empty page that the frontend can't distinguish from a real
 // empty state.
 func (s *Server) getHome(c *gin.Context) {
+	ctx := c.Request.Context()
 	// Subsite links.
 	type subsiteLink struct {
 		Name        string `json:"name"`
@@ -81,7 +84,7 @@ func (s *Server) getHome(c *gin.Context) {
 		Description string `json:"description"`
 	}
 	subLinks := []subsiteLink{}
-	rows, err := s.DB.Query(`SELECT name, url, description FROM subsite_links ORDER BY sort_order`)
+	rows, err := s.DB.QueryContext(ctx, `SELECT name, url, description FROM subsite_links ORDER BY sort_order`)
 	if err != nil {
 		slog.Error("getHome: list subsite_links", "err", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载子站点链接失败。"})
@@ -108,7 +111,7 @@ func (s *Server) getHome(c *gin.Context) {
 		Title string `json:"title"`
 	}
 	featured := []featuredArticle{}
-	rows2, err := s.DB.Query(
+	rows2, err := s.DB.QueryContext(ctx,
 		`SELECT a.id, a.type, a.slug, a.title
 		 FROM featured_articles fa JOIN articles a ON fa.article_id = a.id
 		 ORDER BY fa.sort_order`)
@@ -131,7 +134,7 @@ func (s *Server) getHome(c *gin.Context) {
 	}
 
 	// Recent articles.
-	recent, err := content.ListRecentArticles(s.DB, 10)
+	recent, err := content.ListRecentArticlesCtx(ctx, s.DB, 10)
 	if err != nil {
 		slog.Error("getHome: list recent articles", "err", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载最近文章失败。"})
@@ -148,7 +151,7 @@ func (s *Server) getHome(c *gin.Context) {
 		UpdatedAt   time.Time `json:"updated_at"`
 	}
 	notifs := []notification{}
-	rows3, err := s.DB.Query(
+	rows3, err := s.DB.QueryContext(ctx,
 		`SELECT id, title, content, is_important, updated_at
 		 FROM notifications WHERE is_active = 1 ORDER BY is_important DESC, updated_at DESC`)
 	if err != nil {
@@ -172,6 +175,7 @@ func (s *Server) getHome(c *gin.Context) {
 		return
 	}
 
+	c.Header("Cache-Control", "public, max-age=60, stale-while-revalidate=300")
 	c.JSON(http.StatusOK, gin.H{
 		"subsite_links":     subLinks,
 		"featured_articles": featured,
@@ -182,6 +186,7 @@ func (s *Server) getHome(c *gin.Context) {
 
 // GET /api/notifications
 func (s *Server) listNotifications(c *gin.Context) {
+	ctx := c.Request.Context()
 	type notif struct {
 		ID          int       `json:"id"`
 		Title       string    `json:"title"`
@@ -191,7 +196,7 @@ func (s *Server) listNotifications(c *gin.Context) {
 		UpdatedAt   time.Time `json:"updated_at"`
 	}
 	notifs := []notif{}
-	rows, err := s.DB.Query(
+	rows, err := s.DB.QueryContext(ctx,
 		`SELECT id, title, content, is_important, updated_at
 		 FROM notifications WHERE is_active = 1 ORDER BY updated_at DESC`)
 	if err != nil {

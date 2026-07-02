@@ -6,6 +6,7 @@ import type { User } from "@/lib/types";
 import { useToast, useBeforeUnload } from "@/lib/admin-feedback";
 import { AdminConfirm } from "@/components/admin/AdminConfirm";
 import { UserAvatar } from "@/components/admin/UserAvatar";
+import { fmtDate } from "@/lib/format";
 
 const ROLE_BADGE: Record<string, string> = {
   owner: "danger",
@@ -253,7 +254,7 @@ export default function AdminUsers() {
                         {ROLE_LABEL[u.role] || u.role}
                       </span>
                     </td>
-                    <td className="col-date">{new Date(u.created_at).toLocaleDateString("zh-CN")}</td>
+                    <td className="col-date">{fmtDate(u.created_at)}</td>
                     <td className="col-actions">
                       <button
                         className="admin-btn admin-btn-danger admin-btn-sm"

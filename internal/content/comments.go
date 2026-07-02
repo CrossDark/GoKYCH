@@ -1,34 +1,19 @@
 package content
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"time"
 )
 
-// Max comment content length. Mirrors the schema's VARCHAR(500); enforced here
-// as a defense-in-depth backstop in case the API layer ever loses its input
-// validation.
 const (
 	maxCommentContentLen = 500
 	maxLineCommentLen    = 20
 )
 
-// ErrCommentTooLong is returned by AddComment / AddLineComment when the input
-// exceeds the column width. Callers (the API layer) translate this into 400.
 var ErrCommentTooLong = errors.New("评论内容过长")
 
-// Comment represents a full-text or line comment.
-//
-// ContentHTML is populated by the API layer (markdown rendered with the
-// safe goldmark instance) so the frontend can inject it directly without
-// re-parsing. It's not filled in by the data-layer helpers — callers that
-// return comments over the wire must run them through the renderer.
-//
-// AuthorNickname and AuthorAvatar are LEFT JOINed from the users table.
-// For anonymous comments (user_id IS NULL) these will be empty strings;
-// the frontend should fall back to AuthorName (display name entered at
-// comment time) and a default avatar.
 type Comment struct {
 	ID             int       `json:"id"`
 	ArticleID      int       `json:"article_id"`
@@ -42,9 +27,6 @@ type Comment struct {
 	CreatedAt      time.Time `json:"created_at"`
 }
 
-// commentSelect is the shared SELECT fragment that LEFT JOINs users to
-// pull nickname/avatar. Used by all comment queries to keep the column
-// list consistent.
 const commentSelect = `
 SELECT c.id, c.article_id, c.line_number,
        COALESCE(c.user_id, 0) AS uid,
@@ -55,9 +37,8 @@ SELECT c.id, c.article_id, c.line_number,
 FROM comments c
 LEFT JOIN users u ON u.id = c.user_id`
 
-// GetComments returns full-text comments (line_number IS NULL) for an article.
-func GetComments(db *sql.DB, articleID int) ([]Comment, error) {
-	rows, err := db.Query(
+func GetCommentsCtx(ctx context.Context, db *sql.DB, articleID int) ([]Comment, error) {
+	rows, err := db.QueryContext(ctx,
 		commentSelect+` WHERE c.article_id = ? AND c.line_number IS NULL ORDER BY c.created_at ASC`,
 		articleID)
 	if err != nil {
@@ -67,9 +48,13 @@ func GetComments(db *sql.DB, articleID int) ([]Comment, error) {
 	return scanComments(rows)
 }
 
-// GetLineComments returns line comments for an article, ordered by line then time.
-func GetLineComments(db *sql.DB, articleID int) ([]Comment, error) {
-	rows, err := db.Query(
+// Deprecated: Use GetCommentsCtx instead.
+func GetComments(db *sql.DB, articleID int) ([]Comment, error) {
+	return GetCommentsCtx(context.TODO(), db, articleID)
+}
+
+func GetLineCommentsCtx(ctx context.Context, db *sql.DB, articleID int) ([]Comment, error) {
+	rows, err := db.QueryContext(ctx,
 		commentSelect+` WHERE c.article_id = ? AND c.line_number IS NOT NULL ORDER BY c.line_number ASC, c.created_at ASC`,
 		articleID)
 	if err != nil {
@@ -79,9 +64,13 @@ func GetLineComments(db *sql.DB, articleID int) ([]Comment, error) {
 	return scanComments(rows)
 }
 
-// GetLineCommentCounts returns a map of line_number → count.
-func GetLineCommentCounts(db *sql.DB, articleID int) (map[int]int, error) {
-	rows, err := db.Query(
+// Deprecated: Use GetLineCommentsCtx instead.
+func GetLineComments(db *sql.DB, articleID int) ([]Comment, error) {
+	return GetLineCommentsCtx(context.TODO(), db, articleID)
+}
+
+func GetLineCommentCountsCtx(ctx context.Context, db *sql.DB, articleID int) (map[int]int, error) {
+	rows, err := db.QueryContext(ctx,
 		`SELECT line_number, COUNT(*) FROM comments
 		 WHERE article_id = ? AND line_number IS NOT NULL
 		 GROUP BY line_number`, articleID)
@@ -100,9 +89,13 @@ func GetLineCommentCounts(db *sql.DB, articleID int) (map[int]int, error) {
 	return out, rows.Err()
 }
 
-// GetLineCommentsByLine returns comments for a specific line.
-func GetLineCommentsByLine(db *sql.DB, articleID, lineNumber int) ([]Comment, error) {
-	rows, err := db.Query(
+// Deprecated: Use GetLineCommentCountsCtx instead.
+func GetLineCommentCounts(db *sql.DB, articleID int) (map[int]int, error) {
+	return GetLineCommentCountsCtx(context.TODO(), db, articleID)
+}
+
+func GetLineCommentsByLineCtx(ctx context.Context, db *sql.DB, articleID, lineNumber int) ([]Comment, error) {
+	rows, err := db.QueryContext(ctx,
 		commentSelect+` WHERE c.article_id = ? AND c.line_number = ? ORDER BY c.created_at ASC`,
 		articleID, lineNumber)
 	if err != nil {
@@ -112,47 +105,57 @@ func GetLineCommentsByLine(db *sql.DB, articleID, lineNumber int) ([]Comment, er
 	return scanComments(rows)
 }
 
-// AddComment inserts a full-text comment. userID is non-nil for logged-in
-// users; the API layer is expected to set authorName from the session in that
-// case (preventing impersonation of another user's display name).
-func AddComment(db *sql.DB, articleID int, userID *int, authorName, content string) (*Comment, error) {
+// Deprecated: Use GetLineCommentsByLineCtx instead.
+func GetLineCommentsByLine(db *sql.DB, articleID, lineNumber int) ([]Comment, error) {
+	return GetLineCommentsByLineCtx(context.TODO(), db, articleID, lineNumber)
+}
+
+func AddCommentCtx(ctx context.Context, db *sql.DB, articleID int, userID *int, authorName, content string) (*Comment, error) {
 	if authorName == "" {
 		authorName = "匿名"
 	}
 	if len([]rune(content)) > maxCommentContentLen {
 		return nil, ErrCommentTooLong
 	}
-	res, err := db.Exec(
+	res, err := db.ExecContext(ctx,
 		`INSERT INTO comments (article_id, user_id, author_name, content) VALUES (?, ?, ?, ?)`,
 		articleID, userID, authorName, content)
 	if err != nil {
 		return nil, err
 	}
 	id, _ := res.LastInsertId()
-	return getCommentByID(db, int(id))
+	return getCommentByIDCtx(ctx, db, int(id))
 }
 
-// AddLineComment inserts a line comment (capped at 20 chars).
-func AddLineComment(db *sql.DB, articleID, lineNumber int, userID *int, authorName, content string) (*Comment, error) {
+// Deprecated: Use AddCommentCtx instead.
+func AddComment(db *sql.DB, articleID int, userID *int, authorName, content string) (*Comment, error) {
+	return AddCommentCtx(context.TODO(), db, articleID, userID, authorName, content)
+}
+
+func AddLineCommentCtx(ctx context.Context, db *sql.DB, articleID, lineNumber int, userID *int, authorName, content string) (*Comment, error) {
 	if authorName == "" {
 		authorName = "匿名"
 	}
 	if len([]rune(content)) > maxLineCommentLen {
 		return nil, ErrCommentTooLong
 	}
-	res, err := db.Exec(
+	res, err := db.ExecContext(ctx,
 		`INSERT INTO comments (article_id, line_number, user_id, author_name, content) VALUES (?, ?, ?, ?, ?)`,
 		articleID, lineNumber, userID, authorName, content)
 	if err != nil {
 		return nil, err
 	}
 	id, _ := res.LastInsertId()
-	return getCommentByID(db, int(id))
+	return getCommentByIDCtx(ctx, db, int(id))
 }
 
-// DeleteComment removes a comment by ID.
-func DeleteComment(db *sql.DB, commentID int) (bool, error) {
-	res, err := db.Exec(`DELETE FROM comments WHERE id = ?`, commentID)
+// Deprecated: Use AddLineCommentCtx instead.
+func AddLineComment(db *sql.DB, articleID, lineNumber int, userID *int, authorName, content string) (*Comment, error) {
+	return AddLineCommentCtx(context.TODO(), db, articleID, lineNumber, userID, authorName, content)
+}
+
+func DeleteCommentCtx(ctx context.Context, db *sql.DB, commentID int) (bool, error) {
+	res, err := db.ExecContext(ctx, `DELETE FROM comments WHERE id = ?`, commentID)
 	if err != nil {
 		return false, err
 	}
@@ -160,7 +163,10 @@ func DeleteComment(db *sql.DB, commentID int) (bool, error) {
 	return n > 0, nil
 }
 
-// ── helpers ──────────────────────────────────────────────────────────
+// Deprecated: Use DeleteCommentCtx instead.
+func DeleteComment(db *sql.DB, commentID int) (bool, error) {
+	return DeleteCommentCtx(context.TODO(), db, commentID)
+}
 
 func scanComments(rows *sql.Rows) ([]Comment, error) {
 	var out = make([]Comment, 0)
@@ -185,11 +191,11 @@ func scanComments(rows *sql.Rows) ([]Comment, error) {
 	return out, rows.Err()
 }
 
-func getCommentByID(db *sql.DB, id int) (*Comment, error) {
+func getCommentByIDCtx(ctx context.Context, db *sql.DB, id int) (*Comment, error) {
 	c := &Comment{}
 	var uid int
 	var nickname, avatar sql.NullString
-	err := db.QueryRow(
+	err := db.QueryRowContext(ctx,
 		commentSelect+` WHERE c.id = ?`, id,
 	).Scan(
 		&c.ID, &c.ArticleID, &c.LineNumber, &uid,
@@ -205,4 +211,8 @@ func getCommentByID(db *sql.DB, id int) (*Comment, error) {
 	c.AuthorNickname = nickname.String
 	c.AuthorAvatar = avatar.String
 	return c, nil
+}
+
+func getCommentByID(db *sql.DB, id int) (*Comment, error) {
+	return getCommentByIDCtx(context.TODO(), db, id)
 }

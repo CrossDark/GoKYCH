@@ -147,6 +147,7 @@ export interface Theme {
   author?: string;
   description?: string;
   has_css: boolean;
+  updated_at?: string;
 }
 
 // ── Site config ───────────────────────────────────────────────────────
@@ -198,10 +199,107 @@ export interface AdminFile {
   file_size: number;
   mime_type: string;
   created_at: string;
-  // Absolute public URL of the file (PUBLIC_URL + /uploads/<filename> in
-  // production). Use this in <img src> / <a href> so cross-origin
-  // deployments (CF Pages + separate API host) resolve correctly.
-  // Falls back to a relative /uploads/<filename> in dev (where the
-  // Next.js rewrite handles it).
   url: string;
+}
+
+// ── Admin: Site Settings ──────────────────────────────────────────────
+export interface SiteSettings {
+  site: {
+    title: string;
+    subtitle: string;
+    description: string;
+    language: string;
+    timezone: string;
+    logo_path: string;
+    favicon_path: string;
+    icp_number: string;
+  };
+  appearance: {
+    font_family: string;
+    primary_color: string;
+    style_theme: string;
+    theme: string;
+  };
+  features: {
+    enable_comments: boolean;
+    enable_dark_mode: boolean;
+    enable_search: boolean;
+    enable_tags_sidebar: boolean;
+    posts_per_page: number;
+  };
+  subsite_links: SubsiteLink[];
+}
+
+// ── Admin: API Keys ───────────────────────────────────────────────────
+export interface ApiKey {
+  id: number;
+  owner_id: number;
+  name: string;
+  key_prefix: string;
+  last_used_at?: string | null;
+  expires_at?: string | null;
+  created_at: string;
+}
+
+export interface CreateApiKeyResponse extends ApiKey {
+  plaintext_key?: string;
+  warning?: string;
+}
+
+// ── Admin: Passkeys ───────────────────────────────────────────────────
+export interface PasskeyInfo {
+  id: number;
+  user_id: number;
+  user_name: string;
+  user_nickname: string;
+  name: string;
+  credential_id: string;
+  transports: string[];
+  sign_count: number;
+  created_at: string;
+}
+
+export interface MyPasskeyInfo {
+  id: number;
+  name: string;
+  credential_id: string;
+  transports: string[];
+  sign_count: number;
+  created_at: string;
+}
+
+// ── Admin: System Update ──────────────────────────────────────────────
+export interface UpdateCheckInfo {
+  current_version: string;
+  latest_version: string;
+  update_available: boolean;
+  platform: string;
+  os: string;
+  arch: string;
+  binary_path: string;
+  can_write: boolean;
+  can_write_error?: string;
+  write_err_category?: "erofs" | "eacces" | "eperm" | "other" | string;
+  process_user?: string;
+  dir_permissions?: string;
+  in_container?: boolean;
+  mount_options?: string;
+  published_at?: string;
+  release_url?: string;
+  release_notes?: string;
+  download_size?: number;
+  error?: string;
+}
+
+export type UpdatePhase = "idle" | "downloading" | "verifying" | "replacing" | "restarting" | "done" | "error";
+
+export interface UpdateStatus {
+  status: UpdatePhase;
+  version?: string;
+  message: string;
+  error?: string;
+  backup?: string;
+  progress: number;
+  total: number;
+  elapsed_sec: number;
 }

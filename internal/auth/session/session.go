@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"database/sql"
 	"net/http"
 	"time"
@@ -97,11 +98,11 @@ func (m *Manager) Logout(w http.ResponseWriter, r *http.Request) error {
 	return s.Save(r, w)
 }
 
-// CurrentUser resolves the authenticated user for the request, enforcing the
+// CurrentUserCtx resolves the authenticated user for the request, enforcing the
 // 24h idle timeout. On expiry or anonymous access it returns nil (and clears
 // stale session values if expired). The resolved *user.User is stashed in the
 // request context for downstream handlers.
-func (m *Manager) CurrentUser(r *http.Request) (*user.User, error) {
+func (m *Manager) CurrentUserCtx(ctx context.Context, r *http.Request) (*user.User, error) {
 	s, err := m.Session(r)
 	if err != nil {
 		return nil, err
@@ -128,7 +129,7 @@ func (m *Manager) CurrentUser(r *http.Request) (*user.User, error) {
 	s.Values["last_activity"] = time.Now().Unix()
 	// Note: saving on every request is handled by middleware after handler runs.
 
-	u, err := user.GetByID(m.db, int(uid))
+	u, err := user.GetByIDCtx(ctx, m.db, int(uid))
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
@@ -136,6 +137,11 @@ func (m *Manager) CurrentUser(r *http.Request) (*user.User, error) {
 		return nil, err
 	}
 	return u, nil
+}
+
+// Deprecated: Use CurrentUserCtx instead.
+func (m *Manager) CurrentUser(r *http.Request) (*user.User, error) {
+	return m.CurrentUserCtx(context.TODO(), r)
 }
 
 // CSRFToken returns the session's CSRF token, generating one if absent.

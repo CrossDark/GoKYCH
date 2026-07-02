@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/gin-contrib/gzip"
 	"github.com/gin-gonic/gin"
 )
 
@@ -51,6 +52,7 @@ func (s *Server) Setup(r *gin.Engine) {
 
 	r.Use(securityHeaders())
 	r.Use(bodySizeLimitMiddleware())
+	r.Use(gzip.Gzip(gzip.DefaultCompression))
 	r.Use(s.requestIDMiddleware())
 	// CORS runs BEFORE session/CSRF so an OPTIONS preflight short-circuits
 	// with 204 — CSRF would otherwise 403 the preflight (no session token

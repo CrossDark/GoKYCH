@@ -2,35 +2,22 @@
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { getCsrf, getMe, apiUrl, apiFetch } from "@/lib/api";
+import { getCsrf, getMe, listAllPasskeys, deleteAnyPasskey } from "@/lib/api";
+import type { PasskeyInfo } from "@/lib/types";
 import { useToast } from "@/lib/admin-feedback";
 import { AdminModal } from "@/components/admin/AdminModal";
-
-interface AnyUserPasskey {
-  id: number;
-  user_id: number;
-  user_name: string;
-  user_nickname: string;
-  name: string;
-  credential_id: string;
-  transports: string[];
-  sign_count: number;
-  created_at: string;
-}
+import { fmtDateTime } from "@/lib/format";
 
 export default function AdminPasskeys() {
   const router = useRouter();
   const [csrf, setCsrf] = useState("");
-  const [keys, setKeys] = useState<AnyUserPasskey[]>([]);
+  const [keys, setKeys] = useState<PasskeyInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [deletingId, setDeletingId] = useState<number | null>(null);
-  const [pendingDelete, setPendingDelete] = useState<AnyUserPasskey | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<PasskeyInfo | null>(null);
   const toast = useToast();
 
   useEffect(() => {
-    // Backend gates these endpoints with requireOwner; mirror that here so
-    // a non-owner who hits /admin/passkeys directly gets sent back to the
-    // dashboard instead of a wall of 403s.
     getMe().then((r) => {
       if (!r.user || r.user.role !== "owner") {
         router.replace("/admin");
@@ -43,25 +30,21 @@ export default function AdminPasskeys() {
     }).catch(() => setLoading(false));
   }, []);
 
-  const loadKeys = (token: string) => {
-    apiFetch(apiUrl("/api/admin/passkeys"), { headers: { "X-CSRF-Token": token } })
-      .then((r) => r.json())
-      .then((d: AnyUserPasskey[]) => { setKeys(d || []); setLoading(false); })
-      .catch(() => setLoading(false));
+  const loadKeys = async (token: string) => {
+    try {
+      const d = await listAllPasskeys(token);
+      setKeys(d || []);
+    } catch {
+    } finally {
+      setLoading(false);
+    }
   };
 
   const confirmDelete = async () => {
     if (!pendingDelete) return;
     setDeletingId(pendingDelete.id);
     try {
-      const res = await apiFetch(apiUrl(`/api/admin/passkeys/${pendingDelete.id}`), {
-        method: "DELETE",
-        headers: { "X-CSRF-Token": csrf },
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.error || `撤销失败 (${res.status})`);
-      }
+      await deleteAnyPasskey(csrf, pendingDelete.id);
       toast.success(`已撤销「${pendingDelete.name}」（用户 @${pendingDelete.user_name}）。`);
       loadKeys(csrf);
     } catch (err: any) {
@@ -110,7 +93,7 @@ export default function AdminPasskeys() {
                     </td>
                     <td>{k.name}</td>
                     <td><code style={{ fontSize: "0.75rem" }}>{k.credential_id.slice(0, 14)}…</code></td>
-                    <td className="col-date">{new Date(k.created_at).toLocaleString("zh-CN")}</td>
+                    <td className="col-date">{fmtDateTime(k.created_at)}</td>
                     <td className="col-actions">
                       <button
                         className="admin-btn admin-btn-danger admin-btn-sm"

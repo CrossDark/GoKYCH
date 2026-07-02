@@ -1,50 +1,26 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { getCsrf, getMe, apiUrl, apiFetch } from "@/lib/api";
-import { useToast, useBeforeUnload } from "@/lib/admin-feedback";
+import { getCsrf, getMe, listApiKeys, createApiKey, deleteApiKey } from "@/lib/api";
+import type { ApiKey, CreateApiKeyResponse } from "@/lib/types";
+import { useToast } from "@/lib/admin-feedback";
 import { AdminModal } from "@/components/admin/AdminModal";
-
-interface APIKey {
-  id: number;
-  owner_id: number;
-  name: string;
-  key_prefix: string;
-  last_used_at?: string | null;
-  expires_at?: string | null;
-  created_at: string;
-}
-
-interface CreateResponse extends APIKey {
-  plaintext_key?: string;
-  warning?: string;
-}
-
-function fmtDate(s?: string | null) {
-  if (!s) return "—";
-  return new Date(s).toLocaleString("zh-CN", { dateStyle: "short", timeStyle: "short" });
-}
+import { fmtDateTimeShort } from "@/lib/format";
 
 export default function AdminAPIKeys() {
   const router = useRouter();
   const [csrf, setCsrf] = useState("");
-  const [keys, setKeys] = useState<APIKey[]>([]);
+  const [keys, setKeys] = useState<ApiKey[]>([]);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
-  const [modalOpen, setModalOpen] = useState(false);
-  // The plaintext is shown EXACTLY ONCE in the modal; admins must copy
-  // it before closing. We don't store it anywhere.
-  const [justCreated, setJustCreated] = useState<CreateResponse | null>(null);
+  const [justCreated, setJustCreated] = useState<CreateApiKeyResponse | null>(null);
   const [deletingId, setDeletingId] = useState<number | null>(null);
-  const [pendingDelete, setPendingDelete] = useState<APIKey | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<ApiKey | null>(null);
   const toast = useToast();
 
   useEffect(() => {
-    // Backend gates these endpoints with requireOwner; mirror that here so
-    // a non-owner who hits /admin/api-keys directly gets sent back to the
-    // dashboard instead of a wall of 403s.
     getMe().then((r) => {
       if (!r.user || r.user.role !== "owner") {
         router.replace("/admin");
@@ -57,11 +33,14 @@ export default function AdminAPIKeys() {
     }).catch(() => setLoading(false));
   }, []);
 
-  const loadKeys = (token: string) => {
-    apiFetch(apiUrl("/api/admin/api-keys"), { headers: { "X-CSRF-Token": token } })
-      .then((r) => r.json())
-      .then((d) => { setKeys(d); setLoading(false); })
-      .catch(() => setLoading(false));
+  const loadKeys = async (token: string) => {
+    try {
+      const d = await listApiKeys(token);
+      setKeys(d);
+    } catch {
+    } finally {
+      setLoading(false);
+    }
   };
 
   const createKey = async () => {
@@ -71,16 +50,7 @@ export default function AdminAPIKeys() {
     }
     setCreating(true);
     try {
-      const res = await apiFetch(apiUrl("/api/admin/api-keys"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf },
-        body: JSON.stringify({ name: newName.trim() }),
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.error || `创建失败 (${res.status})`);
-      }
-      const data: CreateResponse = await res.json();
+      const data = await createApiKey(csrf, newName.trim());
       setJustCreated(data);
       setNewName("");
       loadKeys(csrf);
@@ -95,14 +65,7 @@ export default function AdminAPIKeys() {
     if (!pendingDelete) return;
     setDeletingId(pendingDelete.id);
     try {
-      const res = await apiFetch(apiUrl(`/api/admin/api-keys/${pendingDelete.id}`), {
-        method: "DELETE",
-        headers: { "X-CSRF-Token": csrf },
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.error || `撤销失败 (${res.status})`);
-      }
+      await deleteApiKey(csrf, pendingDelete.id);
       toast.success(`已撤销「${pendingDelete.name}」。`);
       loadKeys(csrf);
     } catch (err: any) {
@@ -178,9 +141,9 @@ export default function AdminAPIKeys() {
                   <tr key={k.id}>
                     <td>{k.name}</td>
                     <td><code>{k.key_prefix}…</code></td>
-                    <td className="col-date">{fmtDate(k.created_at)}</td>
-                    <td className="col-date">{fmtDate(k.last_used_at)}</td>
-                    <td className="col-date">{fmtDate(k.expires_at)}</td>
+                    <td className="col-date">{fmtDateTimeShort(k.created_at)}</td>
+                    <td className="col-date">{fmtDateTimeShort(k.last_used_at)}</td>
+                    <td className="col-date">{fmtDateTimeShort(k.expires_at)}</td>
                     <td className="col-actions">
                       <button
                         className="admin-btn admin-btn-danger admin-btn-sm"
@@ -198,7 +161,6 @@ export default function AdminAPIKeys() {
         </div>
       </div>
 
-      {/* Plaintext-key modal — only shown once per creation. */}
       <AdminModal
         open={!!justCreated}
         onClose={() => setJustCreated(null)}

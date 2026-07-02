@@ -19,6 +19,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -30,7 +31,8 @@ type Theme struct {
 	Author      string `json:"author,omitempty"`
 	Description string `json:"description,omitempty"`
 	// HasCSS reports whether static/theme.css exists and is non-empty.
-	HasCSS bool `json:"has_css"`
+	HasCSS    bool       `json:"has_css"`
+	UpdatedAt *time.Time `json:"updated_at,omitempty"`
 }
 
 // themeNameRe restricts theme directory names to URL-safe lowercase + dashes.
@@ -148,6 +150,10 @@ description: 内置暖橘主题 — 浅白底 + 深色卡片
 // readTheme parses theme.yaml and reports whether static/theme.css exists.
 func readTheme(dir string) (Theme, error) {
 	yamlPath := filepath.Join(dir, "theme.yaml")
+	yamlInfo, err := os.Stat(yamlPath)
+	if err != nil {
+		return Theme{}, fmt.Errorf("stat theme.yaml: %w", err)
+	}
 	raw, err := os.ReadFile(yamlPath)
 	if err != nil {
 		return Theme{}, fmt.Errorf("read theme.yaml: %w", err)
@@ -167,8 +173,12 @@ func readTheme(dir string) (Theme, error) {
 	}
 	cssPath := filepath.Join(dir, "static", "theme.css")
 	hasCSS := false
+	var updatedAt time.Time = yamlInfo.ModTime()
 	if info, err := os.Stat(cssPath); err == nil && info.Size() > 0 {
 		hasCSS = true
+		if info.ModTime().After(updatedAt) {
+			updatedAt = info.ModTime()
+		}
 	}
 	return Theme{
 		Name:        name,
@@ -176,6 +186,7 @@ func readTheme(dir string) (Theme, error) {
 		Author:      meta.Author,
 		Description: meta.Description,
 		HasCSS:      hasCSS,
+		UpdatedAt:   &updatedAt,
 	}, nil
 }
 

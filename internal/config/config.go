@@ -89,7 +89,22 @@ func Load() Config {
 	cfg.loadEnvFile()
 	cfg.loadYAML()
 	cfg.applyEnvOverrides()
+	cfg.validate()
 	return cfg
+}
+
+// defaultSessionSecret is the insecure placeholder shipped as the
+// SessionSecret default; a release-mode deploy must override it.
+const defaultSessionSecret = "change-me-to-a-random-string"
+
+// validate enforces hard prerequisites that would otherwise let the
+// app start in a silently-broken/insecure state.
+func (c *Config) validate() {
+	if c.App.GinMode == "release" && c.App.SessionSecret == defaultSessionSecret {
+		slog.Error("SESSION_SECRET is still the insecure default; refusing to start in release mode. " +
+			"Set SESSION_SECRET to a random string (>=32 chars) via env or .env.")
+		os.Exit(1)
+	}
 }
 
 // applyDefaults sets baseline values.
@@ -102,15 +117,15 @@ func (c *Config) applyDefaults() {
 		Database: "gokych",
 		Charset:  "utf8mb4",
 		Pool: PoolConfig{
-			MinSize:     2,
-			MaxSize:     10,
+			MinSize:     5,
+			MaxSize:     25,
 			PoolRecycle: 3600,
 		},
 	}
 	c.App = AppConfig{
 		Port:          8000,
 		GinMode:       "debug",
-		SessionSecret: "change-me-to-a-random-string",
+		SessionSecret: defaultSessionSecret,
 		AdminUsername: "admin",
 		AdminPassword: "admin123",
 		DataDir:       "data",

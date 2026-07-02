@@ -14,6 +14,7 @@
 package apikey
 
 import (
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
@@ -51,11 +52,11 @@ type Key struct {
 	CreatedAt  time.Time  `json:"created_at"`
 }
 
-// Create generates a new random key, hashes it, and inserts the row. The
+// CreateCtx generates a new random key, hashes it, and inserts the row. The
 // plaintext is returned exactly once (the caller must surface it to the
 // admin before the next call); subsequent reads of this row only have
 // key_prefix and key_hash.
-func Create(db *sql.DB, ownerID int, name string, ttl time.Duration) (*Key, string, error) {
+func CreateCtx(ctx context.Context, db *sql.DB, ownerID int, name string, ttl time.Duration) (*Key, string, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return nil, "", errors.New("name 不能为空")
@@ -81,7 +82,7 @@ func Create(db *sql.DB, ownerID int, name string, ttl time.Duration) (*Key, stri
 		t := time.Now().Add(ttl)
 		expiresAt = &t
 	}
-	res, err := db.Exec(
+	res, err := db.ExecContext(ctx,
 		`INSERT INTO api_keys (owner_id, name, key_prefix, key_hash, expires_at) VALUES (?, ?, ?, ?, ?)`,
 		ownerID, name, visible, string(hash), expiresAt)
 	if err != nil {
@@ -98,10 +99,15 @@ func Create(db *sql.DB, ownerID int, name string, ttl time.Duration) (*Key, stri
 	}, full, nil
 }
 
-// List returns all keys owned by ownerID (most recent first). Hash is
+// Deprecated: Use CreateCtx instead.
+func Create(db *sql.DB, ownerID int, name string, ttl time.Duration) (*Key, string, error) {
+	return CreateCtx(context.TODO(), db, ownerID, name, ttl)
+}
+
+// ListCtx returns all keys owned by ownerID (most recent first). Hash is
 // always empty in the returned records.
-func List(db *sql.DB, ownerID int) ([]Key, error) {
-	rows, err := db.Query(
+func ListCtx(ctx context.Context, db *sql.DB, ownerID int) ([]Key, error) {
+	rows, err := db.QueryContext(ctx,
 		`SELECT id, owner_id, name, key_prefix, last_used_at, expires_at, created_at
 		 FROM api_keys WHERE owner_id = ? ORDER BY created_at DESC`, ownerID)
 	if err != nil {
@@ -128,16 +134,26 @@ func List(db *sql.DB, ownerID int) ([]Key, error) {
 	return out, rows.Err()
 }
 
-// Delete removes a key. Returns (true, nil) if a row was actually deleted,
+// Deprecated: Use ListCtx instead.
+func List(db *sql.DB, ownerID int) ([]Key, error) {
+	return ListCtx(context.TODO(), db, ownerID)
+}
+
+// DeleteCtx removes a key. Returns (true, nil) if a row was actually deleted,
 // (false, nil) when the key didn't exist or didn't belong to ownerID (we
 // don't distinguish — keeps the API free of information leaks).
-func Delete(db *sql.DB, ownerID, id int) (bool, error) {
-	res, err := db.Exec(`DELETE FROM api_keys WHERE id = ? AND owner_id = ?`, id, ownerID)
+func DeleteCtx(ctx context.Context, db *sql.DB, ownerID, id int) (bool, error) {
+	res, err := db.ExecContext(ctx, `DELETE FROM api_keys WHERE id = ? AND owner_id = ?`, id, ownerID)
 	if err != nil {
 		return false, err
 	}
 	n, err := res.RowsAffected()
 	return n > 0, err
+}
+
+// Deprecated: Use DeleteCtx instead.
+func Delete(db *sql.DB, ownerID, id int) (bool, error) {
+	return DeleteCtx(context.TODO(), db, ownerID, id)
 }
 
 // VerifyResult is the outcome of a key verification. OwnerID is populated
@@ -148,13 +164,13 @@ type VerifyResult struct {
 	KeyID   int
 }
 
-// Verify uses the key_prefix index to narrow candidates to a single row before
+// VerifyCtx uses the key_prefix index to narrow candidates to a single row before
 // doing the bcrypt comparison, turning O(n) bcrypt calls into O(1). The prefix
 // is the first 8 chars ("gky_xxxx") — enough to uniquely identify one key in
 // practice while staying short for index efficiency.
 //
 // Returns (result, nil) on hit, (zero, nil) on miss, (zero, err) on DB error.
-func Verify(db *sql.DB, plaintext string) (VerifyResult, error) {
+func VerifyCtx(ctx context.Context, db *sql.DB, plaintext string) (VerifyResult, error) {
 	plaintext = strings.TrimSpace(plaintext)
 	if plaintext == "" || !strings.HasPrefix(plaintext, KeyPrefix) {
 		return VerifyResult{}, nil
@@ -172,7 +188,7 @@ func Verify(db *sql.DB, plaintext string) (VerifyResult, error) {
 		ownerID int
 		hash    string
 	)
-	err := db.QueryRow(
+	err := db.QueryRowContext(ctx,
 		`SELECT id, owner_id, key_hash FROM api_keys
 		 WHERE key_prefix = ? AND (expires_at IS NULL OR expires_at > NOW())
 		 LIMIT 1`, prefix).Scan(&id, &ownerID, &hash)
@@ -188,8 +204,9 @@ func Verify(db *sql.DB, plaintext string) (VerifyResult, error) {
 	// Update last_used_at asynchronously — non-blocking, best-effort.
 	// Throttled to at most once per minute per key via SQL WHERE clause to
 	// avoid a write storm on every API request.
+	// Uses context.Background() since this runs after the request may complete.
 	go func(keyID int) {
-		if _, err := db.Exec(
+		if _, err := db.ExecContext(context.Background(),
 			`UPDATE api_keys SET last_used_at = NOW()
 			 WHERE id = ? AND (last_used_at IS NULL OR last_used_at < DATE_SUB(NOW(), INTERVAL 1 MINUTE))`,
 			keyID,
@@ -198,4 +215,9 @@ func Verify(db *sql.DB, plaintext string) (VerifyResult, error) {
 		}
 	}(id)
 	return VerifyResult{OwnerID: ownerID, KeyID: id}, nil
+}
+
+// Deprecated: Use VerifyCtx instead.
+func Verify(db *sql.DB, plaintext string) (VerifyResult, error) {
+	return VerifyCtx(context.TODO(), db, plaintext)
 }

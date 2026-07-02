@@ -2417,11 +2417,11 @@ func TestWikidotReverseGuillemets(t *testing.T) {
 	}
 }
 
-// TestWikidotGermanQuotes verifies `,,x''` renders as the
+// TestWikidotGermanQuotes verifies `,,x”` renders as the
 // German typographic pair („x"). The opener is U+201E
 // (low-9 double); the closer is U+201C (left double, used
 // as the German closer per German conventions). The regex
-// runs BEFORE the generic `''` rule so the double-apostrophe
+// runs BEFORE the generic `”` rule so the double-apostrophe
 // is consumed as the German close rather than as a generic
 // right double quote.
 func TestWikidotGermanQuotes(t *testing.T) {
@@ -2813,8 +2813,8 @@ func TestWikidotDivDataAttributeNested(t *testing.T) {
 // row line, and the resulting row renders correctly.
 // The original spec example:
 //
-//   |||||| 超长 _
-//   内容 8||
+//	|||||| 超长 _
+//	内容 8||
 //
 // → joined: `|||||| 超长 内容 8||` → renders as a row
 // with a single content cell.
@@ -3362,15 +3362,15 @@ func TestWikidotFormNested(t *testing.T) {
 // the rendered output.
 //
 // Two compounding causes:
-//   1. Phase 1 (block storage) stashes the table line as a block
-//      BEFORE Phase 2 (inline `@@…@@` literal) has had a chance
-//      to substitute the inner literal. The result is a stored
-//      block whose HTML contains the inner literal's placeholder.
-//   2. Phase 10 (restore stored blocks) iterated `p.blocks` once.
-//      Go's map iteration order is random, so if the outer table
-//      block is restored before the inner literal block, the inner
-//      placeholder ends up inside an already-restored `<table>` and
-//      the next iteration of the map misses it.
+//  1. Phase 1 (block storage) stashes the table line as a block
+//     BEFORE Phase 2 (inline `@@…@@` literal) has had a chance
+//     to substitute the inner literal. The result is a stored
+//     block whose HTML contains the inner literal's placeholder.
+//  2. Phase 10 (restore stored blocks) iterated `p.blocks` once.
+//     Go's map iteration order is random, so if the outer table
+//     block is restored before the inner literal block, the inner
+//     placeholder ends up inside an already-restored `<table>` and
+//     the next iteration of the map misses it.
 //
 // The fix: Phase 10 now runs multi-pass until a full sweep
 // produces no more substitutions. Also extends the same loop to

@@ -10,6 +10,7 @@ import {
   listAdminFiles,
 } from "@/lib/api";
 import type { Article, ArticleListResult, User, Notification, AdminFile } from "@/lib/types";
+import { fmtRelative, fmtLongDate } from "@/lib/format";
 
 const ARTICLE_TYPES = [
   { key: "md", label: "Markdown", icon: "📝", color: "blue" },
@@ -77,19 +78,6 @@ const QUICK_LINKS = [
     color: "blue",
   },
 ];
-
-function formatRelative(iso: string): string {
-  try {
-    const d = new Date(iso);
-    const now = new Date();
-    const diff = (now.getTime() - d.getTime()) / 1000;
-    if (diff < 60) return "刚刚";
-    if (diff < 3600) return `${Math.floor(diff / 60)} 分钟前`;
-    if (diff < 86400) return `${Math.floor(diff / 3600)} 小时前`;
-    if (diff < 604800) return `${Math.floor(diff / 86400)} 天前`;
-    return d.toLocaleDateString("zh-CN");
-  } catch { return "—"; }
-}
 
 export default function AdminDashboard() {
   const [csrf, setCsrf] = useState("");
@@ -232,7 +220,7 @@ export default function AdminDashboard() {
                           {a.type}
                         </span>
                       </td>
-                      <td className="col-date">{formatRelative(a.updated_at)}</td>
+                      <td className="col-date">{fmtRelative(a.updated_at)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -269,7 +257,7 @@ export default function AdminDashboard() {
                           <span className="admin-badge admin-badge-neutral">普通</span>
                         )}
                       </td>
-                      <td className="col-date">{formatRelative(n.updated_at)}</td>
+                      <td className="col-date">{fmtRelative(n.updated_at)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -300,7 +288,7 @@ export default function AdminDashboard() {
           <div className="admin-stat-icon gray">📅</div>
           <div className="admin-stat-body">
             <div className="admin-stat-number" style={{ fontSize: "1.05rem", fontWeight: 600 }}>
-              {new Date().toLocaleString("zh-CN", { month: "long", day: "numeric", weekday: "long" })}
+              {fmtLongDate(new Date())}
             </div>
             <div className="admin-stat-label">当前时间</div>
           </div>

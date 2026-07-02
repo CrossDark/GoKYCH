@@ -10,6 +10,7 @@ import {
 import type { AdminFile } from "@/lib/types";
 import { useToast } from "@/lib/admin-feedback";
 import { AdminConfirm } from "@/components/admin/AdminConfirm";
+import { fmtDateTime } from "@/lib/format";
 
 const IMAGE_EXTS = /\.(png|jpe?g|gif|webp|svg|ico|bmp)$/i;
 
@@ -220,7 +221,7 @@ export default function AdminFiles() {
                       </td>
                       <td>{fmtSize(f.file_size)}</td>
                       <td><span style={{ fontSize: "0.78rem", color: "var(--text-muted)" }}>{f.mime_type || "—"}</span></td>
-                      <td className="col-date">{new Date(f.created_at).toLocaleString("zh-CN")}</td>
+                      <td className="col-date">{fmtDateTime(f.created_at)}</td>
                       <td className="col-actions">
                         <button className="admin-btn admin-btn-outline admin-btn-sm" onClick={() => copyUrl(url)} title="复制链接">📋</button>
                         <a

@@ -1,0 +1,27 @@
+#	version-control + IDE
+.git
+.gitignore
+.idea
+.vscode
+.DS_Store
+.mimocode
+.qoder
+*.swp
+*.swo
+
+#	local env (avoid leaking secrets into image)
+.env
+.env.local
+.env.*.local
+
+#	build artifacts and caches
+dist/
+web/.next/
+web/.turbo/
+web/node_modules/
+wiki/
+docs/
+
+#	test fixtures and data
+data/
+.uploads/

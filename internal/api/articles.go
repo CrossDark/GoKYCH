@@ -1,7 +1,9 @@
 package api
 
 import (
+	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	htmlpkg "html"
 	"html/template"
@@ -12,10 +14,12 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"golang.org/x/sync/errgroup"
 
 	"gokych/internal/auth/user"
 	"gokych/internal/content"
 	"gokych/internal/content/parsers"
+	coredb "gokych/internal/core/db"
 	"gokych/internal/typst"
 )
 
@@ -45,6 +49,7 @@ const maxSlugRunes = 128
 // view on /admin/articles passes the caller's own id here so non-admin users
 // only see what they authored.
 func (s *Server) listArticles(c *gin.Context) {
+	ctx := c.Request.Context()
 	atype := strings.TrimSpace(c.Query("type"))
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	if page < 1 {
@@ -60,10 +65,16 @@ func (s *Server) listArticles(c *gin.Context) {
 			authorID = &v
 		}
 	}
-	result, err := content.ListArticles(s.DB, atype, authorID, page, 10, before)
+	result, err := content.ListArticlesCtx(ctx, s.DB, atype, authorID, page, 10, before)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载文章列表失败。"})
 		return
+	}
+	currentUser := CurrentUserFromContext(c)
+	if currentUser == nil {
+		c.Header("Cache-Control", "public, max-age=60, stale-while-revalidate=300")
+	} else {
+		c.Header("Cache-Control", "private, max-age=30")
 	}
 	c.JSON(http.StatusOK, result)
 }
@@ -84,10 +95,11 @@ type ArticleDetail struct {
 
 // GET /api/articles/{type}/{slug}
 func (s *Server) getArticle(c *gin.Context) {
+	ctx := c.Request.Context()
 	atype := c.Param("type")
 	slug := c.Param("slug")
 
-	a, err := content.GetArticle(s.DB, atype, slug)
+	a, err := content.GetArticleCtx(ctx, s.DB, atype, slug)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			c.JSON(http.StatusNotFound, gin.H{"error": "文章不存在。"})
@@ -106,26 +118,81 @@ func (s *Server) getArticle(c *gin.Context) {
 	c.Header("ETag", etag)
 	if currentUser == nil {
 		// Anonymous: allow CDN/Edge caching since HTML is identical for all.
-		// Use a longer max-age because DB-level caching means regenerating is
-		// cheap, but the CDN can hold it longer until invalidated.
-		c.Header("Cache-Control", "public, max-age=60")
+		// 5 min fresh + 1 hour stale-while-revalidate for good CDN hit ratio
+		// while keeping content reasonably up-to-date.
+		c.Header("Cache-Control", "public, max-age=300, stale-while-revalidate=3600")
 	} else {
-		c.Header("Cache-Control", "private, max-age=30")
+		// Logged-in: private cache with short freshness + short SWR.
+		c.Header("Cache-Control", "private, max-age=30, stale-while-revalidate=60")
 	}
 	if c.GetHeader("If-None-Match") == etag {
 		c.Status(http.StatusNotModified)
 		return
 	}
 
-	// Load rating summary (needed for response regardless of cache hit).
+	// Compute voter key first (needed for rating query).
 	voterKey := ""
 	if currentUser != nil {
 		voterKey = content.VoterKey(&currentUser.ID, currentUser.Username)
 	}
-	rating, err := content.GetRatingSummary(s.DB, a.ID, voterKey)
-	if err != nil {
-		slog.Error("getArticle: load rating", "article_id", a.ID, "err", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载评分失败。"})
+
+	// Parallel fetch of independent DB queries: rating, comments, lineComments,
+	// lineCounts, and (for typst articles) the initial compile status.
+	var (
+		rating           *content.RatingSummary
+		comments         []content.Comment
+		lineComments     []content.Comment
+		lineCounts       map[int]int
+		typstCS          *typst.CompileStatus
+		ratingErr        error
+		commentsErr      error
+		lineCommentsErr  error
+		lineCountsErr    error
+		typstCSErr       error
+	)
+
+	g, gctx := errgroup.WithContext(ctx)
+
+	g.Go(func() error {
+		rating, ratingErr = content.GetRatingSummaryCtx(gctx, s.DB, a.ID, voterKey)
+		return ratingErr
+	})
+	g.Go(func() error {
+		comments, commentsErr = content.GetCommentsCtx(gctx, s.DB, a.ID)
+		return commentsErr
+	})
+	g.Go(func() error {
+		lineComments, lineCommentsErr = content.GetLineCommentsCtx(gctx, s.DB, a.ID)
+		return lineCommentsErr
+	})
+	g.Go(func() error {
+		lineCounts, lineCountsErr = content.GetLineCommentCountsCtx(gctx, s.DB, a.ID)
+		return lineCountsErr
+	})
+	if atype == "typst" {
+		g.Go(func() error {
+			typstCS, typstCSErr = s.Typst.GetCompileStatusCtx(gctx, a.ID)
+			return nil
+		})
+	}
+
+	if err := g.Wait(); err != nil {
+		if errors.Is(ratingErr, err) {
+			slog.Error("getArticle: load rating", "article_id", a.ID, "err", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "加载评分失败。"})
+		} else if errors.Is(commentsErr, err) {
+			slog.Error("getArticle: load comments", "article_id", a.ID, "err", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "加载评论失败。"})
+		} else if errors.Is(lineCommentsErr, err) {
+			slog.Error("getArticle: load line comments", "article_id", a.ID, "err", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "加载行评论失败。"})
+		} else if errors.Is(lineCountsErr, err) {
+			slog.Error("getArticle: load line comment counts", "article_id", a.ID, "err", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "加载行评论统计失败。"})
+		} else {
+			slog.Error("getArticle: parallel fetch", "article_id", a.ID, "err", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "加载文章数据失败。"})
+		}
 		return
 	}
 
@@ -139,30 +206,27 @@ func (s *Server) getArticle(c *gin.Context) {
 	var compileStatus *typst.CompileStatus
 
 	if atype == "typst" {
-		// Typst: check async compile status first.
-		cs, cerr := typst.GetCompileStatus(s.DB, a.ID)
-		if cerr != nil {
-			slog.Error("getArticle: typst compile status", "article_id", a.ID, "err", cerr)
-		} else if cs != nil {
-			compileStatus = cs
-			switch cs.Status {
+		if typstCSErr != nil {
+			slog.Error("getArticle: typst compile status", "article_id", a.ID, "err", typstCSErr)
+		} else if typstCS != nil {
+			compileStatus = typstCS
+			switch typstCS.Status {
 			case "pending", "compiling":
 				typstShowCompileMsg = true
 			case "failed":
 				typstShowCompileMsg = true
-				typstCompileErr = cs.ErrorMessage
+				typstCompileErr = typstCS.ErrorMessage
 			}
 		} else {
-			// No queue record — check cache, auto-enqueue if missing.
 			if typst.Available() {
-				if _, cacheErr := typst.CompileHTMLCached(a.ID, ""); cacheErr != nil {
+				if _, cacheErr := s.Typst.CompileHTMLCachedCtx(ctx, a.ID, ""); cacheErr != nil {
 					slog.Info("getArticle: typst cache miss with no queue, auto-enqueuing",
 						"article_id", a.ID)
-					if qerr := typst.EnqueueCompile(s.DB, a.ID); qerr != nil {
+					if qerr := s.Typst.EnqueueCompileCtx(ctx, a.ID); qerr != nil {
 						slog.Warn("getArticle: auto-enqueue failed", "article_id", a.ID, "err", qerr)
 					} else {
 						typstShowCompileMsg = true
-						if freshCs, freshErr := typst.GetCompileStatus(s.DB, a.ID); freshErr == nil {
+						if freshCs, freshErr := s.Typst.GetCompileStatusCtx(ctx, a.ID); freshErr == nil {
 							compileStatus = freshCs
 						}
 					}
@@ -171,44 +235,41 @@ func (s *Server) getArticle(c *gin.Context) {
 		}
 	}
 
-	// Use cached rendered_html if available; otherwise render live.
 	if a.RenderedHTML != "" && !typstShowCompileMsg {
 		html = template.HTML(a.RenderedHTML)
 	} else {
-		// Live render fallback (cache miss or typst compiling).
 		lookup := &wikidotPageLookup{
-			db:          s.DB,
-			currentType: a.Type,
-			currentSlug: a.Slug,
+			ctx:          ctx,
+			db:           s.DB,
+			currentType:  a.Type,
+			currentSlug:  a.Slug,
 		}
 		if currentUser != nil {
 			lookup.currentUserID = &currentUser.ID
 		}
-		userLookup := &wikidotUserLookup{db: s.DB}
+		userLookup := &wikidotUserLookup{ctx: ctx, db: s.DB}
 		vars := buildArticleVars(a, currentUser, rating)
 		renderCtx := &parsers.RenderContext{
+			Ctx:         ctx,
 			PageLookup:  lookup,
 			UserLookup:  userLookup,
 			Vars:        vars,
 			ArticleType: a.Type,
+			Typst:       s.Typst,
 		}
 		html = parsers.RenderCtx(parsers.ArticleType(atype), a.ID, a.Content, renderCtx)
-		// Async cache fill for non-typst articles so the next read hits cache.
 		if atype != "typst" && a.RenderedHTML == "" {
 			go func() {
-				if err := content.RenderAndSave(s.DB, a); err != nil {
+				bgCtx := context.Background()
+				if err := content.RenderAndSaveCtx(bgCtx, s.DB, s.Typst, a); err != nil {
 					slog.Warn("getArticle: async cache fill failed", "article_id", a.ID, "err", err)
 				}
 			}()
 		}
 	}
 
-	// Rewrite /uploads/ and /avatars/ relative paths to absolute URLs
-	// when PublicURL is set (cross-origin CDN deployments).
 	html = template.HTML(s.rewriteStaticAssetURLs(string(html)))
 
-	// Override HTML with compile-in-progress / error messages for typst
-	// articles that aren't ready yet.
 	if atype == "typst" && typstShowCompileMsg {
 		if typstCompileErr != "" {
 			errMsg := htmlpkg.EscapeString(typstCompileErr)
@@ -218,26 +279,8 @@ func (s *Server) getArticle(c *gin.Context) {
 		}
 	}
 
-	comments, err := content.GetComments(s.DB, a.ID)
-	if err != nil {
-		slog.Error("getArticle: load comments", "article_id", a.ID, "err", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载评论失败。"})
-		return
-	}
 	s.renderCommentHTML(comments)
-	lineComments, err := content.GetLineComments(s.DB, a.ID)
-	if err != nil {
-		slog.Error("getArticle: load line comments", "article_id", a.ID, "err", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载行评论失败。"})
-		return
-	}
 	s.renderCommentHTML(lineComments)
-	lineCounts, err := content.GetLineCommentCounts(s.DB, a.ID)
-	if err != nil {
-		slog.Error("getArticle: load line comment counts", "article_id", a.ID, "err", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载行评论统计失败。"})
-		return
-	}
 
 	canEdit := false
 	if currentUser != nil {
@@ -286,6 +329,7 @@ func canModifyArticle(u *user.User, a *content.Article) bool {
 
 // POST /api/articles (any logged-in user)
 func (s *Server) createArticle(c *gin.Context) {
+	ctx := c.Request.Context()
 	atype := strings.TrimSpace(c.Query("type"))
 	if !parsers.IsValidType(atype) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的文章类型。"})
@@ -325,9 +369,9 @@ func (s *Server) createArticle(c *gin.Context) {
 	if u := CurrentUserFromContext(c); u != nil {
 		authorID = &u.ID
 	}
-	a, err := content.CreateArticle(s.DB, atype, in.Slug, in.Title, in.Content, authorID)
+	a, err := content.CreateArticleCtx(ctx, s.DB, s.Typst, atype, in.Slug, in.Title, in.Content, authorID)
 	if err != nil {
-		if isDuplicateEntry(err) {
+		if coredb.IsDuplicateEntry(err) {
 			c.JSON(http.StatusConflict, gin.H{"error": "该 slug 已存在。"})
 			return
 		}
@@ -340,11 +384,11 @@ func (s *Server) createArticle(c *gin.Context) {
 	// the editor can show a "compiling..." indicator; the page will reflect
 	// the compiled output once the worker finishes.
 	if len(in.Tags) > 0 {
-		_ = content.SetArticleTags(s.DB, a.ID, in.Tags)
+		_ = content.SetArticleTagsCtx(ctx, s.DB, s.Typst, a.ID, in.Tags)
 	}
 	// Attach compile status for the response
 	if atype == "typst" {
-		if cs, err := typst.GetCompileStatus(s.DB, a.ID); err == nil && cs != nil {
+		if cs, err := s.Typst.GetCompileStatusCtx(ctx, a.ID); err == nil && cs != nil {
 			c.JSON(http.StatusCreated, gin.H{"article": a, "compile_status": cs})
 			return
 		}
@@ -354,13 +398,14 @@ func (s *Server) createArticle(c *gin.Context) {
 
 // PUT /api/articles/{type}/{slug} (admin/owner OR the article's author)
 func (s *Server) updateArticle(c *gin.Context) {
+	ctx := c.Request.Context()
 	atype := c.Param("type")
 	slug := c.Param("slug")
 
 	// Load the article to do the ownership check. One extra SELECT beats
 	// bolting role/author into the UPDATE WHERE clause, which would force
 	// us to leak auth context into content-layer SQL.
-	a, err := content.GetArticle(s.DB, atype, slug)
+	a, err := content.GetArticleCtx(ctx, s.DB, atype, slug)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			c.JSON(http.StatusNotFound, gin.H{"error": "文章不存在。"})
@@ -384,7 +429,7 @@ func (s *Server) updateArticle(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "标题不能为空。"})
 		return
 	}
-	a, err = content.UpdateArticle(s.DB, atype, slug, in.Title, in.Content)
+	a, err = content.UpdateArticleCtx(ctx, s.DB, s.Typst, atype, slug, in.Title, in.Content)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "更新文章失败。"})
 		return
@@ -396,10 +441,10 @@ func (s *Server) updateArticle(c *gin.Context) {
 	// failure — compile errors are surfaced in the compile_status field
 	// and the admin UI shows them to the editor.
 	if in.Tags != nil {
-		_ = content.SetArticleTags(s.DB, a.ID, in.Tags)
+		_ = content.SetArticleTagsCtx(ctx, s.DB, s.Typst, a.ID, in.Tags)
 	}
 	if atype == "typst" {
-		if cs, err := typst.GetCompileStatus(s.DB, a.ID); err == nil && cs != nil {
+		if cs, err := s.Typst.GetCompileStatusCtx(ctx, a.ID); err == nil && cs != nil {
 			c.JSON(http.StatusOK, gin.H{"article": a, "compile_status": cs})
 			return
 		}
@@ -409,10 +454,11 @@ func (s *Server) updateArticle(c *gin.Context) {
 
 // DELETE /api/articles/{type}/{slug} (admin/owner OR the article's author)
 func (s *Server) deleteArticle(c *gin.Context) {
+	ctx := c.Request.Context()
 	atype := c.Param("type")
 	slug := c.Param("slug")
 
-	a, err := content.GetArticle(s.DB, atype, slug)
+	a, err := content.GetArticleCtx(ctx, s.DB, atype, slug)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			c.JSON(http.StatusNotFound, gin.H{"error": "文章不存在。"})
@@ -426,7 +472,7 @@ func (s *Server) deleteArticle(c *gin.Context) {
 		return
 	}
 
-	ok, err := content.DeleteArticle(s.DB, atype, slug)
+	ok, err := content.DeleteArticleCtx(ctx, s.DB, s.Typst, atype, slug)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "删除失败。"})
 		return
@@ -442,25 +488,34 @@ func (s *Server) deleteArticle(c *gin.Context) {
 
 // GET /api/labels
 func (s *Server) listLabels(c *gin.Context) {
-	tags, err := content.GetAllTagsWithCounts(s.DB)
+	ctx := c.Request.Context()
+	tags, err := content.GetAllTagsWithCountsCtx(ctx, s.DB)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载标签失败。"})
 		return
 	}
+	c.Header("Cache-Control", "public, max-age=300, stale-while-revalidate=3600")
 	c.JSON(http.StatusOK, tags)
 }
 
 // GET /api/labels/{tag}
 func (s *Server) getLabelArticles(c *gin.Context) {
+	ctx := c.Request.Context()
 	tagName := c.Param("tag")
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	if page < 1 {
 		page = 1
 	}
-	result, err := content.GetArticlesByTag(s.DB, tagName, page, 10)
+	result, err := content.GetArticlesByTagCtx(ctx, s.DB, tagName, page, 10)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载失败。"})
 		return
+	}
+	currentUser := CurrentUserFromContext(c)
+	if currentUser == nil {
+		c.Header("Cache-Control", "public, max-age=60, stale-while-revalidate=300")
+	} else {
+		c.Header("Cache-Control", "private, max-age=30")
 	}
 	c.JSON(http.StatusOK, result)
 }
@@ -469,13 +524,14 @@ func (s *Server) getLabelArticles(c *gin.Context) {
 // Returns the current async compilation status for typst articles. Used by
 // the frontend to poll for progress and auto-refresh when compilation finishes.
 func (s *Server) getCompileStatus(c *gin.Context) {
+	ctx := c.Request.Context()
 	atype := c.Param("type")
 	slug := c.Param("slug")
 	if atype != "typst" {
 		c.JSON(http.StatusOK, gin.H{"status": "not_applicable"})
 		return
 	}
-	a, err := content.GetArticle(s.DB, atype, slug)
+	a, err := content.GetArticleCtx(ctx, s.DB, atype, slug)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			c.JSON(http.StatusNotFound, gin.H{"error": "文章不存在。"})
@@ -484,14 +540,14 @@ func (s *Server) getCompileStatus(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载文章失败。"})
 		return
 	}
-	cs, err := typst.GetCompileStatus(s.DB, a.ID)
+	cs, err := s.Typst.GetCompileStatusCtx(ctx, a.ID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询编译状态失败。"})
 		return
 	}
 	if cs == nil {
 		// No queue entry — check if cache exists (success state without queue row)
-		if _, err := typst.CompileHTMLCached(a.ID, ""); err == nil {
+		if _, err := s.Typst.CompileHTMLCachedCtx(ctx, a.ID, ""); err == nil {
 			c.JSON(http.StatusOK, gin.H{"status": "success"})
 			return
 		}
@@ -500,7 +556,7 @@ func (s *Server) getCompileStatus(c *gin.Context) {
 			c.JSON(http.StatusOK, gin.H{"status": "failed", "error_message": "Typst 编译器未安装"})
 			return
 		}
-		if qerr := typst.EnqueueCompile(s.DB, a.ID); qerr != nil {
+		if qerr := s.Typst.EnqueueCompileCtx(ctx, a.ID); qerr != nil {
 			slog.Warn("getCompileStatus: auto-enqueue failed", "article_id", a.ID, "err", qerr)
 		}
 		c.JSON(http.StatusOK, gin.H{"status": "pending"})
@@ -514,13 +570,14 @@ func (s *Server) getCompileStatus(c *gin.Context) {
 // Useful after fixing a syntax error, or to force a refresh after a dependency
 // update that the cascade missed.
 func (s *Server) recompileArticle(c *gin.Context) {
+	ctx := c.Request.Context()
 	atype := c.Param("type")
 	slug := c.Param("slug")
 	if atype != "typst" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "只有 Typst 文章支持重新编译。"})
 		return
 	}
-	a, err := content.GetArticle(s.DB, atype, slug)
+	a, err := content.GetArticleCtx(ctx, s.DB, atype, slug)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			c.JSON(http.StatusNotFound, gin.H{"error": "文章不存在。"})
@@ -538,13 +595,13 @@ func (s *Server) recompileArticle(c *gin.Context) {
 		return
 	}
 	// Delete old cache and enqueue fresh compilation.
-	if _, derr := s.DB.Exec(`DELETE FROM typst_cache WHERE article_id = ?`, a.ID); derr != nil {
+	if _, derr := s.DB.ExecContext(ctx, `DELETE FROM typst_cache WHERE article_id = ?`, a.ID); derr != nil {
 		slog.Warn("recompileArticle: failed to invalidate old cache", "article_id", a.ID, "err", derr)
 	}
-	if err := typst.EnqueueCompile(s.DB, a.ID); err != nil {
+	if err := s.Typst.EnqueueCompileCtx(ctx, a.ID); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "提交编译任务失败：" + err.Error()})
 		return
 	}
-	cs, _ := typst.GetCompileStatus(s.DB, a.ID)
+	cs, _ := s.Typst.GetCompileStatusCtx(ctx, a.ID)
 	c.JSON(http.StatusOK, gin.H{"status": "ok", "compile_status": cs})
 }

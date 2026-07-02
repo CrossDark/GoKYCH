@@ -8,6 +8,7 @@ import type { Article, User } from "@/lib/types";
 import { useToast, useBeforeUnload } from "@/lib/admin-feedback";
 import { AdminConfirm } from "@/components/admin/AdminConfirm";
 import { MarkdownEditor } from "@/components/admin/MarkdownEditor";
+import { fmtDateTime } from "@/lib/format";
 
 const TYPE_LABELS: Record<string, string> = {
   md: "Markdown",
@@ -323,7 +324,7 @@ export default function AdminArticleDetail({ params }: PageProps) {
               <div className="admin-form-actions-spacer" />
               {article.updated_at && (
                 <span style={{ fontSize: "0.78rem", color: "var(--text-muted)" }}>
-                  最后更新：{new Date(article.updated_at).toLocaleString("zh-CN")}
+                  最后更新：{fmtDateTime(article.updated_at)}
                 </span>
               )}
             </div>

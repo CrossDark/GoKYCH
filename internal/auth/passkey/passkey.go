@@ -20,6 +20,7 @@
 package passkey
 
 import (
+	"context"
 	"database/sql"
 	"encoding/base64"
 	"errors"
@@ -75,14 +76,14 @@ func (u *User) WebAuthnDisplayName() string {
 }
 func (u *User) WebAuthnCredentials() []webauthn.Credential { return u.Credentials }
 
-// LoadUser returns a webauthn.User with the user's existing credentials
+// LoadUserCtx returns a webauthn.User with the user's existing credentials
 // attached, ready to be passed to BeginRegistration. Pass an empty
 // userID to return an empty user (used in the discoverable-login path
 // where the user is looked up from the credential id).
-func LoadUser(db *sql.DB, userID int) (*User, error) {
+func LoadUserCtx(ctx context.Context, db *sql.DB, userID int) (*User, error) {
 	u := &User{ID: userID}
 	var nickname sql.NullString
-	err := db.QueryRow(`SELECT username, nickname FROM users WHERE id = ?`, userID).Scan(&u.Username, &nickname)
+	err := db.QueryRowContext(ctx, `SELECT username, nickname FROM users WHERE id = ?`, userID).Scan(&u.Username, &nickname)
 	if err != nil {
 		return nil, err
 	}
@@ -90,7 +91,7 @@ func LoadUser(db *sql.DB, userID int) (*User, error) {
 		u.DisplayName = nickname.String
 	}
 	u.webAuthnID = []byte(fmt.Sprintf("gokych-user-%d", userID))
-	creds, err := loadCredentials(db, userID)
+	creds, err := loadCredentialsCtx(ctx, db, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -98,10 +99,15 @@ func LoadUser(db *sql.DB, userID int) (*User, error) {
 	return u, nil
 }
 
-// ListForUser returns all credentials owned by userID (most recent first),
+// Deprecated: Use LoadUserCtx instead.
+func LoadUser(db *sql.DB, userID int) (*User, error) {
+	return LoadUserCtx(context.TODO(), db, userID)
+}
+
+// ListForUserCtx returns all credentials owned by userID (most recent first),
 // without the raw public-key material.
-func ListForUser(db *sql.DB, userID int) ([]Credential, error) {
-	rows, err := db.Query(
+func ListForUserCtx(ctx context.Context, db *sql.DB, userID int) ([]Credential, error) {
+	rows, err := db.QueryContext(ctx,
 		`SELECT id, user_id, name, credential_id, transports, sign_count, created_at
 		 FROM webauthn_credentials WHERE user_id = ? ORDER BY created_at DESC`, userID)
 	if err != nil {
@@ -123,7 +129,12 @@ func ListForUser(db *sql.DB, userID int) ([]Credential, error) {
 	return out, rows.Err()
 }
 
-// SaveCredential persists a freshly-registered credential. The Credential
+// Deprecated: Use ListForUserCtx instead.
+func ListForUser(db *sql.DB, userID int) ([]Credential, error) {
+	return ListForUserCtx(context.TODO(), db, userID)
+}
+
+// SaveCredentialCtx persists a freshly-registered credential. The Credential
 // struct comes from webauthn lib's FinishRegistration output.
 //
 // backup_eligible is set from c.Flags.BackupEligible. The go-webauthn lib
@@ -132,7 +143,7 @@ func ListForUser(db *sql.DB, userID int) ([]Credential, error) {
 // if it ever flips — so we MUST persist it now, otherwise every credential
 // registered by an authenticator that reports BE=1 (i.e. anything that
 // supports cloud sync or device transfer) fails to log in.
-func SaveCredential(db *sql.DB, userID int, name string, c *webauthn.Credential) error {
+func SaveCredentialCtx(ctx context.Context, db *sql.DB, userID int, name string, c *webauthn.Credential) error {
 	if c == nil {
 		return errors.New("nil credential")
 	}
@@ -153,7 +164,7 @@ func SaveCredential(db *sql.DB, userID int, name string, c *webauthn.Credential)
 	if c.Flags.BackupEligible {
 		be = 1
 	}
-	_, err := db.Exec(
+	_, err := db.ExecContext(ctx,
 		`INSERT INTO webauthn_credentials
 		 (user_id, name, credential_id, public_key, sign_count, transports, backup_eligible)
 		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -161,10 +172,15 @@ func SaveCredential(db *sql.DB, userID int, name string, c *webauthn.Credential)
 	return err
 }
 
-// Delete removes a credential by id, scoped to userID. Returns true when a
+// Deprecated: Use SaveCredentialCtx instead.
+func SaveCredential(db *sql.DB, userID int, name string, c *webauthn.Credential) error {
+	return SaveCredentialCtx(context.TODO(), db, userID, name, c)
+}
+
+// DeleteCtx removes a credential by id, scoped to userID. Returns true when a
 // row was actually deleted.
-func Delete(db *sql.DB, userID int, credentialDBID int64) (bool, error) {
-	res, err := db.Exec(
+func DeleteCtx(ctx context.Context, db *sql.DB, userID int, credentialDBID int64) (bool, error) {
+	res, err := db.ExecContext(ctx,
 		`DELETE FROM webauthn_credentials WHERE id = ? AND user_id = ?`,
 		credentialDBID, userID)
 	if err != nil {
@@ -174,25 +190,35 @@ func Delete(db *sql.DB, userID int, credentialDBID int64) (bool, error) {
 	return n > 0, err
 }
 
-// HasAny reports whether userID has at least one passkey registered.
+// Deprecated: Use DeleteCtx instead.
+func Delete(db *sql.DB, userID int, credentialDBID int64) (bool, error) {
+	return DeleteCtx(context.TODO(), db, userID, credentialDBID)
+}
+
+// HasAnyCtx reports whether userID has at least one passkey registered.
 // Used by the login flow to gate password login: if the user has a
 // passkey, passwords are disabled (except for the owner, who is exempt
 // to avoid lockout).
-func HasAny(db *sql.DB, userID int) (bool, error) {
+func HasAnyCtx(ctx context.Context, db *sql.DB, userID int) (bool, error) {
 	var c int
-	err := db.QueryRow(`SELECT COUNT(*) FROM webauthn_credentials WHERE user_id = ?`, userID).Scan(&c)
+	err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM webauthn_credentials WHERE user_id = ?`, userID).Scan(&c)
 	return c > 0, err
 }
 
-// loadCredentials returns the user's stored passkeys as webauthn.Credential
+// Deprecated: Use HasAnyCtx instead.
+func HasAny(db *sql.DB, userID int) (bool, error) {
+	return HasAnyCtx(context.TODO(), db, userID)
+}
+
+// loadCredentialsCtx returns the user's stored passkeys as webauthn.Credential
 // values (the form expected by webauthn lib's User interface).
 //
 // We restore Flags.BackupEligible from the stored column. Without it the
 // lib sees a zero-value Flags struct (BE=false) and rejects every login
 // from an authenticator that reported BE=true at registration — see
 // SaveCredential's comment for why this matters.
-func loadCredentials(db *sql.DB, userID int) ([]webauthn.Credential, error) {
-	rows, err := db.Query(
+func loadCredentialsCtx(ctx context.Context, db *sql.DB, userID int) ([]webauthn.Credential, error) {
+	rows, err := db.QueryContext(ctx,
 		`SELECT credential_id, public_key, sign_count, transports, backup_eligible
 		 FROM webauthn_credentials WHERE user_id = ?`, userID)
 	if err != nil {
@@ -228,7 +254,7 @@ func loadCredentials(db *sql.DB, userID int) ([]webauthn.Credential, error) {
 	return out, rows.Err()
 }
 
-// LookupByCredentialID is the discoverable-login resolver. When a
+// LookupByCredentialIDCtx is the discoverable-login resolver. When a
 // navigator.credentials.get() call returns an assertion, the
 // authenticator only sent the credential_id (no username). The
 // webauthn lib calls this with that id to find the owning user.
@@ -239,10 +265,10 @@ func loadCredentials(db *sql.DB, userID int) ([]webauthn.Credential, error) {
 // Credential: sql: no rows in result set" which leaves the user guessing
 // (this commonly happens when their browser cached a passkey that was
 // later revoked from the server).
-func LookupByCredentialID(db *sql.DB, credID []byte) (*User, error) {
+func LookupByCredentialIDCtx(ctx context.Context, db *sql.DB, credID []byte) (*User, error) {
 	credB64 := base64.RawURLEncoding.EncodeToString(credID)
 	var userID int
-	err := db.QueryRow(
+	err := db.QueryRowContext(ctx,
 		`SELECT user_id FROM webauthn_credentials WHERE credential_id = ? LIMIT 1`,
 		credB64).Scan(&userID)
 	if err != nil {
@@ -251,7 +277,12 @@ func LookupByCredentialID(db *sql.DB, credID []byte) (*User, error) {
 		}
 		return nil, err
 	}
-	return LoadUser(db, userID)
+	return LoadUserCtx(ctx, db, userID)
+}
+
+// Deprecated: Use LookupByCredentialIDCtx instead.
+func LookupByCredentialID(db *sql.DB, credID []byte) (*User, error) {
+	return LookupByCredentialIDCtx(context.TODO(), db, credID)
 }
 
 // ErrCredentialNotFound is returned by LookupByCredentialID when the
@@ -260,13 +291,18 @@ func LookupByCredentialID(db *sql.DB, credID []byte) (*User, error) {
 // was revoked but the browser / password manager still has it cached.
 var ErrCredentialNotFound = errors.New("passkey credential not found")
 
-// PersistSignCount updates the sign_count after a successful assertion.
+// PersistSignCountCtx updates the sign_count after a successful assertion.
 // The webauthn lib detects cloning by tracking that the counter strictly
 // increases across uses for the same credential.
-func PersistSignCount(db *sql.DB, credID []byte, newCount uint32) error {
+func PersistSignCountCtx(ctx context.Context, db *sql.DB, credID []byte, newCount uint32) error {
 	credB64 := base64.RawURLEncoding.EncodeToString(credID)
-	_, err := db.Exec(`UPDATE webauthn_credentials SET sign_count = ? WHERE credential_id = ?`, newCount, credB64)
+	_, err := db.ExecContext(ctx, `UPDATE webauthn_credentials SET sign_count = ? WHERE credential_id = ?`, newCount, credB64)
 	return err
+}
+
+// Deprecated: Use PersistSignCountCtx instead.
+func PersistSignCount(db *sql.DB, credID []byte, newCount uint32) error {
+	return PersistSignCountCtx(context.TODO(), db, credID, newCount)
 }
 
 // splitNonEmpty is a tiny helper for the comma-separated transports list.

@@ -11,6 +11,7 @@ import (
 	"gokych/internal/auth/ratelimit"
 	"gokych/internal/auth/session"
 	"gokych/internal/core/metrics"
+	"gokych/internal/typst"
 )
 
 // errPasskeyNotConfigured is returned when the server is started without
@@ -26,6 +27,12 @@ type Server struct {
 	Metrics        *metrics.Metrics
 	DataDir        string   // filesystem path to the runtime data directory
 	trustedProxies []string // trusted reverse-proxy CIDRs/IPs; empty = trust none
+
+	// Typst is the shared typst worker — CompileHTMLCached / EnqueueCompile
+	// / InvalidateDependents are called from article / pdf / admin handlers.
+	// main.go constructs it once at startup and injects it here so the
+	// typst package no longer carries package-level mutable DB state.
+	Typst *typst.Worker
 
 	// Version is the build version string (e.g. "v0.1.0"), injected from
 	// main via -ldflags "-X main.version=...". Defaults to "dev" for

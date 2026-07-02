@@ -13,7 +13,7 @@ concurrency:
 
 jobs:
   backend:
-    name: Go (vet + test + build)
+    name: Go (vet + lint + test + build)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -35,6 +35,11 @@ jobs:
       - name: go vet
         run: go vet ./...
 
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+
       - name: go test
         run: go test ./... -count=1
 
@@ -42,7 +47,7 @@ jobs:
         run: go build ./...
 
   web:
-    name: Web (tsc + build)
+    name: Web (audit + tsc + lint + build)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -53,7 +58,8 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          # Next 16 requires Node >= 20.9.0
+          node-version: "20.18"
           cache: npm
           cache-dependency-path: web/package-lock.json
 
@@ -61,17 +67,17 @@ jobs:
         # Use --no-audit --no-fund for faster CI logs.
         run: npm ci --no-audit --no-fund
 
+      - name: npm audit
+        run: npm audit --audit-level=high
+        continue-on-error: true
+
       - name: Type check
         run: npx tsc --noEmit
 
       - name: Lint
-        # next lint is included in the scaffold's scripts but is non-fatal on
-        # first run — only fail CI if the command itself errors.
-        run: |
-          if grep -q '"lint"' package.json; then
-            npm run lint || echo "::warning::Lint warnings present (non-fatal)"
-          fi
-        continue-on-error: true
+        run: npm run lint
 
       - name: Build
-        run: npm run build
+        # Set the same standalone/browser env the docker-compose path uses so
+        # the production guard in next.config.ts passes for this OSS build too.
+        run: NEXT_PUBLIC_API_BASE_URL=/api npm run build

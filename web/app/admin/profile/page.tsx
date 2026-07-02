@@ -1,40 +1,16 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { getCsrf, getProfile, updateProfile, changeMyPassword, apiUrl, apiFetch } from "@/lib/api";
-import type { User } from "@/lib/types";
+import {
+  getCsrf, getProfile, updateProfile, changeMyPassword,
+  listMyPasskeys, beginPasskeyRegister, finishPasskeyRegister, deleteMyPasskey,
+} from "@/lib/api";
+import type { User, MyPasskeyInfo } from "@/lib/types";
 import { useToast, useBeforeUnload } from "@/lib/admin-feedback";
 import { AdminModal } from "@/components/admin/AdminModal";
 import { UserAvatar } from "@/components/admin/UserAvatar";
-
-// ── WebAuthn helpers (duplicated from the login page; kept local so this
-//    page stays self-contained) ─────────────────────────────────────────
-function arrayBufferToBase64Url(buf: ArrayBuffer): string {
-  const bytes = new Uint8Array(buf);
-  let s = "";
-  for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
-  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-function base64UrlToArrayBuffer(s: string): ArrayBuffer {
-  const padded = s.replace(/-/g, "+").replace(/_/g, "/") + "==".slice(0, (4 - (s.length % 4)) % 4);
-  const bin = atob(padded);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out.buffer;
-}
-function supportsWebAuthn() {
-  if (typeof window === "undefined") return false;
-  return !!(window as any).PublicKeyCredential;
-}
-
-interface MyPasskey {
-  id: number;
-  name: string;
-  credential_id: string;
-  transports: string[];
-  sign_count: number;
-  created_at: string;
-}
+import { supportsWebAuthn, arrayBufferToBase64Url, base64UrlToArrayBuffer } from "@/lib/webauthn";
+import { fmtDate, fmtDateTime } from "@/lib/format";
 
 export default function AdminProfile() {
   const [csrf, setCsrf] = useState("");
@@ -64,15 +40,13 @@ export default function AdminProfile() {
     || form.social_github !== initial.social_github
     || form.social_qq !== initial.social_qq;
 
-  // ── Password change ──
   const [pw, setPw] = useState({ old: "", next: "", confirm: "" });
   const [pwSubmitting, setPwSubmitting] = useState(false);
 
-  // ── My passkeys ──
-  const [myKeys, setMyKeys] = useState<MyPasskey[]>([]);
+  const [myKeys, setMyKeys] = useState<MyPasskeyInfo[]>([]);
   const [myKeysLoading, setMyKeysLoading] = useState(true);
   const [registering, setRegistering] = useState(false);
-  const [pendingDelete, setPendingDelete] = useState<MyPasskey | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<MyPasskeyInfo | null>(null);
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [browserSupports, setBrowserSupports] = useState(false);
 
@@ -97,20 +71,19 @@ export default function AdminProfile() {
     });
   }, []);
 
-  // Out-of-tab sync: if the user just set a passkey and would be locked out
-  // of password login, this banner explains it (owner exempt — but we
-  // still show a soft hint for them).
   useBeforeUnload(isProfileDirty && !submitting);
 
-  const loadMyKeys = (token: string) => {
+  const loadMyKeys = async (token: string) => {
     setMyKeysLoading(true);
-    apiFetch(apiUrl("/api/auth/passkey"), { headers: { "X-CSRF-Token": token } })
-      .then((r) => r.json())
-      .then((d: MyPasskey[]) => { setMyKeys(d || []); setMyKeysLoading(false); })
-      .catch(() => setMyKeysLoading(false));
+    try {
+      const d = await listMyPasskeys(token);
+      setMyKeys(d || []);
+    } catch {
+    } finally {
+      setMyKeysLoading(false);
+    }
   };
 
-  // ── Save profile ──
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     setSubmitting(true);
@@ -142,7 +115,6 @@ export default function AdminProfile() {
     }
   };
 
-  // ── Change password ──
   const pwValid = pw.next.length >= 8 && /[A-Z]/.test(pw.next) && /[a-z]/.test(pw.next) && /[0-9]/.test(pw.next) && !/\s/.test(pw.next);
   const handlePassword = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -162,18 +134,12 @@ export default function AdminProfile() {
     }
   };
 
-  // ── Register a passkey for myself ──
   const addPasskey = async () => {
     if (!browserSupports) { toast.error("当前浏览器不支持 WebAuthn。"); return; }
     setRegistering(true);
     try {
-      const begin = await apiFetch(apiUrl("/api/auth/passkey/register/begin"), {
-        method: "POST", headers: { "X-CSRF-Token": csrf },
-      });
-      if (!begin.ok) { const e = await begin.json().catch(() => ({})); throw new Error(e.error || "无法开始注册。"); }
-      // go-webauthn returns protocol.CredentialCreation = { publicKey: {...} }.
-      // Unpack publicKey once then lift ArrayBuffer-shaped fields out of it.
-      const { publicKey: pk }: { publicKey: any } = await begin.json();
+      const beginData = await beginPasskeyRegister(csrf);
+      const { publicKey: pk } = beginData;
       if (!pk || !pk.challenge) throw new Error("服务器返回的注册选项格式不正确。");
       const challengeBuf = base64UrlToArrayBuffer(pk.challenge);
       const userIdBuf = base64UrlToArrayBuffer(pk.user?.id ?? "");
@@ -193,11 +159,7 @@ export default function AdminProfile() {
         },
         clientExtensionResults: cred.getClientExtensionResults?.() || {},
       };
-      const finish = await apiFetch(apiUrl("/api/auth/passkey/register/finish"), {
-        method: "POST", headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf },
-        body: JSON.stringify({ name, credential: payload }),
-      });
-      if (!finish.ok) { const e = await finish.json().catch(() => ({})); throw new Error(e.error || "注册失败。"); }
+      await finishPasskeyRegister(csrf, { name, credential: payload });
       toast.success(`已添加「${name}」。`);
       loadMyKeys(csrf);
     } catch (err: any) {
@@ -207,12 +169,11 @@ export default function AdminProfile() {
     }
   };
 
-  const deleteMyPasskey = async () => {
+  const handleDeleteMyPasskey = async () => {
     if (!pendingDelete) return;
     setDeletingId(pendingDelete.id);
     try {
-      const res = await apiFetch(apiUrl(`/api/auth/passkey/${pendingDelete.id}`), { method: "DELETE", headers: { "X-CSRF-Token": csrf } });
-      if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error || "删除失败。"); }
+      await deleteMyPasskey(csrf, pendingDelete.id);
       toast.success(`已撤销「${pendingDelete.name}」。`);
       loadMyKeys(csrf);
     } catch (err: any) {
@@ -225,7 +186,6 @@ export default function AdminProfile() {
 
   if (!user) return <div className="admin-profile"><div className="admin-card"><div className="admin-card-body"><div className="admin-empty">加载中…</div></div></div></div>;
 
-  // Non-owner with at least one passkey → password login disabled self-help hint.
   const passwordLoginDisabled = user.role !== "owner" && myKeys.length > 0;
 
   return (
@@ -237,7 +197,6 @@ export default function AdminProfile() {
         </div>
       </div>
 
-      {/* Account info (read-only) */}
       <div className="admin-card">
         <div className="admin-card-header"><h2>👤 账号信息</h2></div>
         <div className="admin-card-body">
@@ -250,13 +209,12 @@ export default function AdminProfile() {
               </div>
             </div>
             <div style={{ color: "var(--text-muted)", fontSize: "0.82rem" }}>
-              注册于 {new Date(user.created_at).toLocaleDateString("zh-CN")}
+              注册于 {fmtDate(user.created_at)}
             </div>
           </div>
         </div>
       </div>
 
-      {/* Edit profile */}
       <form onSubmit={handleSave} className="admin-card" style={{ marginTop: "1.25rem" }}>
         <div className="admin-card-header"><h2>✏️ 编辑资料</h2></div>
         <div className="admin-card-body">
@@ -275,10 +233,6 @@ export default function AdminProfile() {
               <div id="profile-avatar-hint" className="admin-form-hint">支持外链或站内上传文件</div>
             </div>
 
-            {/* Per-user social links. Moved out of the global settings so each
-                user owns their own contact info. Twitter was swapped for QQ
-                since X is mostly unreachable from CN. Empty values are
-                silently dropped server-side (NULLIF('', '')). */}
             <div className="admin-form-group" style={{ marginTop: 8 }}>
               <label style={{ marginBottom: 6 }}>🌐 社交媒体</label>
               <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: "8px 12px", alignItems: "center" }}>
@@ -316,7 +270,6 @@ export default function AdminProfile() {
         </div>
       </form>
 
-      {/* Change password */}
       <form onSubmit={handlePassword} className="admin-card" style={{ marginTop: "1.25rem" }}>
         <div className="admin-card-header"><h2>🔐 修改密码</h2></div>
         <div className="admin-card-body">
@@ -346,7 +299,6 @@ export default function AdminProfile() {
         </div>
       </form>
 
-      {/* My passkeys */}
       <div className="admin-card" style={{ marginTop: "1.25rem" }}>
         <div className="admin-card-header"><h2>🔑 我的 Passkey</h2></div>
         <div className="admin-card-body">
@@ -380,7 +332,7 @@ export default function AdminProfile() {
                       <td>{k.name}</td>
                       <td><code style={{ fontSize: "0.75rem" }}>{k.credential_id.slice(0, 16)}…</code></td>
                       <td>{k.transports.length > 0 ? k.transports.map((t) => <span key={t} className="admin-tag" style={{ marginRight: 4 }}>{t}</span>) : "—"}</td>
-                      <td className="col-date">{new Date(k.created_at).toLocaleString("zh-CN")}</td>
+                      <td className="col-date">{fmtDateTime(k.created_at)}</td>
                       <td className="col-actions">
                         <button className="admin-btn admin-btn-danger admin-btn-sm" onClick={() => setPendingDelete(k)} disabled={deletingId === k.id}>🗑 撤销</button>
                       </td>
@@ -393,7 +345,6 @@ export default function AdminProfile() {
         </div>
 </div>
 
-      {/* Delete-my-passkey confirm */}
       <AdminModal open={!!pendingDelete} onClose={() => setPendingDelete(null)} title="撤销我的 Passkey" size="sm">
         {pendingDelete && (
           <div>
@@ -401,7 +352,7 @@ export default function AdminProfile() {
             <p style={{ color: "var(--text-muted)", fontSize: "0.85rem" }}>撤销后该设备无法再用此 Passkey 登录。请确保至少保留一种可用登录方式。</p>
             <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 16 }}>
               <button className="admin-btn admin-btn-ghost" onClick={() => setPendingDelete(null)}>取消</button>
-              <button className="admin-btn admin-btn-danger" onClick={deleteMyPasskey} disabled={!!deletingId}>🗑 撤销</button>
+              <button className="admin-btn admin-btn-danger" onClick={handleDeleteMyPasskey} disabled={!!deletingId}>🗑 撤销</button>
             </div>
           </div>
         )}

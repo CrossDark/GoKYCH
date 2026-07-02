@@ -1,6 +1,7 @@
 package parsers
 
 import (
+	"context"
 	"html"
 	"html/template"
 	"log/slog"
@@ -53,7 +54,7 @@ func RenderCtx(at ArticleType, articleID int, source string, ctx *RenderContext)
 	case TypeHTML:
 		raw = source // trusted admin content (sanitised by PostProcessArticleHTML)
 	case TypeTypst:
-		raw = renderTypst(articleID, source)
+		raw = renderTypst(ctx, articleID, source)
 		extraClass = "typst-content" // Typst-specific CSS hooks (MathML alignment, layout)
 	default:
 		raw = "<p>不支持的格式。</p>"
@@ -95,12 +96,18 @@ func IsValidType(t string) bool {
 func sanitizeHTML(s string) string { return s }
 
 // renderTypst reads the cached HTML for articleID from typst_cache. The
-// compile happens at publish time (see typst.CompileAndCache), so this
-// path is a pure SELECT — readers never fork the typst CLI. A cache miss
-// (e.g. an article created before the precompile pipeline was added) is
-// surfaced as a "pending compile" placeholder, NOT a fallback compile,
+// compile happens at publish time (see typst.Worker.CompileAndCache), so
+// this path is a pure SELECT — readers never fork the typst CLI. A cache
+// miss (e.g. an article created before the precompile pipeline was added)
+// is surfaced as a "pending compile" placeholder, NOT a fallback compile,
 // because doing the compile here would defeat the whole point of the
 // performance optimisation.
+//
+// The Worker is taken from ctx.Typst; if ctx is nil or ctx.Typst is nil
+// (e.g. a test or a code path that doesn't carry the worker), the function
+// returns the "compile pending" placeholder instead of panicking — the
+// old package-level-db fallback behaved similarly when SetDB hadn't been
+// called.
 //
 // The returned HTML is already fully post-processed at compile time:
 // wrapped in <div class="typst-content" data-typst="1">, with data-line
@@ -109,15 +116,19 @@ func sanitizeHTML(s string) string { return s }
 // The client-side hydration detects the data-typst marker and skips
 // DOMPurify/KaTeX/mermaid entirely — zero DOM mutations on the reader's
 // main thread.
-func renderTypst(articleID int, source string) string {
+func renderTypst(ctx *RenderContext, articleID int, source string) string {
+	if ctx == nil || ctx.Typst == nil {
+		return `<p><em>本文档尚未编译完成,请稍后再试,或联系管理员重新发布。</em></p>`
+	}
 	if !typst.Available() {
 		return `<p><em>Typst 编译器未安装,无法渲染本文。</em></p>`
 	}
-	body, err := typst.CompileHTMLCached(articleID, source)
+	rctx := ctx.Ctx
+	if rctx == nil {
+		rctx = context.Background()
+	}
+	body, err := ctx.Typst.CompileHTMLCachedCtx(rctx, articleID, source)
 	if err != nil {
-		// Cache miss is the expected "first view, no publish yet" state; log
-		// at Info, not Error, so the operator's log doesn't light up red
-		// for every legacy article that pre-dates precompile.
 		if strings.Contains(err.Error(), "no cached HTML") {
 			slog.Info("typst render: cache miss", "article_id", articleID)
 			return `<p><em>本文档尚未编译完成,请稍后再试,或联系管理员重新发布。</em></p>`

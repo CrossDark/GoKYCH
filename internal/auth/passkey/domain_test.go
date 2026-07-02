@@ -1,16 +1,17 @@
-package main
+package passkey
 
 import (
 	"slices"
 	"testing"
 )
 
-// TestNormalizeWebAuthnDomain locks in the (rpid, origin) derivation for
-// every accepted APP_DOMAIN form. The previous implementation produced a
-// double "http://http://…" prefix for the explicit http:// case and left
-// the port stuck onto the RPID for "host:port" input, which silently broke
-// passkey in the default docker-compose setup (frontend on :3000).
-func TestNormalizeWebAuthnDomain(t *testing.T) {
+// TestNormalizeDomain locks in the (rpid, origin) derivation for every
+// accepted APP_DOMAIN form. The previous implementation (when this logic
+// lived in package main) produced a double "http://http://…" prefix for the
+// explicit http:// case and left the port stuck onto the RPID for
+// "host:port" input, which silently broke passkey in the default
+// docker-compose setup (frontend on :3000).
+func TestNormalizeDomain(t *testing.T) {
 	cases := []struct {
 		in         string
 		wantRPID   string
@@ -27,23 +28,23 @@ func TestNormalizeWebAuthnDomain(t *testing.T) {
 		{"", "", ""},
 	}
 	for _, c := range cases {
-		gotRPID, gotOrigin := normalizeWebAuthnDomain(c.in)
+		gotRPID, gotOrigin := NormalizeDomain(c.in)
 		if gotRPID != c.wantRPID || gotOrigin != c.wantOrigin {
-			t.Errorf("normalizeWebAuthnDomain(%q) = (%q, %q); want (%q, %q)",
+			t.Errorf("NormalizeDomain(%q) = (%q, %q); want (%q, %q)",
 				c.in, gotRPID, gotOrigin, c.wantRPID, c.wantOrigin)
 		}
 	}
 }
 
-// TestBuildWebAuthnOrigins locks in the origin-set derivation. WebAuthn's
-// origin check is byte-exact (scheme+host+port), so the dev server on
-// :3000 needs http://localhost:3000 to be in the accepted list even when
-// APP_DOMAIN was the bare "localhost". Production hosts keep strict
-// same-scheme matching to avoid silently allowing http://example.com on
-// a https site. We compare as a set (slices.Equal is order-sensitive,
-// so we sort first) — the implementation's order is documented for the
-// startup log, not part of the contract.
-func TestBuildWebAuthnOrigins(t *testing.T) {
+// TestBuildOrigins locks in the origin-set derivation. WebAuthn's origin
+// check is byte-exact (scheme+host+port), so the dev server on :3000 needs
+// http://localhost:3000 to be in the accepted list even when APP_DOMAIN
+// was the bare "localhost". Production hosts keep strict same-scheme
+// matching to avoid silently allowing http://example.com on a https site.
+// We compare as a set (slices.Equal is order-sensitive, so we sort first)
+// — the implementation's order is documented for the startup log, not
+// part of the contract.
+func TestBuildOrigins(t *testing.T) {
 	cases := []struct {
 		name    string
 		primary string
@@ -79,9 +80,9 @@ func TestBuildWebAuthnOrigins(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := buildWebAuthnOrigins(c.primary, c.rpid)
+			got := BuildOrigins(c.primary, c.rpid)
 			if len(got) != len(c.want) {
-				t.Fatalf("buildWebAuthnOrigins(%q,%q) returned %d items (%v); want %d (%v)",
+				t.Fatalf("BuildOrigins(%q,%q) returned %d items (%v); want %d (%v)",
 					c.primary, c.rpid, len(got), got, len(c.want), c.want)
 			}
 			gotSorted := append([]string(nil), got...)
@@ -89,7 +90,7 @@ func TestBuildWebAuthnOrigins(t *testing.T) {
 			slices.Sort(gotSorted)
 			slices.Sort(wantSorted)
 			if !slices.Equal(gotSorted, wantSorted) {
-				t.Errorf("buildWebAuthnOrigins(%q,%q) set mismatch:\n got  %v\n want %v",
+				t.Errorf("BuildOrigins(%q,%q) set mismatch:\n got  %v\n want %v",
 					c.primary, c.rpid, got, c.want)
 			}
 		})

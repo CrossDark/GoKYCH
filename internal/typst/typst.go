@@ -14,6 +14,10 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/sync/errgroup"
+
+	coredb "gokych/internal/core/db"
 )
 
 //go:embed assets/*.typ
@@ -24,26 +28,13 @@ const (
 	maxConcurrent  = 4
 )
 
-// compileSem bounds the number of concurrent typst compilations to avoid
-// fork-bomb / disk exhaustion under load.
+// compileSem bounds the number of concurrent typst CLI invocations to avoid
+// fork-bomb / disk exhaustion under load. HTML and PDF compilations each
+// acquire one slot (so a parallel compileBoth call uses 2 of the 4 slots).
+// Kept at package scope because the typst CLI is a system-wide resource —
+// even a test calling CompileHTML directly (no Worker) should participate
+// in the same cap.
 var compileSem = make(chan struct{}, maxConcurrent)
-
-// db holds an optional DB connection used by CompileHTMLCached to look up /
-// store the typst_cache table. nil = caching disabled (degrades to plain
-// CompileHTML).
-var db *sql.DB
-
-// SetDB wires a database connection for compile-result caching. Must be
-// called once at startup (after the pool is ready) for the cache to take effect.
-func SetDB(d *sql.DB) { db = d }
-
-// AfterCompileFunc is an optional callback invoked after a successful
-// typst compilation (both HTML + PDF saved to typst_cache). The main
-// package sets this to sync the post-processed HTML into articles.rendered_html
-// without creating a circular dependency between the typst and rendercache
-// packages. The callback receives the article ID, the raw HTML body from
-// typst, and the resolved dependency IDs.
-var AfterCompileFunc func(articleID int, htmlBody string, depIDs []int)
 
 // workspaceDir is the directory typst compiles in. Relative imports
 // (e.g. `#import "template.typ"`) resolve from here, and any image / asset
@@ -57,6 +48,13 @@ var AfterCompileFunc func(articleID int, htmlBody string, depIDs []int)
 // ("data/typst", interpreted relative to the binary's cwd at first
 // compile). The lazy resolution means tests that don't call CompileHTML
 // (e.g. the materialize / cleanup unit tests) never trigger it.
+//
+// NOTE: db / AfterCompileFunc used to live here as package-level mutable
+// state; they've moved to the Worker struct (see worker_state.go) so
+// concurrent startup can't race on SetDB and tests can run with isolated
+// DBs. The package-level compileSem and workspaceDir remain because they
+// represent process-wide physical resources (the CLI subprocess pool and
+// the on-disk workspace directory), not per-Worker state.
 var (
 	workspaceDirOnce sync.Once
 	workspaceDir     string
@@ -162,10 +160,15 @@ func envWhitelist() []string {
 // 30s timeout and a concurrency semaphore (maxConcurrent) to prevent a
 // pathological document from pinning goroutines or exhausting resources.
 // Note: cross-article @imports are NOT resolved here (no DB), so this path
-// is only suitable for single-line / standalone snippets. Use CompileAndCache
+// is only suitable for single-line / standalone snippets. Use Worker.CompileAndCache
 // for full articles that may reference other typst articles.
 func CompileHTML(source string) (string, error) {
-	_, html, _, err := compileBoth(0, source)
+	return CompileHTMLCtx(context.Background(), source)
+}
+
+// CompileHTMLCtx is the context-aware version of CompileHTML.
+func CompileHTMLCtx(ctx context.Context, source string) (string, error) {
+	_, html, _, err := compileBothCtx(ctx, nil, 0, source)
 	return html, err
 }
 
@@ -174,13 +177,18 @@ func CompileHTML(source string) (string, error) {
 // time on the same source — typst doesn't support emitting both formats in
 // one invocation, so PDF users pay for one extra compile (the compileHTML
 // fast-path doesn't share work). The result is cached separately via
-// CompilePDFCached so subsequent PDF requests are free.
+// Worker.CompilePDFCached so subsequent PDF requests are free.
 func CompilePDF(source string) ([]byte, error) {
-	pdf, _, _, err := compileBoth(0, source)
+	return CompilePDFCtx(context.Background(), source)
+}
+
+// CompilePDFCtx is the context-aware version of CompilePDF.
+func CompilePDFCtx(ctx context.Context, source string) ([]byte, error) {
+	pdf, _, _, err := compileBothCtx(ctx, nil, 0, source)
 	return pdf, err
 }
 
-// compileBoth runs the typst CLI twice on the same source — once for HTML
+// compileBothCtx runs the typst CLI twice on the same source — once for HTML
 // and once for PDF — and returns both. Both invocations run with
 // `cmd.Dir = workspaceDir` so relative imports in the source (e.g.
 // `#import "template.typ"`) resolve from there. The input file and the two
@@ -192,8 +200,10 @@ func CompilePDF(source string) ([]byte, error) {
 // writing the input file, resolveDependencies walks @slug references,
 // writes dep files to workspaceDir, rewrites the source, and returns the
 // list of resolved dependency IDs. Pass 0 to skip resolution (used for
-// single-line / standalone snippets).
-func compileBoth(currentArticleID int, source string) (pdf []byte, html string, depIDs []int, err error) {
+// single-line / standalone snippets). dbx is the DB used for dependency
+// resolution; pass nil when currentArticleID == 0 (the package-level
+// CompileHTML / CompilePDF helpers do exactly that).
+func compileBothCtx(ctx context.Context, dbx *sql.DB, currentArticleID int, source string) (pdf []byte, html string, depIDs []int, err error) {
 	bin := Path()
 	if bin == "" {
 		return nil, "", nil, fmt.Errorf("typst: CLI not found")
@@ -204,8 +214,8 @@ func compileBoth(currentArticleID int, source string) (pdf []byte, html string, 
 
 	// Resolve cross-article @imports (writes .dep_N.typ files into workspace).
 	var depFiles []string
-	if currentArticleID > 0 {
-		res, rerr := resolveDependencies(db, workspaceDir, currentArticleID, source)
+	if currentArticleID > 0 && dbx != nil {
+		res, rerr := resolveDependenciesCtx(ctx, dbx, workspaceDir, currentArticleID, source)
 		if rerr != nil {
 			return nil, "", nil, rerr
 		}
@@ -214,11 +224,6 @@ func compileBoth(currentArticleID int, source string) (pdf []byte, html string, 
 		depIDs = res.depIDs
 	}
 
-	// Limit concurrent compilations. Both HTML and PDF invocations share
-	// one slot so a request for "give me both" doesn't bypass the cap.
-	compileSem <- struct{}{}
-	defer func() { <-compileSem }()
-
 	// Ensure dep files are cleaned up after compilation (success or failure).
 	defer func() {
 		for _, f := range depFiles {
@@ -226,8 +231,9 @@ func compileBoth(currentArticleID int, source string) (pdf []byte, html string, 
 		}
 	}()
 
-	// Bound the subprocess lifetime so a hang can't pin a goroutine forever.
-	ctx, cancel := context.WithTimeout(context.Background(), compileTimeout)
+	// Bound the subprocess lifetime so a hang can't pin a goroutine forever,
+	// while respecting the caller's context.
+	compileCtx, cancel := context.WithTimeout(ctx, compileTimeout)
 	defer cancel()
 
 	// Per-invocation unique filename. PID disambiguates two compiles that
@@ -248,53 +254,160 @@ func compileBoth(currentArticleID int, source string) (pdf []byte, html string, 
 		return nil, "", nil, fmt.Errorf("typst: write temp input: %w", err)
 	}
 
-	// Compile HTML.
-	// Note: cmd.Dir is set to workspaceDir, so we pass just the basename
-	// to typst to avoid path duplication (workspaceDir/workspaceDir/...).
-	cmd := exec.CommandContext(ctx, bin, "compile",
-		"--format", "html",
-		"--features", "html",
-		inputName, htmlName,
+	// Compile HTML and PDF in parallel using errgroup. Each goroutine
+	// acquires its own semaphore slot (maxConcurrent=4 caps total typst
+	// CLI processes). Both share the same compileCtx (30s timeout) and
+	// run concurrently to cut wall-clock time roughly in half.
+	var (
+		htmlBytes    []byte
+		htmlErr      error
+		pdfBytes     []byte
+		pdfErr       error
+		pdfTimedOut  bool
+		pdfCtxCancel bool
 	)
-	cmd.Env = envWhitelist()
-	cmd.Dir = workspaceDir
-	if output, err := cmd.CombinedOutput(); err != nil {
-		if ctx.Err() == context.DeadlineExceeded {
-			return nil, "", nil, fmt.Errorf("typst: compile timed out after %s", compileTimeout)
+
+	g, _ := errgroup.WithContext(compileCtx)
+
+	g.Go(func() error {
+		compileSem <- struct{}{}
+		defer func() { <-compileSem }()
+
+		cmd := exec.CommandContext(compileCtx, bin, "compile",
+			"--format", "html",
+			"--features", "html",
+			inputName, htmlName,
+		)
+		cmd.Env = envWhitelist()
+		cmd.Dir = workspaceDir
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			if compileCtx.Err() == context.DeadlineExceeded {
+				htmlErr = fmt.Errorf("typst: compile timed out after %s", compileTimeout)
+				return htmlErr
+			}
+			if ctx.Err() != nil {
+				htmlErr = ctx.Err()
+				return htmlErr
+			}
+			htmlErr = fmt.Errorf("typst: html compile failed: %w\n%s", err, string(output))
+			return htmlErr
 		}
-		return nil, "", nil, fmt.Errorf("typst: html compile failed: %w\n%s", err, string(output))
+		htmlBytes, htmlErr = os.ReadFile(htmlPath)
+		if htmlErr != nil {
+			htmlErr = fmt.Errorf("typst: read html output: %w", htmlErr)
+			return htmlErr
+		}
+		return nil
+	})
+
+	g.Go(func() error {
+		compileSem <- struct{}{}
+		defer func() { <-compileSem }()
+
+		cmdPDF := exec.CommandContext(compileCtx, bin, "compile", inputName, pdfName)
+		cmdPDF.Env = envWhitelist()
+		cmdPDF.Dir = workspaceDir
+		output, err := cmdPDF.CombinedOutput()
+		if err != nil {
+			if compileCtx.Err() == context.DeadlineExceeded {
+				pdfTimedOut = true
+				return nil
+			}
+			if ctx.Err() != nil {
+				pdfCtxCancel = true
+				return nil
+			}
+			pdfErr = fmt.Errorf("typst: pdf compile failed: %w\n%s", err, string(output))
+			return nil
+		}
+		pdfBytes, pdfErr = os.ReadFile(pdfPath)
+		if pdfErr != nil {
+			pdfErr = fmt.Errorf("typst: read pdf output: %w", pdfErr)
+		}
+		return nil
+	})
+
+	if err := g.Wait(); err != nil {
+		return nil, "", nil, err
 	}
-	htmlBytes, err := os.ReadFile(htmlPath)
-	if err != nil {
-		return nil, "", nil, fmt.Errorf("typst: read html output: %w", err)
+
+	if htmlErr != nil {
+		return nil, "", nil, htmlErr
 	}
 	html = extractBody(string(htmlBytes))
-	// NOTE: HTML post-processing (sanitisation, data-line numbers, lazy
-	// image attrs, external link attrs, wrapper markup) is NOT done here.
-	// It runs at READ TIME in parsers.PostProcessArticleHTML so that all
-	// article types — not just typst — benefit, and so post-process
-	// improvements don't require re-compiling every cached article.
-	// The cached value is the raw <body> content emitted by the typst CLI.
 
-	// Compile PDF. typst's default format IS pdf, so we just don't pass
-	// --format. The CLI will still pick up the timeout via ctx.
-	cmdPDF := exec.CommandContext(ctx, bin, "compile", inputName, pdfName)
-	cmdPDF.Env = envWhitelist()
-	cmdPDF.Dir = workspaceDir
-	if output, err := cmdPDF.CombinedOutput(); err != nil {
-		if ctx.Err() == context.DeadlineExceeded {
-			return nil, "", nil, fmt.Errorf("typst: pdf compile timed out after %s", compileTimeout)
-		}
-		// Don't fail the whole call if only the PDF compile failed — HTML
-		// is already useful. Caller can detect via empty pdf slice.
-		slog.Warn("typst pdf compile failed", "err", err, "output", string(output))
+	if pdfTimedOut {
+		slog.Warn("typst pdf compile timed out", "timeout", compileTimeout)
 		return nil, html, depIDs, nil
 	}
-	pdf, err = os.ReadFile(pdfPath)
-	if err != nil {
-		return nil, html, depIDs, fmt.Errorf("typst: read pdf output: %w", err)
+	if pdfCtxCancel {
+		slog.Warn("typst pdf compile cancelled by context")
+		return nil, html, depIDs, nil
 	}
+	if pdfErr != nil {
+		slog.Warn("typst pdf compile failed", "err", pdfErr)
+		return nil, html, depIDs, nil
+	}
+	pdf = pdfBytes
+
 	return pdf, html, depIDs, nil
+}
+
+// Deprecated: Use compileBothCtx instead.
+func compileBoth(dbx *sql.DB, currentArticleID int, source string) (pdf []byte, html string, depIDs []int, err error) {
+	return compileBothCtx(context.Background(), dbx, currentArticleID, source)
+}
+
+// storeCompileResultCtx writes the compiled HTML + PDF into typst_cache and
+// syncs the dependency rows in article_deps, then fires the afterCompile
+// hook. Shared between Worker.CompileAndCacheCtx (publish-time eager path)
+// and Worker.compileAndStoreCtx (async worker path) so the two don't drift —
+// the previous copy-pasted duplicates had subtly different error wording.
+func (w *Worker) storeCompileResultCtx(ctx context.Context, articleID int, html string, pdf []byte, depIDs []int) error {
+	if w.db == nil {
+		return errors.New("typst: db not configured")
+	}
+	depStr := formatDepList(depIDs)
+	if _, err := w.db.ExecContext(ctx,
+		`INSERT INTO typst_cache (article_id, html_content, pdf_content, dependencies)
+		 VALUES (?, ?, ?, ?)
+		 ON DUPLICATE KEY UPDATE
+		   html_content = VALUES(html_content),
+		   pdf_content  = VALUES(pdf_content),
+		   dependencies = VALUES(dependencies),
+		   compiled_at  = CURRENT_TIMESTAMP`,
+		articleID, html, pdf, depStr,
+	); err != nil {
+		return fmt.Errorf("typst: cache write failed: %w", err)
+	}
+
+	// Sync dependencies to article_deps for cascading invalidation. Errors
+	// here break cascade invalidation, so log instead of swallowing silently
+	// (the old `_, _ =` swallowed them and left caches inconsistent).
+	if _, derr := w.db.ExecContext(ctx, `DELETE FROM article_deps WHERE article_id = ?`, articleID); derr != nil {
+		slog.Warn("typst: clear article_deps failed", "article_id", articleID, "err", derr)
+	} else {
+		for _, did := range depIDs {
+			if _, ierr := w.db.ExecContext(ctx,
+				`INSERT IGNORE INTO article_deps (article_id, depends_on_id) VALUES (?, ?)`,
+				articleID, did,
+			); ierr != nil {
+				slog.Warn("typst: insert article_deps failed", "article_id", articleID, "dep_id", did, "err", ierr)
+			}
+		}
+	}
+
+	// Fire post-compile hook.
+	if w.afterCompile != nil {
+		w.afterCompile(ctx, articleID, html, depIDs)
+	}
+	return nil
+}
+
+// Deprecated: Use storeCompileResultCtx instead.
+func (w *Worker) storeCompileResult(articleID int, html string, pdf []byte, depIDs []int) error {
+	return w.storeCompileResultCtx(context.TODO(), articleID, html, pdf, depIDs)
 }
 
 // CompileAndCache is the eager-precompile path used at article publish time:
@@ -308,17 +421,24 @@ func compileBoth(currentArticleID int, source string) (pdf []byte, html string, 
 // for an article that exists. Returning an error lets the caller reject
 // the publish instead of leaking inconsistent state.
 //
-// Requires SetDB to have been called. If typst isn't installed the error
-// surfaces as a clear "CLI not found" message, which the admin handler
-// translates into a 400 with a hint.
-func CompileAndCache(articleID int, source string) error {
-	if db == nil {
-		return errors.New("typst: db not configured (SetDB not called)")
+// Requires the Worker to have been constructed with a non-nil DB. If typst
+// isn't installed the error surfaces as a clear "CLI not found" message,
+// which the admin handler translates into a 400 with a hint.
+//
+// Deprecated: Use CompileAndCacheCtx instead.
+func (w *Worker) CompileAndCache(articleID int, source string) error {
+	return w.CompileAndCacheCtx(context.TODO(), articleID, source)
+}
+
+// CompileAndCacheCtx is the context-aware version of CompileAndCache.
+func (w *Worker) CompileAndCacheCtx(ctx context.Context, articleID int, source string) error {
+	if w == nil || w.db == nil {
+		return errors.New("typst: db not configured (construct Worker with NewWorker)")
 	}
 	if articleID <= 0 {
 		return errors.New("typst: invalid article id")
 	}
-	pdf, html, depIDs, err := compileBoth(articleID, source)
+	pdf, html, depIDs, err := compileBothCtx(ctx, w.db, articleID, source)
 	if err != nil {
 		return err
 	}
@@ -328,35 +448,9 @@ func CompileAndCache(articleID int, source string) error {
 	if len(pdf) == 0 {
 		return errors.New("typst: PDF compile produced empty output (typst CLI failed or syntax error)")
 	}
-	depStr := formatDepList(depIDs)
-	if _, err := db.Exec(
-		`INSERT INTO typst_cache (article_id, html_content, pdf_content, dependencies)
-		 VALUES (?, ?, ?, ?)
-		 ON DUPLICATE KEY UPDATE
-		   html_content = VALUES(html_content),
-		   pdf_content  = VALUES(pdf_content),
-		   dependencies = VALUES(dependencies),
-		   compiled_at  = CURRENT_TIMESTAMP`,
-		articleID, html, pdf, depStr,
-	); err != nil {
-		return fmt.Errorf("typst: cache write failed: %w", err)
+	if err := w.storeCompileResultCtx(ctx, articleID, html, pdf, depIDs); err != nil {
+		return err
 	}
-
-	// Sync dependencies to article_deps for cascading invalidation.
-	if _, derr := db.Exec(`DELETE FROM article_deps WHERE article_id = ?`, articleID); derr == nil {
-		for _, did := range depIDs {
-			_, _ = db.Exec(
-				`INSERT IGNORE INTO article_deps (article_id, depends_on_id) VALUES (?, ?)`,
-				articleID, did,
-			)
-		}
-	}
-
-	// Fire post-compile hook.
-	if AfterCompileFunc != nil {
-		AfterCompileFunc(articleID, html, depIDs)
-	}
-
 	slog.Info("typst: compiled and cached", "article_id", articleID, "deps", len(depIDs))
 	return nil
 }
@@ -367,17 +461,22 @@ func CompileAndCache(articleID int, source string) error {
 // compile happens at publish time (see CompileAndCache). If you need
 // unconditional compilation, call CompileHTML(source) directly.
 //
-// The db == nil branch is kept for tests / partial setups where the typst
-// package is used without a database — in that case the function still
-// returns a clear "no cache available" error rather than silently
-// recompiling (the previous behaviour masked the bug where a fresh DB
-// would re-fork typst on every request).
-func CompileHTMLCached(articleID int, source string) (string, error) {
-	if db == nil || articleID <= 0 {
-		return "", fmt.Errorf("typst: cache unavailable (db configured=%t, articleID=%d)", db != nil, articleID)
+// A nil Worker (or one with no DB) returns a clear "no cache available"
+// error rather than silently recompiling (the previous behaviour masked
+// the bug where a fresh DB would re-fork typst on every request).
+//
+// Deprecated: Use CompileHTMLCachedCtx instead.
+func (w *Worker) CompileHTMLCached(articleID int, source string) (string, error) {
+	return w.CompileHTMLCachedCtx(context.TODO(), articleID, source)
+}
+
+// CompileHTMLCachedCtx is the context-aware version of CompileHTMLCached.
+func (w *Worker) CompileHTMLCachedCtx(ctx context.Context, articleID int, source string) (string, error) {
+	if w == nil || w.db == nil || articleID <= 0 {
+		return "", fmt.Errorf("typst: cache unavailable (db configured=%t, articleID=%d)", w != nil && w.db != nil, articleID)
 	}
 	var html string
-	err := db.QueryRow(
+	err := w.db.QueryRowContext(ctx,
 		`SELECT html_content FROM typst_cache WHERE article_id = ?`, articleID,
 	).Scan(&html)
 	if err != nil {
@@ -397,12 +496,19 @@ func CompileHTMLCached(articleID int, source string) (string, error) {
 // fail-fast contract as CompileHTMLCached: a miss is an error, not a
 // trigger for fresh compilation. The PDF endpoint translates this into a
 // 503/404 with a "PDF not yet generated" message.
-func CompilePDFCached(articleID int, source string) ([]byte, error) {
-	if db == nil || articleID <= 0 {
-		return nil, fmt.Errorf("typst: cache unavailable (db configured=%t, articleID=%d)", db != nil, articleID)
+//
+// Deprecated: Use CompilePDFCachedCtx instead.
+func (w *Worker) CompilePDFCached(articleID int, source string) ([]byte, error) {
+	return w.CompilePDFCachedCtx(context.TODO(), articleID, source)
+}
+
+// CompilePDFCachedCtx is the context-aware version of CompilePDFCached.
+func (w *Worker) CompilePDFCachedCtx(ctx context.Context, articleID int, source string) ([]byte, error) {
+	if w == nil || w.db == nil || articleID <= 0 {
+		return nil, fmt.Errorf("typst: cache unavailable (db configured=%t, articleID=%d)", w != nil && w.db != nil, articleID)
 	}
 	var pdf []byte
-	err := db.QueryRow(
+	err := w.db.QueryRowContext(ctx,
 		`SELECT pdf_content FROM typst_cache WHERE article_id = ?`, articleID,
 	).Scan(&pdf)
 	if err != nil {
@@ -491,62 +597,67 @@ func materializeAssets(dir string) {
 	}
 }
 
-// InvalidateDependents removes cached compilation output for ALL typst
-// articles that transitively depend on changedID (via @import). Call this
-// after updating or deleting a typst article so readers don't see stale
-// compiled output that was built against the old version.
-//
-// The dependencies column stores a comma-separated list of direct
-// dependency article IDs. We BFS through the reverse dependency graph
-// (who depends on whom) to find every article that either directly or
-// transitively imports changedID, and delete their cache rows. The
-// next view request will surface a "pending compile" placeholder, and
-// the next save/edit will trigger a fresh CompileAndCache.
-func InvalidateDependents(dbx *sql.DB, changedID int) error {
-	if dbx == nil || changedID <= 0 {
-		return nil
+// buildReverseDepMapCtx loads every typst_cache row with non-empty dependencies
+// and returns the "who depends on me" map (depID → list of articles that
+// import it). Shared between InvalidateDependentsCtx and EnqueueDependentsCtx
+// so the two BFS walks don't re-implement the same parse loop.
+func buildReverseDepMapCtx(ctx context.Context, dbx *sql.DB) (map[int][]int, error) {
+	if dbx == nil {
+		return nil, nil
 	}
-
-	// Fetch all cache rows so we can build a reverse-dep map in one query.
-	// typst_cache is small (one row per typst article), so this is cheap.
-	rows, err := dbx.Query(`SELECT article_id, dependencies FROM typst_cache WHERE dependencies IS NOT NULL AND dependencies != ''`)
+	rows, err := dbx.QueryContext(ctx, `SELECT article_id, dependencies FROM typst_cache WHERE dependencies IS NOT NULL AND dependencies != ''`)
 	if err != nil {
-		return fmt.Errorf("typst: query dependencies for invalidation: %w", err)
+		return nil, fmt.Errorf("typst: query dependencies: %w", err)
 	}
-	// reverseDep: "who depends on me" — article_id → list of articles that import it
 	reverseDep := make(map[int][]int)
 	for rows.Next() {
+		if err := ctx.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
 		var aid int
 		var depsStr string
 		if err := rows.Scan(&aid, &depsStr); err != nil {
 			rows.Close()
-			return err
+			return nil, err
 		}
 		for _, part := range strings.Split(depsStr, ",") {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
 			var did int
-			if _, err := fmt.Sscanf(strings.TrimSpace(part), "%d", &did); err == nil && did > 0 {
+			if _, err := fmt.Sscanf(part, "%d", &did); err == nil && did > 0 {
 				reverseDep[did] = append(reverseDep[did], aid)
 			}
 		}
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("typst: iterate dependency rows: %w", err)
+		return nil, fmt.Errorf("typst: iterate dependency rows: %w", err)
 	}
+	return reverseDep, nil
+}
 
-	// BFS from changedID to find all transitively dependent articles.
-	// Start from articles that DIRECTLY depend on changedID — never
-	// add changedID itself to the invalidation set, otherwise a circular
-	// @import (A imports B, B imports A) would cause a newly-compiled
-	// article's cache to be immediately invalidated by its own dependent
-	// cascade.
+// Deprecated: Use buildReverseDepMapCtx instead.
+func buildReverseDepMap(dbx *sql.DB) (map[int][]int, error) {
+	return buildReverseDepMapCtx(context.TODO(), dbx)
+}
+
+// transitiveDependents BFS-walks the reverse-dep map from changedID and
+// returns the set of articles that (transitively) depend on changedID,
+// excluding changedID itself. Shared between InvalidateDependents (which
+// deletes their cache rows) and EnqueueDependents (which queues them for
+// re-compile). Excluding changedID prevents a circular @import (A imports B,
+// B imports A) from re-invalidating the article that just compiled.
+func transitiveDependents(reverseDep map[int][]int, changedID int) []int {
 	visited := make(map[int]bool)
 	var queue []int
-	var toInvalidate []int
+	var out []int
 	for _, dep := range reverseDep[changedID] {
 		if !visited[dep] && dep != changedID {
 			visited[dep] = true
-			toInvalidate = append(toInvalidate, dep)
+			out = append(out, dep)
 			queue = append(queue, dep)
 		}
 	}
@@ -556,38 +667,60 @@ func InvalidateDependents(dbx *sql.DB, changedID int) error {
 		for _, dep := range reverseDep[cur] {
 			if !visited[dep] && dep != changedID {
 				visited[dep] = true
-				toInvalidate = append(toInvalidate, dep)
+				out = append(out, dep)
 				queue = append(queue, dep)
 			}
 		}
 	}
+	return out
+}
 
+// InvalidateDependents removes cached compilation output for ALL typst
+// articles that transitively depend on changedID (via @import). Call this
+// after updating or deleting a typst article so readers don't see stale
+// compiled output that was built against the old version.
+//
+// Uses buildReverseDepMap + transitiveDependents so the BFS matches
+// EnqueueDependents exactly (the two previously copy-pasted loops had
+// subtly different visited-set initialisation).
+//
+// Deprecated: Use InvalidateDependentsCtx instead.
+func (w *Worker) InvalidateDependents(changedID int) error {
+	return w.InvalidateDependentsCtx(context.TODO(), changedID)
+}
+
+// InvalidateDependentsCtx is the context-aware version of InvalidateDependents.
+func (w *Worker) InvalidateDependentsCtx(ctx context.Context, changedID int) error {
+	if w == nil || w.db == nil || changedID <= 0 {
+		return nil
+	}
+	reverseDep, err := buildReverseDepMapCtx(ctx, w.db)
+	if err != nil {
+		return err
+	}
+	toInvalidate := transitiveDependents(reverseDep, changedID)
 	if len(toInvalidate) == 0 {
 		return nil
 	}
 
 	// Delete cache rows for all invalidated articles.
-	placeholders := make([]string, len(toInvalidate))
 	args := make([]any, len(toInvalidate))
 	for i, id := range toInvalidate {
-		placeholders[i] = "?"
 		args[i] = id
 	}
-	q := `DELETE FROM typst_cache WHERE article_id IN (` + strings.Join(placeholders, ",") + `)`
-	if _, err := dbx.Exec(q, args...); err != nil {
+	q := `DELETE FROM typst_cache WHERE article_id IN (` + coredb.Placeholders(len(toInvalidate)) + `)`
+	if _, err := w.db.ExecContext(ctx, q, args...); err != nil {
 		return fmt.Errorf("typst: invalidate dependents: %w", err)
 	}
 	slog.Info("typst: invalidated dependent caches", "changed_id", changedID, "invalidated", toInvalidate)
 	return nil
 }
 
-func init() {
-	// Note: workspace setup (mkdir / materialize / leak cleanup) is
-	// intentionally NOT done here. `go test` changes cwd to the package
-	// dir, so a `data/typst` default would pollute the project source
-	// tree. Instead, SetWorkspaceDir (called from main.go) or the lazy
-	// ensureWorkspace in compileBoth handles setup. The CLI path lookup
-	// is a fast read from $PATH and is safe to log here.
+// LogCLIAvailability reports whether the typst CLI is on $PATH. main.go
+// calls this once at startup so the operator sees a clear "typst not
+// installed" warning without paying for it on every import (the old
+// package-level init() ran this at import time, surprising test binaries).
+func LogCLIAvailability() {
 	if p := Path(); p != "" {
 		slog.Info("typst CLI found", "path", p)
 	} else {

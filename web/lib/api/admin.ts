@@ -1,0 +1,306 @@
+import { request } from "./client";
+import type {
+  User,
+  Notification,
+  SubsiteLink,
+  FeaturedArticle,
+  AdminTag,
+  AdminFile,
+  SiteSettings,
+  ApiKey,
+  CreateApiKeyResponse,
+  PasskeyInfo,
+  MyPasskeyInfo,
+  UpdateCheckInfo,
+  UpdateStatus,
+} from "@/lib/types";
+
+export function listUsers(csrf: string) {
+  return request<User[]>("/admin/users", {
+    headers: { "X-CSRF-Token": csrf },
+    next: { revalidate: 0 },
+  });
+}
+
+export function createUser(csrf: string, body: { username: string; password: string; nickname?: string; role?: string }) {
+  return request<User>("/admin/users", {
+    method: "POST",
+    headers: { "X-CSRF-Token": csrf },
+    body: JSON.stringify(body),
+  });
+}
+
+export function updateUserRole(csrf: string, username: string, role: string) {
+  return request<{ status: string }>(`/admin/users/${username}/role`, {
+    method: "PUT",
+    headers: { "X-CSRF-Token": csrf },
+    body: JSON.stringify({ role }),
+  });
+}
+
+export function deleteUser(csrf: string, username: string) {
+  return request<{ status: string }>(`/admin/users/${username}`, {
+    method: "DELETE",
+    headers: { "X-CSRF-Token": csrf },
+  });
+}
+
+export function listNotifications(csrf: string) {
+  return request<Notification[]>("/admin/notifications", {
+    headers: { "X-CSRF-Token": csrf },
+    next: { revalidate: 0 },
+  });
+}
+
+export function createNotification(csrf: string, body: { title: string; content: string; is_important?: boolean }) {
+  return request<Notification>("/admin/notifications", {
+    method: "POST",
+    headers: { "X-CSRF-Token": csrf },
+    body: JSON.stringify(body),
+  });
+}
+
+export function updateNotification(csrf: string, id: number, body: { title?: string; content?: string; is_important?: boolean; is_active?: boolean }) {
+  return request<Notification>(`/admin/notifications/${id}`, {
+    method: "PUT",
+    headers: { "X-CSRF-Token": csrf },
+    body: JSON.stringify(body),
+  });
+}
+
+export function deleteNotification(csrf: string, id: number) {
+  return request<{ status: string }>(`/admin/notifications/${id}`, {
+    method: "DELETE",
+    headers: { "X-CSRF-Token": csrf },
+  });
+}
+
+export function getSettings(csrf: string) {
+  return request<SiteSettings>("/admin/settings", {
+    headers: { "X-CSRF-Token": csrf },
+    next: { revalidate: 0 },
+  });
+}
+
+export function updateSettings(csrf: string, settings: SiteSettings) {
+  return request<{ status: string }>("/admin/settings", {
+    method: "PUT",
+    headers: { "X-CSRF-Token": csrf },
+    body: JSON.stringify(settings),
+  });
+}
+
+export function getAdminHome(csrf: string) {
+  return request<{
+    subsite_links: SubsiteLink[];
+    featured_articles: FeaturedArticle[];
+  }>("/admin/home", {
+    headers: { "X-CSRF-Token": csrf },
+    next: { revalidate: 0 },
+  });
+}
+
+export function addSubsiteLink(csrf: string, body: { name: string; url: string; description?: string; sort_order?: number }) {
+  return request<{ status: string }>("/admin/home/links", {
+    method: "POST",
+    headers: { "X-CSRF-Token": csrf },
+    body: JSON.stringify(body),
+  });
+}
+
+export function deleteSubsiteLink(csrf: string, id: number) {
+  return request<{ status: string }>(`/admin/home/links/${id}`, {
+    method: "DELETE",
+    headers: { "X-CSRF-Token": csrf },
+  });
+}
+
+export function addFeatured(csrf: string, articleId: number) {
+  return request<{ status: string }>("/admin/home/featured", {
+    method: "POST",
+    headers: { "X-CSRF-Token": csrf },
+    body: JSON.stringify({ article_id: articleId }),
+  });
+}
+
+export function deleteFeatured(csrf: string, id: number) {
+  return request<{ status: string }>(`/admin/home/featured/${id}`, {
+    method: "DELETE",
+    headers: { "X-CSRF-Token": csrf },
+  });
+}
+
+export function getProfile(csrf: string) {
+  return request<User>("/admin/profile", {
+    headers: { "X-CSRF-Token": csrf },
+    next: { revalidate: 0 },
+  });
+}
+
+export function updateProfile(csrf: string, body: {
+  nickname?: string;
+  bio?: string;
+  avatar?: string;
+  social_email?: string;
+  social_github?: string;
+  social_qq?: string;
+}) {
+  return request<User>("/admin/profile", {
+    method: "PUT",
+    headers: { "X-CSRF-Token": csrf },
+    body: JSON.stringify(body),
+  });
+}
+
+export function changeMyPassword(csrf: string, body: { old_password: string; new_password: string }) {
+  return request<{ status: string; message?: string }>("/admin/profile/password", {
+    method: "PUT",
+    headers: { "X-CSRF-Token": csrf },
+    body: JSON.stringify(body),
+  });
+}
+
+export function listAdminTags(csrf: string) {
+  return request<AdminTag[]>("/admin/tags", {
+    headers: { "X-CSRF-Token": csrf },
+    next: { revalidate: 0 },
+  });
+}
+
+export function createTag(csrf: string, name: string) {
+  return request<{ id: number; status: string; existed?: boolean }>("/admin/tags", {
+    method: "POST",
+    headers: { "X-CSRF-Token": csrf },
+    body: JSON.stringify({ name }),
+  });
+}
+
+export function renameTag(csrf: string, id: number, name: string) {
+  return request<{ status: string }>(`/admin/tags/${id}`, {
+    method: "PUT",
+    headers: { "X-CSRF-Token": csrf },
+    body: JSON.stringify({ name }),
+  });
+}
+
+export function deleteAdminTag(csrf: string, id: number) {
+  return request<{ status: string }>(`/admin/tags/${id}`, {
+    method: "DELETE",
+    headers: { "X-CSRF-Token": csrf },
+  });
+}
+
+export function uploadFile(csrf: string, file: File) {
+  const fd = new FormData();
+  fd.append("file", file);
+  return request<{ status: string; filename: string; url: string; deduped?: boolean }>("/admin/files", {
+    method: "POST",
+    headers: { "X-CSRF-Token": csrf },
+    body: fd,
+  });
+}
+
+export function deleteAdminFile(csrf: string, id: number) {
+  return request<{ status: string }>(`/admin/files/${id}`, {
+    method: "DELETE",
+    headers: { "X-CSRF-Token": csrf },
+  });
+}
+
+export function listAdminFiles(csrf: string) {
+  return request<AdminFile[]>("/admin/files", {
+    headers: { "X-CSRF-Token": csrf },
+    next: { revalidate: 0 },
+  });
+}
+
+export function listApiKeys(csrf: string) {
+  return request<ApiKey[]>("/admin/api-keys", {
+    headers: { "X-CSRF-Token": csrf },
+    next: { revalidate: 0 },
+  });
+}
+
+export function createApiKey(csrf: string, name: string) {
+  return request<CreateApiKeyResponse>("/admin/api-keys", {
+    method: "POST",
+    headers: { "X-CSRF-Token": csrf },
+    body: JSON.stringify({ name }),
+  });
+}
+
+export function deleteApiKey(csrf: string, id: number) {
+  return request<{ status: string }>(`/admin/api-keys/${id}`, {
+    method: "DELETE",
+    headers: { "X-CSRF-Token": csrf },
+  });
+}
+
+export function listAllPasskeys(csrf: string) {
+  return request<PasskeyInfo[]>("/admin/passkeys", {
+    headers: { "X-CSRF-Token": csrf },
+    next: { revalidate: 0 },
+  });
+}
+
+export function deleteAnyPasskey(csrf: string, id: number) {
+  return request<{ status: string }>(`/admin/passkeys/${id}`, {
+    method: "DELETE",
+    headers: { "X-CSRF-Token": csrf },
+  });
+}
+
+export function listMyPasskeys(csrf: string) {
+  return request<MyPasskeyInfo[]>("/auth/passkey", {
+    headers: { "X-CSRF-Token": csrf },
+    next: { revalidate: 0 },
+  });
+}
+
+export function beginPasskeyRegister(csrf: string) {
+  return request<{ publicKey: any }>("/auth/passkey/register/begin", {
+    method: "POST",
+    headers: { "X-CSRF-Token": csrf },
+  });
+}
+
+export function finishPasskeyRegister(csrf: string, body: { name: string; credential: any }) {
+  return request<{ status: string }>("/auth/passkey/register/finish", {
+    method: "POST",
+    headers: { "X-CSRF-Token": csrf },
+    body: JSON.stringify(body),
+  });
+}
+
+export function deleteMyPasskey(csrf: string, id: number) {
+  return request<{ status: string }>(`/auth/passkey/${id}`, {
+    method: "DELETE",
+    headers: { "X-CSRF-Token": csrf },
+  });
+}
+
+export function getUpdateStatus() {
+  return request<UpdateStatus>("/admin/update/status", {
+    next: { revalidate: 0 },
+  });
+}
+
+export function checkUpdate() {
+  return request<UpdateCheckInfo>("/admin/update/check", {
+    next: { revalidate: 0 },
+  });
+}
+
+export interface ApplyUpdateResult {
+  success: boolean;
+  message: string;
+  error?: string;
+}
+
+export function applyUpdate(csrf: string) {
+  return request<ApplyUpdateResult>("/admin/update/apply", {
+    method: "POST",
+    headers: { "X-CSRF-Token": csrf },
+    body: JSON.stringify({}),
+  });
+}
