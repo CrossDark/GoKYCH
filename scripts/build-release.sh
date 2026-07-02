@@ -269,18 +269,21 @@ if [[ "$UPLOAD" -eq 1 ]]; then
   # 防御性二次检查:第 1.5 步 --upload 已 prompt 过,这里再卡一次
   is_valid_version "$VERSION" || die "VERSION=$VERSION 仍不是合法 semver — 用 --version v0.1.0 / -v v0.1.0 / VERSION=v0.1.0 env 显式传"
 
-  # ── 6a. 先推送 tag 到两个 remote（release 依赖 tag 存在） ──
-  log "推送 tag ${TAG} 到 remotes…"
+  # ── 6a. 确保 tag 存在并推送到两个 remote（release 依赖 tag 存在） ──
+  log "处理 tag ${TAG}…"
   if git -C "$REPO_ROOT" rev-parse "$TAG" >/dev/null 2>&1; then
-    # tag 已存在本地，直接推送
-    git -C "$REPO_ROOT" push origin "$TAG" 2>&1 | sed 's/^/  [origin] /' || warn "推送 tag 到 GitHub 失败（可能无权限或网络问题）"
-    if git -C "$REPO_ROOT" remote get-url "$GC_REMOTE" >/dev/null 2>&1; then
-      git -C "$REPO_ROOT" push "$GC_REMOTE" "$TAG" 2>&1 | sed 's/^/  [gitcode] /' || warn "推送 tag 到 GitCode 失败（可能无权限或网络问题）"
-    else
-      warn "GitCode remote 未配置，跳过推 tag（配置: git remote add GitCode https://gitcode.com/CrossDark/GoKych.git）"
-    fi
+    log "tag ${TAG} 已存在本地"
   else
-    warn "tag ${TAG} 不存在于本地 — 跳过自动推 tag。请先 git tag -a ${TAG} -m '${TAG}' && git push origin ${TAG} && git push GitCode ${TAG}"
+    log "tag ${TAG} 不存在，创建 annotated tag…"
+    git -C "$REPO_ROOT" tag -a "$TAG" -m "release ${TAG}"
+    ok "tag ${TAG} 已创建"
+  fi
+  log "推送 tag ${TAG} 到 remotes…"
+  git -C "$REPO_ROOT" push origin "$TAG" 2>&1 | sed 's/^/  [origin] /' || warn "推送 tag 到 GitHub 失败（可能无权限或网络问题）"
+  if git -C "$REPO_ROOT" remote get-url "$GC_REMOTE" >/dev/null 2>&1; then
+    git -C "$REPO_ROOT" push "$GC_REMOTE" "$TAG" 2>&1 | sed 's/^/  [gitcode] /' || warn "推送 tag 到 GitCode 失败（可能无权限或网络问题）"
+  else
+    warn "GitCode remote 未配置，跳过推 tag（配置: git remote add GitCode https://gitcode.com/CrossDark/GoKych.git）"
   fi
 
   # ── 6b. GitHub 上传 ──
