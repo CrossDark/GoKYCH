@@ -1123,6 +1123,19 @@ GOARCH=arm64 ./scripts/deploy-backend.sh
   `real_ip_header CF-Connecting-IP`）。Go 侧 `TRUSTED_PROXIES=127.0.0.1`
   不变（Go 只信 nginx，nginx 现在信 CF）。
 
+  > **新部署**：`scripts/deploy-backend.sh` 与 `scripts/install-all.sh`
+  > 已自动把 snippet 写到 `/etc/nginx/snippets/cloudflare-realip.conf`
+  > 并在 `api` server 块里 `include`，无需手动改。
+  >
+  > **已存在的 VM** 手动补一次（snippet 仓库里没有就先拷过去）：
+  > ```bash
+  > sudo mkdir -p /etc/nginx/snippets
+  > sudo cp scripts/nginx-cloudflare-realip.conf /etc/nginx/snippets/cloudflare-realip.conf
+  > # 在 /etc/nginx/sites-available/gokych 的 api server 块里、location 之前加：
+  > #     include /etc/nginx/snippets/cloudflare-realip.conf;
+  > sudo nginx -t && sudo systemctl reload nginx
+  > ```
+
 ### 11.2 解锁边缘 HTML 缓存（代码：去 nonce）
 
 之前 `app/layout.tsx` 调 `await headers()` 取每请求 CSP nonce，**这

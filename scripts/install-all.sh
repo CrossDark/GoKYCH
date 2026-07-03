@@ -370,6 +370,44 @@ ok "systemd unit 就位"
 
 # ── 10. nginx (HTTP-only, certbot 之后再加 443 ssl) ──
 log "写 nginx (HTTP-only, certbot 自动加 443)…"
+
+# Cloudflare real_ip snippet — restores the real client IP when api.<domain>
+# is proxied through Cloudflare (orange cloud). No-op when DNS-only (grey):
+# set_real_ip_from only trusts CF ranges, so non-CF clients are unaffected.
+# Keep these ranges in sync with https://www.cloudflare.com/ips/ — the
+# canonical copy lives at scripts/nginx-cloudflare-realip.conf in the repo
+# (duplicated here because install-all.sh runs via `curl | bash` with no
+# repo checkout).
+mkdir -p /etc/nginx/snippets
+cat > /etc/nginx/snippets/cloudflare-realip.conf <<'REALIP'
+# IPv4
+set_real_ip_from 173.245.48.0/20;
+set_real_ip_from 103.21.244.0/22;
+set_real_ip_from 103.22.200.0/22;
+set_real_ip_from 103.31.4.0/22;
+set_real_ip_from 141.101.64.0/18;
+set_real_ip_from 108.162.192.0/18;
+set_real_ip_from 190.93.240.0/20;
+set_real_ip_from 188.114.96.0/20;
+set_real_ip_from 197.234.240.0/22;
+set_real_ip_from 198.41.128.0/17;
+set_real_ip_from 162.158.0.0/15;
+set_real_ip_from 104.16.0.0/13;
+set_real_ip_from 104.24.0.0/14;
+set_real_ip_from 172.64.0.0/13;
+set_real_ip_from 131.0.72.0/22;
+# IPv6
+set_real_ip_from 2400:cb00::/32;
+set_real_ip_from 2606:4700::/32;
+set_real_ip_from 2803:f800::/32;
+set_real_ip_from 2403:b300::/32;
+set_real_ip_from 2405:8100::/32;
+set_real_ip_from 2a06:98c0::/29;
+set_real_ip_from 2c0f:f248::/32;
+real_ip_header CF-Connecting-IP;
+real_ip_recursive on;
+REALIP
+
 cat > "$NGINX_SITE" <<NGINX
 # ── ${API_DOMAIN} ── 后端 API + 静态资源 ──
 server {
@@ -378,6 +416,10 @@ server {
     server_name ${API_DOMAIN};
 
     client_max_body_size 50m;
+
+    # Restore real client IP when api.<domain> is behind Cloudflare (orange
+    # cloud); no-op when DNS-only. Snippet written above.
+    include /etc/nginx/snippets/cloudflare-realip.conf;
 
     location /api/ {
         proxy_pass http://127.0.0.1:8000;
