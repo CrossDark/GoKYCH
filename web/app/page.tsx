@@ -5,7 +5,7 @@ import { SafeMarkdown } from "@/components/SafeMarkdown";
 
 // ISR: revalidate homepage data every 60s so newly published/edited
 // articles surface quickly while CDN caches the HTML for fast TTFB.
-export const revalidate = 300;
+export const revalidate = 3600;
 
 export default async function HomePage() {
   const home: HomeData = await getHome().catch(() => ({

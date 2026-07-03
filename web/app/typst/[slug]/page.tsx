@@ -1,13 +1,13 @@
-import { getArticle } from "@/lib/api";
+import { getArticle, getAllArticleSlugs } from "@/lib/api";
 import { renderArticleDetailError } from "@/components/ArticleDetailError";
 import { ArticleView } from "@/components/ArticleView";
 import { getSiteTitle, formatPageTitle } from "@/lib/site-title";
 import type { Metadata } from "next";
 
-export const revalidate = 1800;
+export const revalidate = 86400;
 export const dynamicParams = true;
 export async function generateStaticParams() {
-  return [];
+  return getAllArticleSlugs("typst");
 }
 
 interface Props {
