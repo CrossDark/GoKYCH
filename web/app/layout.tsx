@@ -3,12 +3,16 @@ import { headers } from "next/headers";
 import { ThemeProvider } from "@/components/ThemeProvider";
 import { ThemeStylesheet } from "@/components/ThemeStylesheet";
 import { LayoutWrapper } from "./LayoutWrapper";
+import { getSiteTitle } from "@/lib/site-title";
 import "@/styles/globals.css";
 
-export const metadata: Metadata = {
-  title: "跨越晨昏",
-  description: "个人网站",
-};
+export async function generateMetadata(): Promise<Metadata> {
+  const title = await getSiteTitle();
+  return {
+    title,
+    description: "个人网站",
+  };
+}
 
 export default async function RootLayout({
   children,
