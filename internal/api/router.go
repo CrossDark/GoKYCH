@@ -195,6 +195,12 @@ func (s *Server) Setup(r *gin.Engine) {
 				adminG.GET("/update/check", requireOwner, s.checkUpdateHandler)
 				adminG.POST("/update/apply", requireOwner, s.applyUpdateHandler)
 				adminG.GET("/update/status", requireOwner, s.updateStatusHandler)
+
+				// Theme management — owner-only (upload/delete/activate).
+				adminG.GET("/themes", requireOwner, s.adminListThemes)
+				adminG.POST("/themes/upload", requireOwner, s.adminUploadTheme)
+				adminG.DELETE("/themes/:name", requireOwner, s.adminDeleteTheme)
+				adminG.PUT("/themes/:name/activate", requireOwner, s.adminActivateTheme)
 			}
 		}
 	}

@@ -147,6 +147,8 @@ export interface Theme {
   author?: string;
   description?: string;
   has_css: boolean;
+  /** true for built-in themes shipped with GoKYCH (cannot be deleted). */
+  builtin: boolean;
   updated_at?: string;
 }
 

@@ -6,14 +6,23 @@
 //	  theme.yaml          # metadata (name, version, author, description) — required
 //	  static/theme.css    # CSS overrides via :root / [data-theme="dark"] vars — required
 //
-// Themes are loaded read-only at request time; no caching layer for now
-// (the on-disk scan is cheap, and admins should see their edits without
-// bouncing the server). Add a TTL cache later if the directory grows.
+// Built-in themes live as plain YAML/CSS files in the builtin/ subdirectory
+// (embedded into the binary via go:embed) and are extracted to data/themes/
+// on startup via EnsureBuiltins(). User-uploaded themes live alongside them
+// in the same data/themes/ directory. Built-in themes carry a .builtin flag
+// so the UI can prevent deletion; user themes can be freely uploaded and
+// removed.
 package themes
 
 import (
+	"archive/zip"
+	"bytes"
+	"embed"
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -24,32 +33,26 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+//go:embed all:builtin
+var builtinFS embed.FS
+
 // Theme is the on-disk representation of a single theme.
 type Theme struct {
-	Name        string `json:"name"`
-	Version     string `json:"version,omitempty"`
-	Author      string `json:"author,omitempty"`
-	Description string `json:"description,omitempty"`
-	// HasCSS reports whether static/theme.css exists and is non-empty.
-	HasCSS    bool       `json:"has_css"`
-	UpdatedAt *time.Time `json:"updated_at,omitempty"`
+	Name        string     `json:"name"`
+	Version     string     `json:"version,omitempty"`
+	Author      string     `json:"author,omitempty"`
+	Description string     `json:"description,omitempty"`
+	HasCSS      bool       `json:"has_css"`
+	Builtin     bool       `json:"builtin"`
+	UpdatedAt   *time.Time `json:"updated_at,omitempty"`
 }
 
-// themeNameRe restricts theme directory names to URL-safe lowercase + dashes.
-// The same rule is enforced on the public /api/themes/:name.css endpoint so
-// a theme called "../../etc" can't escape its root.
 var themeNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
 
-// themesDir returns <dataDir>/themes.
 func themesDir(dataDir string) string { return filepath.Join(dataDir, "themes") }
 
-// ValidateName reports whether name is a safe theme directory name.
 func ValidateName(name string) bool { return themeNameRe.MatchString(name) }
 
-// List enumerates every theme directory under dataDir/themes. Subdirectories
-// without a valid name or without theme.yaml are silently skipped (logged in
-// the caller if they want — we keep List quiet so a stray file doesn't break
-// the settings page).
 func List(dataDir string) ([]Theme, error) {
 	dir := themesDir(dataDir)
 	entries, err := os.ReadDir(dir)
@@ -59,6 +62,7 @@ func List(dataDir string) ([]Theme, error) {
 		}
 		return nil, fmt.Errorf("themes.List: read %s: %w", dir, err)
 	}
+	builtins := builtinThemeNames()
 	out := make([]Theme, 0, len(entries))
 	for _, e := range entries {
 		if !e.IsDir() {
@@ -69,19 +73,20 @@ func List(dataDir string) ([]Theme, error) {
 		}
 		t, err := readTheme(filepath.Join(dir, e.Name()))
 		if err != nil {
-			// Bad theme.yaml — skip rather than 500 the whole listing. A
-			// real production site might log this; for now the settings
-			// page just won't show the broken one.
 			continue
 		}
+		t.Builtin = builtins[t.Name]
 		out = append(out, t)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Builtin != out[j].Builtin {
+			return out[i].Builtin
+		}
+		return out[i].Name < out[j].Name
+	})
 	return out, nil
 }
 
-// Get loads a single theme by name. Returns (nil, nil) when the theme doesn't
-// exist (so the settings UI can render a 404 / not-found gracefully).
 func Get(dataDir, name string) (*Theme, error) {
 	if !ValidateName(name) {
 		return nil, fmt.Errorf("invalid theme name: %q", name)
@@ -94,12 +99,10 @@ func Get(dataDir, name string) (*Theme, error) {
 	if err != nil {
 		return nil, err
 	}
+	t.Builtin = builtinThemeNames()[name]
 	return &t, nil
 }
 
-// ReadCSS returns the raw bytes of static/theme.css for the named theme.
-// Returns (nil, nil) on a missing theme or missing CSS — the caller should
-// decide whether that's a 404 or a graceful skip.
 func ReadCSS(dataDir, name string) ([]byte, error) {
 	if !ValidateName(name) {
 		return nil, fmt.Errorf("invalid theme name: %q", name)
@@ -115,44 +118,247 @@ func ReadCSS(dataDir, name string) ([]byte, error) {
 	return b, nil
 }
 
-// EnsureDefault bootstraps a "sunset" theme directory with a CSS that mirrors
-// the built-in :root vars in web/styles/globals.css. Idempotent: only writes
-// if the directory is missing or theme.css is empty. Call once at startup.
-func EnsureDefault(dataDir string) error {
-	dir := filepath.Join(themesDir(dataDir), "sunset")
-	if err := os.MkdirAll(filepath.Join(dir, "static"), 0o755); err != nil {
+// Delete removes a user-uploaded theme directory. Returns an error if the
+// theme is built-in, doesn't exist, or the name is invalid.
+func Delete(dataDir, name string) error {
+	if !ValidateName(name) {
+		return fmt.Errorf("invalid theme name: %q", name)
+	}
+	if builtinThemeNames()[name] {
+		return fmt.Errorf("cannot delete built-in theme %q", name)
+	}
+	dir := filepath.Join(themesDir(dataDir), name)
+	info, err := os.Stat(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("theme %q not found", name)
+		}
 		return err
 	}
-	// theme.yaml
-	yamlPath := filepath.Join(dir, "theme.yaml")
-	if _, err := os.Stat(yamlPath); errors.Is(err, os.ErrNotExist) {
-		yamlContent := strings.TrimSpace(`
-name: Sunset
-version: "1.0"
-author: GoKYCH
-description: 内置暖橘主题 — 浅白底 + 深色卡片
-`) + "\n"
-		if err := os.WriteFile(yamlPath, []byte(yamlContent), 0o644); err != nil {
-			return err
-		}
+	if !info.IsDir() {
+		return fmt.Errorf("theme path %q is not a directory", name)
 	}
-	// theme.css — keep in sync with web/styles/globals.css :root / dark.
-	cssPath := filepath.Join(dir, "static", "theme.css")
-	if info, err := os.Stat(cssPath); err != nil || info.Size() == 0 {
-		css := strings.TrimSpace(defaultSunsetCSS) + "\n"
-		if err := os.WriteFile(cssPath, []byte(css), 0o644); err != nil {
-			return err
-		}
+	if err := os.RemoveAll(dir); err != nil {
+		return fmt.Errorf("remove theme dir: %w", err)
 	}
 	return nil
 }
 
-// readTheme parses theme.yaml and reports whether static/theme.css exists.
+// InstallFromZip extracts a theme zip archive into data/themes/<name>.
+// The archive must contain a top-level theme.yaml and static/theme.css
+// (either at the archive root or inside a single top-level folder).
+// If a user theme with the same name already exists it is overwritten;
+// built-in themes cannot be overwritten.
+func InstallFromZip(dataDir string, zipBytes []byte) (*Theme, error) {
+	reader, err := zip.NewReader(bytes.NewReader(zipBytes), int64(len(zipBytes)))
+	if err != nil {
+		return nil, fmt.Errorf("open zip: %w", err)
+	}
+
+	var themeName string
+	var yamlContent []byte
+	var cssContent []byte
+	var foundFiles = make(map[string][]byte)
+
+	stripPrefix := detectZipPrefix(reader.File)
+
+	for _, f := range reader.File {
+		name := filepath.ToSlash(f.Name)
+		if strings.HasPrefix(name, "__MACOSX/") || strings.HasSuffix(name, "/") {
+			continue
+		}
+		if stripPrefix != "" {
+			if !strings.HasPrefix(name, stripPrefix) {
+				continue
+			}
+			name = strings.TrimPrefix(name, stripPrefix)
+		}
+		if name == "" {
+			continue
+		}
+		if strings.Contains(name, "..") {
+			return nil, fmt.Errorf("invalid path in zip: %s", f.Name)
+		}
+
+		rc, err := f.Open()
+		if err != nil {
+			return nil, fmt.Errorf("open zip entry %s: %w", f.Name, err)
+		}
+		content, err := io.ReadAll(io.LimitReader(rc, 2<<20))
+		rc.Close()
+		if err != nil {
+			return nil, fmt.Errorf("read zip entry %s: %w", f.Name, err)
+		}
+
+		lName := strings.ToLower(name)
+		switch {
+		case lName == "theme.yaml" || lName == "theme.yml":
+			yamlContent = content
+		case strings.HasSuffix(lName, "static/theme.css"):
+			cssContent = content
+		}
+		foundFiles[name] = content
+	}
+
+	if len(yamlContent) == 0 {
+		return nil, errors.New("theme.yaml not found in archive")
+	}
+	if len(cssContent) == 0 {
+		return nil, errors.New("static/theme.css not found in archive")
+	}
+
+	var meta struct {
+		Name        string `yaml:"name"`
+		Version     string `yaml:"version"`
+		Author      string `yaml:"author"`
+		Description string `yaml:"description"`
+	}
+	if err := yaml.Unmarshal(yamlContent, &meta); err != nil {
+		return nil, fmt.Errorf("parse theme.yaml: %w", err)
+	}
+
+	if meta.Name == "" {
+		return nil, errors.New("theme.yaml missing required 'name' field")
+	}
+
+	slug := slugify(meta.Name)
+	if !ValidateName(slug) {
+		return nil, fmt.Errorf("theme name %q produces invalid slug %q", meta.Name, slug)
+	}
+	themeName = slug
+
+	if builtinThemeNames()[themeName] {
+		return nil, fmt.Errorf("cannot overwrite built-in theme %q", themeName)
+	}
+
+	dir := filepath.Join(themesDir(dataDir), themeName)
+	staticDir := filepath.Join(dir, "static")
+	if err := os.MkdirAll(staticDir, 0o755); err != nil {
+		return nil, fmt.Errorf("mkdir theme dir: %w", err)
+	}
+
+	yamlPath := filepath.Join(dir, "theme.yaml")
+	if err := os.WriteFile(yamlPath, yamlContent, 0o644); err != nil {
+		return nil, fmt.Errorf("write theme.yaml: %w", err)
+	}
+
+	cssPath := filepath.Join(staticDir, "theme.css")
+	if err := os.WriteFile(cssPath, cssContent, 0o644); err != nil {
+		return nil, fmt.Errorf("write theme.css: %w", err)
+	}
+
+	for name, content := range foundFiles {
+		if name == "theme.yaml" || name == "theme.yml" || strings.HasSuffix(name, "static/theme.css") {
+			continue
+		}
+		target := filepath.Join(dir, filepath.FromSlash(name))
+		if !strings.HasPrefix(filepath.Clean(target), filepath.Clean(dir)+string(os.PathSeparator)) {
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			slog.Warn("theme install: mkdir extra file", "path", target, "err", err)
+			continue
+		}
+		if err := os.WriteFile(target, content, 0o644); err != nil {
+			slog.Warn("theme install: write extra file", "path", target, "err", err)
+		}
+	}
+
+	t, err := readTheme(dir)
+	if err != nil {
+		return nil, err
+	}
+	t.Builtin = false
+	return &t, nil
+}
+
+// InstallFromCSS creates a simple theme from raw CSS bytes plus a display name.
+// Used for the "upload CSS file" shortcut that doesn't require zipping.
+func InstallFromCSS(dataDir, displayName string, cssBytes []byte) (*Theme, error) {
+	if displayName == "" {
+		return nil, errors.New("theme name required")
+	}
+	slug := slugify(displayName)
+	if !ValidateName(slug) {
+		return nil, fmt.Errorf("theme name %q produces invalid slug %q", displayName, slug)
+	}
+	if builtinThemeNames()[slug] {
+		return nil, fmt.Errorf("cannot overwrite built-in theme %q", slug)
+	}
+	if len(cssBytes) == 0 {
+		return nil, errors.New("CSS content is empty")
+	}
+
+	dir := filepath.Join(themesDir(dataDir), slug)
+	staticDir := filepath.Join(dir, "static")
+	if err := os.MkdirAll(staticDir, 0o755); err != nil {
+		return nil, err
+	}
+
+	yamlContent := fmt.Sprintf("name: %s\nversion: \"1.0\"\nauthor: (uploaded)\ndescription: 上传的自定义主题\n", displayName)
+	if err := os.WriteFile(filepath.Join(dir, "theme.yaml"), []byte(yamlContent), 0o644); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(filepath.Join(staticDir, "theme.css"), cssBytes, 0o644); err != nil {
+		return nil, err
+	}
+
+	t, err := readTheme(dir)
+	if err != nil {
+		return nil, err
+	}
+	t.Builtin = false
+	return &t, nil
+}
+
+func detectZipPrefix(files []*zip.File) string {
+	var prefix string
+	for _, f := range files {
+		name := filepath.ToSlash(f.Name)
+		if strings.HasPrefix(name, "__MACOSX/") {
+			continue
+		}
+		parts := strings.SplitN(name, "/", 2)
+		if len(parts) == 2 && parts[1] != "" {
+			if prefix == "" {
+				prefix = parts[0] + "/"
+			} else if parts[0]+"/" != prefix {
+				return ""
+			}
+		} else {
+			return ""
+		}
+	}
+	return prefix
+}
+
+func slugify(name string) string {
+	name = strings.TrimSpace(strings.ToLower(name))
+	var b strings.Builder
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == ' ', r == '-', r == '_':
+			b.WriteRune('-')
+		}
+	}
+	out := strings.Trim(b.String(), "-_")
+	out = regexp.MustCompile(`-+`).ReplaceAllString(out, "-")
+	return out
+}
+
 func readTheme(dir string) (Theme, error) {
 	yamlPath := filepath.Join(dir, "theme.yaml")
 	yamlInfo, err := os.Stat(yamlPath)
 	if err != nil {
-		return Theme{}, fmt.Errorf("stat theme.yaml: %w", err)
+		if errors.Is(err, os.ErrNotExist) {
+			yamlPath = filepath.Join(dir, "theme.yml")
+			yamlInfo, err = os.Stat(yamlPath)
+		}
+		if err != nil {
+			return Theme{}, fmt.Errorf("stat theme.yaml: %w", err)
+		}
 	}
 	raw, err := os.ReadFile(yamlPath)
 	if err != nil {
@@ -190,42 +396,100 @@ func readTheme(dir string) (Theme, error) {
 	}, nil
 }
 
-// defaultSunsetCSS is the bundled default theme. Kept in sync with
-// web/styles/globals.css :root / [data-theme="dark"] blocks — the layout
-// loads this CSS *after* globals.css so the :root overrides take effect.
-const defaultSunsetCSS = `/* Sunset — built-in default theme.
- * Mirrors web/styles/globals.css :root / [data-theme="dark"] CSS variables.
- * Drop a custom theme in data/themes/<name>/static/theme.css to override.
- */
+// ── Built-in themes ──────────────────────────────────────────────────
 
-:root {
-    --bg: #ffffff;
-    --bg-card: #ffffff;
-    --text: #1a1a1a;
-    --text-secondary: #555555;
-    --text-muted: #999999;
-    --border: #e5e5e5;
-    --accent: #3b82f6;
-    --accent-hover: #2563eb;
-    --code-bg: #f5f5f5;
-    --shadow: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
-    --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.05), 0 2px 4px rgba(0, 0, 0, 0.04);
-    --radius: 8px;
-    --header-bg: rgba(255, 255, 255, 0.92);
+// builtinThemeNames returns the set of theme slugs shipped with GoKYCH.
+// It discovers them by reading the embedded builtin/ directory at init time,
+// so adding a new subdirectory under builtin/ automatically registers it.
+func builtinThemeNames() map[string]bool {
+	names := make(map[string]bool)
+	entries, err := fs.ReadDir(builtinFS, "builtin")
+	if err != nil {
+		return names
+	}
+	for _, e := range entries {
+		if e.IsDir() && ValidateName(e.Name()) {
+			names[e.Name()] = true
+		}
+	}
+	return names
 }
 
-[data-theme="dark"] {
-    --bg: #000000;
-    --bg-card: #111111;
-    --text: #e0e0e0;
-    --text-secondary: #999999;
-    --text-muted: #666666;
-    --border: #2a2a2a;
-    --accent: #60a5fa;
-    --accent-hover: #93bcf8;
-    --code-bg: #1a1a1a;
-    --shadow: 0 1px 3px rgba(0, 0, 0, 0.5), 0 1px 2px rgba(0, 0, 0, 0.4);
-    --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.6), 0 2px 4px rgba(0, 0, 0, 0.5);
-    --header-bg: rgba(0, 0, 0, 0.92);
+// EnsureBuiltins extracts all built-in themes from the embedded filesystem
+// into dataDir/themes/. Idempotent — only writes files when missing or empty,
+// so user edits to built-in theme CSS in the data directory are preserved
+// across restarts.
+func EnsureBuiltins(dataDir string) error {
+	base := themesDir(dataDir)
+	if err := os.MkdirAll(base, 0o755); err != nil {
+		return err
+	}
+
+	entries, err := fs.ReadDir(builtinFS, "builtin")
+	if err != nil {
+		return fmt.Errorf("read builtin themes dir: %w", err)
+	}
+
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		slug := e.Name()
+		if !ValidateName(slug) {
+			continue
+		}
+
+		srcDir := "builtin/" + slug
+		dstDir := filepath.Join(base, slug)
+		if err := os.MkdirAll(dstDir, 0o755); err != nil {
+			return fmt.Errorf("mkdir %s: %w", dstDir, err)
+		}
+
+		// Walk every file in the embedded theme directory and copy it to
+		// the data directory, skipping files that already exist and are
+		// non-empty (so user customisations survive restart).
+		err := fs.WalkDir(builtinFS, srcDir, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() {
+				return nil
+			}
+			// path starts with srcDir + "/" (e.g. "builtin/sunset/static/theme.css")
+			// Strip the srcDir prefix to get the relative path inside the theme.
+			rel := strings.TrimPrefix(path, srcDir+"/")
+			if rel == path {
+				return nil
+			}
+			// Convert to OS path separator for the target filesystem.
+			targetPath := filepath.Join(dstDir, filepath.FromSlash(rel))
+
+			// Idempotency: skip existing non-empty files.
+			if info, stErr := os.Stat(targetPath); stErr == nil && info.Size() > 0 {
+				return nil
+			}
+
+			content, err := fs.ReadFile(builtinFS, path)
+			if err != nil {
+				return fmt.Errorf("read embedded %s: %w", path, err)
+			}
+			if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+				return err
+			}
+			if err := os.WriteFile(targetPath, content, 0o644); err != nil {
+				return fmt.Errorf("write %s: %w", targetPath, err)
+			}
+			return nil
+		})
+		if err != nil {
+			return fmt.Errorf("extract built-in theme %s: %w", slug, err)
+		}
+	}
+	return nil
 }
-`
+
+// EnsureDefault is kept for backwards compatibility — it now calls EnsureBuiltins.
+// Deprecated: Use EnsureBuiltins instead.
+func EnsureDefault(dataDir string) error {
+	return EnsureBuiltins(dataDir)
+}

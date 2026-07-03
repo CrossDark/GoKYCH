@@ -13,6 +13,7 @@ import type {
   MyPasskeyInfo,
   UpdateCheckInfo,
   UpdateStatus,
+  Theme,
 } from "@/lib/types";
 
 export function listUsers(csrf: string) {
@@ -302,5 +303,49 @@ export function applyUpdate(csrf: string) {
     method: "POST",
     headers: { "X-CSRF-Token": csrf },
     body: JSON.stringify({}),
+  });
+}
+
+// ── Theme management (owner-only) ────────────────────────────────────
+
+export function adminListThemes(csrf: string) {
+  return request<Theme[]>("/admin/themes", {
+    headers: { "X-CSRF-Token": csrf },
+    next: { revalidate: 0 },
+  });
+}
+
+export function uploadThemeZip(csrf: string, file: File) {
+  const fd = new FormData();
+  fd.append("zip", file);
+  return request<Theme>("/admin/themes/upload", {
+    method: "POST",
+    headers: { "X-CSRF-Token": csrf },
+    body: fd,
+  });
+}
+
+export function uploadThemeCSS(csrf: string, file: File, displayName?: string) {
+  const fd = new FormData();
+  fd.append("css", file);
+  if (displayName) fd.append("name", displayName);
+  return request<Theme>("/admin/themes/upload", {
+    method: "POST",
+    headers: { "X-CSRF-Token": csrf },
+    body: fd,
+  });
+}
+
+export function deleteTheme(csrf: string, name: string) {
+  return request<{ status: string }>(`/admin/themes/${name}`, {
+    method: "DELETE",
+    headers: { "X-CSRF-Token": csrf },
+  });
+}
+
+export function activateTheme(csrf: string, name: string) {
+  return request<{ status: string; active: string }>(`/admin/themes/${name}/activate`, {
+    method: "PUT",
+    headers: { "X-CSRF-Token": csrf },
   });
 }

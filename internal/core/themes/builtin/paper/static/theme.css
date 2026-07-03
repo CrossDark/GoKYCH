@@ -1,0 +1,54 @@
+:root {
+    --bg: #fdfcf7;
+    --bg-card: #fffef9;
+    --text: #2c2416;
+    --text-secondary: #5c4f3d;
+    --text-muted: #a89880;
+    --border: #e6dfd0;
+    --accent: #b45309;
+    --accent-hover: #92400e;
+    --code-bg: #f7f2e7;
+    --shadow: 0 1px 2px rgba(44, 36, 22, 0.06);
+    --shadow-md: 0 2px 8px rgba(44, 36, 22, 0.08);
+    --radius: 4px;
+    --header-bg: rgba(253, 252, 247, 0.94);
+}
+
+[data-theme="dark"] {
+    --bg: #1c1917;
+    --bg-card: #292524;
+    --text: #f5f0e8;
+    --text-secondary: #d6d3d1;
+    --text-muted: #78716c;
+    --border: #44403c;
+    --accent: #fbbf24;
+    --accent-hover: #fcd34d;
+    --code-bg: #292524;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+    --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.4);
+    --header-bg: rgba(28, 25, 23, 0.95);
+}
+
+body {
+    font-family: "Noto Serif SC", "Source Han Serif SC", "Songti SC", Georgia, serif;
+}
+
+code, pre {
+    font-family: "SF Mono", "Fira Code", "Cascadia Code", "Courier New", monospace;
+}
+
+h1, h2, h3, h4, h5, h6 {
+    font-family: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", -apple-system, sans-serif;
+    font-weight: 700;
+}
+
+.content-body {
+    border: none;
+    box-shadow: none;
+    background: var(--bg-card);
+}
+
+.article-card, .comment-item {
+    box-shadow: none;
+    border: 1px solid var(--border);
+}

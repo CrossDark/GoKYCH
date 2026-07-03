@@ -72,10 +72,11 @@ func main() {
 			siteTitle = t
 		}
 	}
-	// Seed the built-in "sunset" theme so the public /api/themes/:name.css
-	// endpoint always has at least one valid theme to serve on first boot.
-	if err := themes.EnsureDefault(cfg.App.DataDir); err != nil {
-		slog.Warn("failed to seed default theme", "err", err)
+	// Seed built-in themes (sunset/ocean/forest/midnight/paper) so the
+	// public /api/themes/:name.css endpoint always has valid themes to
+	// serve on first boot. Idempotent — only writes missing/empty files.
+	if err := themes.EnsureBuiltins(cfg.App.DataDir); err != nil {
+		slog.Warn("failed to seed built-in themes", "err", err)
 	}
 
 	// 3. Initialize database connection pool.
