@@ -5,6 +5,18 @@ import { getSiteTitle, formatPageTitle } from "@/lib/site-title";
 import type { Metadata } from "next";
 
 export const revalidate = 1800;
+// Opt the dynamic [slug] route into ISR (Full Route Cache). Without
+// generateStaticParams, Next.js treats [slug] as ƒ Dynamic and emits
+// `Cache-Control: private, no-store` on every response — so neither
+// EdgeOne nor Cloudflare Workers could cache article HTML. Returning []
+// (with the default dynamicParams=true) makes the route ○ Static/ISR:
+// no paths prerendered at build, but on-demand renders are cached for
+// `revalidate` seconds. Slugs are user-created so we can't enumerate
+// them at build time; on-demand ISR is the right mode.
+export const dynamicParams = true;
+export async function generateStaticParams() {
+  return [];
+}
 
 interface Props {
   params: Promise<{ slug: string }>;

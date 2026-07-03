@@ -4,9 +4,16 @@ import { ArticleView } from "@/components/ArticleView";
 import { getSiteTitle, formatPageTitle } from "@/lib/site-title";
 import type { Metadata } from "next";
 
-// ISR: revalidate article content every 300s (5min). Comments/ratings are fetched
-// client-side after hydration, so cached HTML stays fresh enough.
+// ISR: revalidate article content every 1800s (30min). Comments/ratings are
+// fetched client-side after hydration, so cached HTML stays fresh enough.
+// generateStaticParams([]) + dynamicParams=true opts the [slug] route into
+// on-demand ISR (●) so EdgeOne/CF Workers can cache the HTML; without it
+// the route is ƒ Dynamic and emits `private, no-store` (uncacheable).
 export const revalidate = 1800;
+export const dynamicParams = true;
+export async function generateStaticParams() {
+  return [];
+}
 
 interface Props {
   params: Promise<{ slug: string }>;
