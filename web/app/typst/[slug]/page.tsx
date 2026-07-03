@@ -5,6 +5,10 @@ import { getSiteTitle, formatPageTitle } from "@/lib/site-title";
 import type { Metadata } from "next";
 
 export const revalidate = 1800;
+export const dynamicParams = true;
+export async function generateStaticParams() {
+  return [];
+}
 
 interface Props {
   params: Promise<{ slug: string }>;
