@@ -23,6 +23,7 @@ const BREADCRUMB: { match: (p: string) => boolean; label: string; parent?: strin
   { match: (p) => p.startsWith("/admin/api-keys"), label: "API Key", parent: "管理" },
   { match: (p) => p.startsWith("/admin/passkeys"), label: "Passkey", parent: "管理" },
   { match: (p) => p.startsWith("/admin/update"), label: "系统更新", parent: "设置" },
+  { match: (p) => p.startsWith("/admin/themes"), label: "主题管理", parent: "外观" },
   { match: (p) => p.startsWith("/admin/profile"), label: "个人资料", parent: "设置" },
 ];
 
@@ -202,6 +203,14 @@ function AdminLayoutInner({ children }: { children: React.ReactNode }) {
             { href: "/admin/profile", label: "个人资料", icon: "👤" },
           ],
         },
+        ...(user.role === "owner"
+          ? [{
+              label: "外观",
+              items: [
+                { href: "/admin/themes", label: "主题管理", icon: "🎨" },
+              ],
+            }]
+          : []),
       ];
 
   const crumb = getBreadcrumb(pathname, user.role);

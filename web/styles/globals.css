@@ -5505,3 +5505,114 @@ body.admin-modal-open { overflow: hidden; }
     border-top-color: rgba(239, 68, 68, 0.2);
 }
 
+/* ── Theme management ── */
+.theme-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 16px;
+    padding: 20px;
+}
+.theme-card {
+    border: 2px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    background: var(--surface);
+    transition: border-color 0.2s, box-shadow 0.2s;
+    display: flex;
+    flex-direction: column;
+}
+.theme-card:hover {
+    border-color: var(--primary, #3b82f6);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+}
+.theme-card.active {
+    border-color: var(--primary, #3b82f6);
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
+}
+.theme-preview {
+    position: relative;
+    height: 160px;
+    overflow: hidden;
+    background: var(--bg-secondary, #f8f9fa);
+    border-bottom: 1px solid var(--border);
+}
+.theme-preview iframe {
+    transform: scale(0.7);
+    transform-origin: top left;
+    width: 143%;
+    height: 143%;
+    pointer-events: none;
+}
+.theme-active-badge {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    background: var(--primary, #3b82f6);
+    color: #fff;
+    font-size: 0.72rem;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 4px;
+}
+.theme-builtin-badge {
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    background: rgba(0, 0, 0, 0.5);
+    color: #fff;
+    font-size: 0.68rem;
+    padding: 2px 7px;
+    border-radius: 4px;
+}
+.theme-info {
+    padding: 10px 12px;
+    flex: 1;
+}
+.theme-name-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 4px;
+}
+.theme-name {
+    font-weight: 600;
+    font-size: 0.9rem;
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.theme-slug {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    background: var(--bg-secondary, #f0f0f0);
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-family: ui-monospace, monospace;
+    flex-shrink: 0;
+}
+.theme-meta {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    margin-right: 8px;
+}
+.theme-date {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    margin-top: 4px;
+}
+.theme-actions {
+    padding: 8px 12px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    gap: 6px;
+    align-items: center;
+}
+[data-theme="dark"] .theme-preview {
+    background: var(--bg-secondary, #1a1a2e);
+}
+[data-theme="dark"] .theme-slug {
+    background: rgba(255, 255, 255, 0.08);
+}
+
