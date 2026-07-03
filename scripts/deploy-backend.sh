@@ -330,8 +330,11 @@ REMOTE
   #   80 端口响应 HTTP-01 验证"矛盾的关键：先只写 listen 80，不写任何
   #   ssl_certificate 指令，nginx 能正常启动；然后 certbot --nginx
   #   自动用 80 端口跑 HTTP-01 验证、签证书、自动插入 443 ssl 块。
-  log "远端：写 nginx 配置（HTTP-only）…"
-  rsh bash -s <<REMOTE
+   log "远端：装 Cloudflare real_ip snippet…"
+   rsh "mkdir -p /etc/nginx/snippets"
+   rscp "$REPO_ROOT/scripts/nginx-cloudflare-realip.conf" /etc/nginx/snippets/cloudflare-realip.conf
+   log "远端：写 nginx 配置（HTTP-only）…"
+   rsh bash -s <<REMOTE
 set -euo pipefail
 
 # NOTE: 内层 heredoc 用 <<'NGINX' (quoted) — nginx.conf 里的 \$host / \$remote_addr
@@ -348,6 +351,12 @@ server {
     server_name ${API_DOMAIN};
 
     client_max_body_size 50m;
+
+    # Restore real client IP when api.<domain> is proxied through Cloudflare
+    # (orange cloud). No-op when DNS-only (grey cloud): set_real_ip_from only
+    # trusts CF ranges, so non-CF clients are unaffected. The snippet file is
+    # rscp'd from scripts/nginx-cloudflare-realip.conf above.
+    include /etc/nginx/snippets/cloudflare-realip.conf;
 
     location /api/ {
         proxy_pass http://127.0.0.1:8000;
