@@ -1,6 +1,7 @@
 import { getArticle } from "@/lib/api";
 import { renderArticleDetailError } from "@/components/ArticleDetailError";
 import { ArticleView } from "@/components/ArticleView";
+import { getSiteTitle, formatPageTitle } from "@/lib/site-title";
 import type { Metadata } from "next";
 
 export const revalidate = 300;
@@ -11,15 +12,16 @@ interface Props {
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const { slug } = await params;
+  const siteTitle = await getSiteTitle();
   try {
     const d = await getArticle("bbcode", slug);
-    return { title: `${d.article.title} — 跨越晨昏` };
+    return { title: formatPageTitle(d.article.title, siteTitle) };
   } catch (err) {
     console.error(
       `[bbcode/${slug}] generateMetadata fetch failed`,
       err instanceof Error ? err.message : err
     );
-    return { title: "文章 — 跨越晨昏" };
+    return { title: formatPageTitle("文章", siteTitle) };
   }
 }
 

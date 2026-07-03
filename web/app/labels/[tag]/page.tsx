@@ -1,4 +1,5 @@
 import { getLabelArticles } from "@/lib/api";
+import { getSiteTitle, formatPageTitle } from "@/lib/site-title";
 import { ArticleCard } from "@/components/ArticleCard";
 import { Pagination } from "@/components/Pagination";
 import Link from "next/link";
@@ -13,7 +14,8 @@ interface Props {
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const { tag } = await params;
-  return { title: `标签「${decodeURIComponent(tag)}」— 跨越晨昏` };
+  const siteTitle = await getSiteTitle();
+  return { title: formatPageTitle(`标签「${decodeURIComponent(tag)}」`, siteTitle) };
 }
 
 export default async function LabelPage({ params, searchParams }: Props) {

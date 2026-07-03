@@ -1,10 +1,14 @@
 import { listLabels } from "@/lib/api";
+import { getSiteTitle, formatPageTitle } from "@/lib/site-title";
 import Link from "next/link";
 import type { Metadata } from "next";
 
 export const revalidate = 120; // tag cloud changes less frequently
 
-export const metadata: Metadata = { title: "标签 — 跨越晨昏" };
+export async function generateMetadata(): Promise<Metadata> {
+  const siteTitle = await getSiteTitle();
+  return { title: formatPageTitle("标签", siteTitle) };
+}
 
 export default async function LabelsPage() {
   const tags = await listLabels().catch(() => []);

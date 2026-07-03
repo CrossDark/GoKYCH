@@ -1,9 +1,13 @@
 import ArticleList from "@/components/ArticleList";
+import { getSiteTitle, formatPageTitle } from "@/lib/site-title";
 import type { Metadata } from "next";
 
 export const revalidate = 60;
 
-export const metadata: Metadata = { title: "HTML 文章 — 跨越晨昏" };
+export async function generateMetadata(): Promise<Metadata> {
+  const siteTitle = await getSiteTitle();
+  return { title: formatPageTitle("HTML 文章", siteTitle) };
+}
 
 export default async function Page({
   searchParams,
