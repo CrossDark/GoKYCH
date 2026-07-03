@@ -1,4 +1,4 @@
-import { request, cache, isSSR } from "./client";
+import { request, cache, isSSR, apiUrl } from "./client";
 import type { Article, ArticleListResult, ArticleDetail } from "@/lib/types";
 
 export function listArticles(
@@ -23,7 +23,7 @@ export function listArticles(
 const _getArticleSSR = cache((type: string, slug: string) =>
   request<ArticleDetail>(`/articles/${type}/${slug}`, {
     anon: true,
-    next: { tags: ["articles", `article:${type}:${slug}`], revalidate: 1800 },
+    next: { tags: ["articles", `article:${type}:${slug}`], revalidate: 86400 },
   })
 );
 
@@ -71,4 +71,35 @@ export function deleteArticle(type: string, slug: string, csrf: string) {
       headers: { "X-CSRF-Token": csrf },
     }
   );
+}
+
+// getAllArticleSlugs walks the article list endpoint's pagination and
+// returns every slug for the given type. It is called from
+// generateStaticParams at BUILD time so Next.js prerenders every existing
+// article as ○ Static — EdgeOne then serves them as static assets (no
+// SSR/SCF on first hit, ~tens of ms instead of ~600ms).
+//
+// Articles created after a build are still covered by on-demand ISR
+// (dynamicParams=true on the [slug] route) plus the revalidate webhook, so
+// nothing goes stale. Failures degrade gracefully: any network/parse error
+// returns [] so the build never breaks — routes just fall back to on-demand
+// ISR. `cache: "no-store"` ensures the build sees the current article list,
+// not a stale cached copy.
+export async function getAllArticleSlugs(type: string): Promise<{ slug: string }[]> {
+  const out: { slug: string }[] = [];
+  try {
+    for (let page = 1; page < 1000; page++) {
+      const res = await fetch(
+        apiUrl(`/api/articles?type=${encodeURIComponent(type)}&page=${page}`),
+        { cache: "no-store" }
+      );
+      if (!res.ok) break;
+      const data = (await res.json()) as ArticleListResult;
+      for (const a of data.articles) out.push({ slug: a.slug });
+      if (page >= data.total_pages) break;
+    }
+  } catch {
+    return [];
+  }
+  return out;
 }

@@ -18,9 +18,10 @@ const BASE =
 const SSR_FETCH_TIMEOUT_MS = 8000;
 
 // DEFAULT_REVALIDATE is the Next.js ISR revalidate window for GET
-// requests that don't specify their own. 300s gives a good balance
-// between freshness and edge-cache hit ratio (space-for-time).
-const DEFAULT_REVALIDATE = 300;
+// requests that don't specify their own. 3600s (1h) gives a high edge-cache
+// hit ratio (space-for-time); on-demand revalidation (webhook) keeps cached
+// content fresh on edits, so a long window is safe.
+const DEFAULT_REVALIDATE = 3600;
 
 export const isSSR = typeof window === "undefined";
 

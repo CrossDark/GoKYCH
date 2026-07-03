@@ -2,7 +2,7 @@ import ArticleList from "@/components/ArticleList";
 import { getSiteTitle, formatPageTitle } from "@/lib/site-title";
 import type { Metadata } from "next";
 
-export const revalidate = 300;
+export const revalidate = 3600;
 
 export async function generateMetadata(): Promise<Metadata> {
   const siteTitle = await getSiteTitle();

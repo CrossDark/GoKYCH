@@ -73,7 +73,7 @@ func (s *Server) listArticles(c *gin.Context) {
 	}
 	currentUser := CurrentUserFromContext(c)
 	if currentUser == nil {
-		c.Header("Cache-Control", "public, max-age=300, stale-while-revalidate=600")
+		c.Header("Cache-Control", "public, max-age=3600, stale-while-revalidate=3600")
 	} else {
 		c.Header("Cache-Control", "private, max-age=30")
 	}
@@ -121,7 +121,7 @@ func (s *Server) getArticle(c *gin.Context) {
 		// Anonymous: allow CDN/Edge caching since HTML is identical for all.
 		// 5 min fresh + 1 hour stale-while-revalidate for good CDN hit ratio
 		// while keeping content reasonably up-to-date.
-		c.Header("Cache-Control", "public, max-age=1800, stale-while-revalidate=3600")
+		c.Header("Cache-Control", "public, max-age=86400, stale-while-revalidate=86400")
 	} else {
 		// Logged-in: private cache with short freshness + short SWR.
 		c.Header("Cache-Control", "private, max-age=30, stale-while-revalidate=60")
@@ -514,7 +514,7 @@ func (s *Server) listLabels(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载标签失败。"})
 		return
 	}
-	c.Header("Cache-Control", "public, max-age=600, stale-while-revalidate=3600")
+	c.Header("Cache-Control", "public, max-age=3600, stale-while-revalidate=86400")
 	c.JSON(http.StatusOK, tags)
 }
 
@@ -533,7 +533,7 @@ func (s *Server) getLabelArticles(c *gin.Context) {
 	}
 	currentUser := CurrentUserFromContext(c)
 	if currentUser == nil {
-		c.Header("Cache-Control", "public, max-age=300, stale-while-revalidate=600")
+		c.Header("Cache-Control", "public, max-age=3600, stale-while-revalidate=3600")
 	} else {
 		c.Header("Cache-Control", "private, max-age=30")
 	}

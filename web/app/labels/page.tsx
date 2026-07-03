@@ -3,7 +3,7 @@ import { getSiteTitle, formatPageTitle } from "@/lib/site-title";
 import Link from "next/link";
 import type { Metadata } from "next";
 
-export const revalidate = 600; // tag cloud changes less frequently
+export const revalidate = 3600; // tag cloud changes less frequently
 
 export async function generateMetadata(): Promise<Metadata> {
   const siteTitle = await getSiteTitle();

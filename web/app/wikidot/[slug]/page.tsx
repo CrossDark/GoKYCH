@@ -1,21 +1,20 @@
-import { getArticle } from "@/lib/api";
+import { getArticle, getAllArticleSlugs } from "@/lib/api";
 import { renderArticleDetailError } from "@/components/ArticleDetailError";
 import { ArticleView } from "@/components/ArticleView";
 import { getSiteTitle, formatPageTitle } from "@/lib/site-title";
 import type { Metadata } from "next";
 
-export const revalidate = 1800;
-// Opt the dynamic [slug] route into ISR (Full Route Cache). Without
-// generateStaticParams, Next.js treats [slug] as ƒ Dynamic and emits
-// `Cache-Control: private, no-store` on every response — so neither
-// EdgeOne nor Cloudflare Workers could cache article HTML. Returning []
-// (with the default dynamicParams=true) makes the route ○ Static/ISR:
-// no paths prerendered at build, but on-demand renders are cached for
-// `revalidate` seconds. Slugs are user-created so we can't enumerate
-// them at build time; on-demand ISR is the right mode.
+export const revalidate = 86400;
+// Prerender every existing wikidot article at build (○ Static) so EdgeOne
+// serves them as static assets — no SSR/SCF on first hit. generateStaticParams
+// fetches all slugs of this type from the API at build; articles created
+// after a build are still covered by on-demand ISR (dynamicParams=true)
+// plus the revalidate webhook. revalidate=86400 (1d): the webhook does
+// on-demand invalidation on edits, so a long window is safe and maximises
+// cache hits.
 export const dynamicParams = true;
 export async function generateStaticParams() {
-  return [];
+  return getAllArticleSlugs("wikidot");
 }
 
 interface Props {

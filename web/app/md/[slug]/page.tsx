@@ -1,18 +1,16 @@
-import { getArticle } from "@/lib/api";
+import { getArticle, getAllArticleSlugs } from "@/lib/api";
 import { renderArticleDetailError } from "@/components/ArticleDetailError";
 import { ArticleView } from "@/components/ArticleView";
 import { getSiteTitle, formatPageTitle } from "@/lib/site-title";
 import type { Metadata } from "next";
 
-// ISR: revalidate article content every 1800s (30min). Comments/ratings are
-// fetched client-side after hydration, so cached HTML stays fresh enough.
-// generateStaticParams([]) + dynamicParams=true opts the [slug] route into
-// on-demand ISR (●) so EdgeOne/CF Workers can cache the HTML; without it
-// the route is ƒ Dynamic and emits `private, no-store` (uncacheable).
-export const revalidate = 1800;
+// Prerender every existing md article at build (○ Static) — see
+// wikidot/[slug] for the full rationale. revalidate=86400 (1d); the
+// on-demand webhook handles edits so a long window is safe.
+export const revalidate = 86400;
 export const dynamicParams = true;
 export async function generateStaticParams() {
-  return [];
+  return getAllArticleSlugs("md");
 }
 
 interface Props {
