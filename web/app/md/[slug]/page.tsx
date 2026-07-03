@@ -6,7 +6,7 @@ import type { Metadata } from "next";
 
 // ISR: revalidate article content every 300s (5min). Comments/ratings are fetched
 // client-side after hydration, so cached HTML stays fresh enough.
-export const revalidate = 300;
+export const revalidate = 1800;
 
 interface Props {
   params: Promise<{ slug: string }>;

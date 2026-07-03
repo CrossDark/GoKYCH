@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
-import { headers } from "next/headers";
 import { ThemeProvider } from "@/components/ThemeProvider";
 import { ThemeStylesheet } from "@/components/ThemeStylesheet";
+import { AppData } from "@/components/AppData";
 import { LayoutWrapper } from "./LayoutWrapper";
 import { getSiteTitle } from "@/lib/site-title";
 import "@/styles/globals.css";
@@ -19,14 +19,20 @@ export default async function RootLayout({
 }: {
   children: React.ReactNode;
 }) {
-  const headersList = await headers();
-  const nonce = headersList.get("X-Nonce") || undefined;
-
+  // NOTE: this layout deliberately does NOT call headers()/cookies().
+  // The previous per-request CSP nonce (read via `await headers()` here)
+  // forced every route into dynamic rendering and disabled Next.js Full
+  // Route Cache, so neither EdgeOne nor Cloudflare Workers could cache the
+  // SSR HTML at the edge. CSP is now a static policy set in middleware.ts
+  // (`script-src 'self' 'unsafe-inline'`), and the inline theme-detection
+  // script below runs under that 'unsafe-inline' allowance. Server-side
+  // sanitisation (bluemonday / DOMPurify / goldmark) remains the primary
+  // XSS defence. Restoring ISR lets both frontends serve cached HTML,
+  // which is the main "space-for-time" win for the mainland audience.
   return (
     <html lang="zh-CN" suppressHydrationWarning>
       <head>
         <script
-          nonce={nonce}
           dangerouslySetInnerHTML={{
             __html: `
               (function() {
@@ -44,9 +50,11 @@ export default async function RootLayout({
         />
       </head>
       <body>
-        <ThemeStylesheet />
         <ThemeProvider>
-          <LayoutWrapper>{children}</LayoutWrapper>
+          <AppData>
+            <ThemeStylesheet />
+            <LayoutWrapper>{children}</LayoutWrapper>
+          </AppData>
         </ThemeProvider>
       </body>
     </html>

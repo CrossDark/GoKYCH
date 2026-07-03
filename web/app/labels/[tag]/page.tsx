@@ -5,7 +5,7 @@ import { Pagination } from "@/components/Pagination";
 import Link from "next/link";
 import type { Metadata } from "next";
 
-export const revalidate = 60;
+export const revalidate = 300;
 
 interface Props {
   params: Promise<{ tag: string }>;

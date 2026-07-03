@@ -45,7 +45,7 @@ func (s *Server) getThemeCSS(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "主题不存在。"})
 		return
 	}
-	c.Header("Cache-Control", "public, max-age=300")
+	c.Header("Cache-Control", "public, max-age=600, stale-while-revalidate=3600")
 	c.Header("X-Content-Type-Options", "nosniff")
 	c.Data(http.StatusOK, "text/css; charset=utf-8", css)
 }

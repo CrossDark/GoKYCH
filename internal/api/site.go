@@ -53,7 +53,7 @@ func (s *Server) getSite(c *gin.Context) {
 		}
 	}
 
-	c.Header("Cache-Control", "public, max-age=120, stale-while-revalidate=600")
+	c.Header("Cache-Control", "public, max-age=600, stale-while-revalidate=3600")
 	c.JSON(http.StatusOK, gin.H{
 		"site":          cfg["site"],
 		"appearance":    cfg["appearance"],
@@ -175,7 +175,7 @@ func (s *Server) getHome(c *gin.Context) {
 		return
 	}
 
-	c.Header("Cache-Control", "public, max-age=60, stale-while-revalidate=300")
+	c.Header("Cache-Control", "public, max-age=300, stale-while-revalidate=600")
 	c.JSON(http.StatusOK, gin.H{
 		"subsite_links":     subLinks,
 		"featured_articles": featured,

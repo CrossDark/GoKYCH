@@ -23,7 +23,7 @@ export function listArticles(
 const _getArticleSSR = cache((type: string, slug: string) =>
   request<ArticleDetail>(`/articles/${type}/${slug}`, {
     anon: true,
-    next: { tags: ["articles", `article:${type}:${slug}`], revalidate: 300 },
+    next: { tags: ["articles", `article:${type}:${slug}`], revalidate: 1800 },
   })
 );
 

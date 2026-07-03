@@ -1098,6 +1098,93 @@ GOARCH=arm64 ./scripts/deploy-backend.sh
 
 ---
 
+## 11. 缓存优化：CF 代理 + ISR + 按需失效（空间换时间）
+
+针对"CF Workers / EdgeOne 前端 + 海外后端"对大陆用户慢的问题，做了
+三层缓存优化。核心思路：**用缓存换时间、节约后端**——让大陆用户尽量
+命中离自己最近的边缘缓存，少回源到海外。
+
+### 11.1 api.ywda.net 接入 Cloudflare 代理（运维）
+
+- DNS 把 `api.ywda.net` 从灰云改**橙云**（Proxied）。浏览器与两端 SSR
+  的 API 请求打到离自己最近的 CF PoP，再走 CF 骨干回源，比 ISP 直连
+  海外稳定得多；公开响应还能被边缘缓存。
+- SSL/TLS 模式 = **Full (strict)**（用 nginx 上 certbot 的现有证书）。
+  Flexible 会让 cookie/WebAuthn 失效。
+- **Cache Rule**（Caching → Cache Rules）：`Hostname eq "api.ywda.net"
+  and URI Path starts with "/api/"` → Eligible for cache / Edge TTL =
+  Respect origin TTL。**不要选 "Cache everything"**，否则会把
+  `/api/auth/me`（无 `Cache-Control`）也缓存，跨用户串数据。后端已对
+  公开端点设 `public, max-age=…`、对登录态设 `private`，"Respect
+  origin" 会正确区分。
+- **nginx 恢复真实 IP**（否则后端限流看到的都是 CF IP）：
+  `include /etc/nginx/snippets/cloudflare-realip.conf;`（仓库
+  `scripts/nginx-cloudflare-realip.conf`，含 CF 全部 v4/v6 段 +
+  `real_ip_header CF-Connecting-IP`）。Go 侧 `TRUSTED_PROXIES=127.0.0.1`
+  不变（Go 只信 nginx，nginx 现在信 CF）。
+
+### 11.2 解锁边缘 HTML 缓存（代码：去 nonce）
+
+之前 `app/layout.tsx` 调 `await headers()` 取每请求 CSP nonce，**这
+把所有路由强制动态渲染、禁用了 Next.js Full Route Cache**——EdgeOne
+和 CF Workers 都没法缓存 SSR HTML。现已：
+
+- 删 `web/middleware.ts`（移除每请求 nonce 生成）。
+- `web/next.config.ts` 加静态 CSP（`script-src 'self' 'unsafe-inline'`，
+  含 `NEXT_PUBLIC_API_BASE_URL` 的 origin 到 `connect-src`/`img-src`/
+  `style-src`/`media-src`，避免阻断跨域 API / 外部图片 / YouTube 嵌入），
+  并由 `headers()` 注入——静态头会被烘焙进缓存响应，比 middleware 更
+  可靠。
+- `app/layout.tsx` 删 `headers()`/nonce。
+
+效果：所有 `export const revalidate` 重新生效，EdgeOne 大陆节点缓存
+HTML（命中即零 SSR、零回源），CF Workers 区域缓存。
+
+### 11.3 拉长缓存窗口（代码：前端 revalidate + 后端 Cache-Control）
+
+前端 `revalidate`：文章详情 300→**1800**、列表/首页 60→**300**、
+site/labels/themes 60→**600**；`web/lib/api/client.ts` 默认 60→**300**。
+后端 `Cache-Control` 同步调长（articles 1800、site 600、home 300、
+labels 600、themes 600），均保留大 `stale-while-revalidate`。
+
+### 11.4 按需失效 webhook（长缓存下编辑仍秒级刷新）
+
+长缓存会让编辑/评论最多延迟一个窗口才对他人可见。加了 webhook：
+
+- 前端 `web/app/revalidate/route.ts`（**在 `/revalidate`，不在 `/api/`**，
+  避开 dev 的 `/api/*` 代理）：校验 `Authorization: Bearer $REVALIDATE_SECRET`
+  后调 `revalidateTag`/`revalidatePath`。两端都生效（CF 侧靠
+  `WORKER_SELF_REFERENCE` 自调用）。
+- 后端 `internal/api/revalidate.go`：`s.revalidateFrontend(tags, paths)`
+  fire-and-forget 回调 `FRONTEND_REVALIDATE_URLS` 里每个前端。已在
+  文章 CRUD、评论/行评论、评分增删、标签 CRUD、通知 CRUD、设置更新、
+  子站点增删、推荐增删后接入。文章变更失效 `articles`+`home`+
+  `article:type:slug` + 对应 path；评论/评分失效单文章；标签失效
+  `labels`+`/labels`；设置/子站点失效 `site`+`home`。
+- 环境变量（前后端共享密钥，`openssl rand -hex 32`）：
+  - 后端 `.env`：`FRONTEND_REVALIDATE_URLS=https://eo.ywda.net/revalidate,https://cf.ywda.net/revalidate` + `REVALIDATE_SECRET=…`
+  - 前端：CF Workers secret / EdgeOne 环境变量 `REVALIDATE_SECRET=…`
+
+### 11.5 削减客户端请求瀑布（代码：AppProviders）
+
+`web/components/AppData.tsx`（server）SSR 取 site/labels/themes（均
+`anon`+缓存，不碰 `cookies()`，ISR 友好）→ `AppProviders.tsx`（client）
+单次 `getMe`+`getCsrf` 共享给 Header/ThemeStylesheet/ArticleView/
+RatingWidget/CommentSection。文章页客户端请求 5–8 → 匿名 1 / 登录 2，
+且 `getMe→getCsrf` 串行链从 4 条降到 1 条。登录态在匿名缓存 HTML 上
+靠 context 乐观显示编辑链接（权限仍由编辑页后端校验）。
+
+### 11.6 验证
+
+```bash
+curl -I https://eo.ywda.net/wikidot/电梯生存须知   # 二次请求见 x-cache/age 命中
+curl -I https://api.ywda.net/api/site              # CF-Cache-Status: HIT
+curl -I https://api.ywda.net/api/auth/me           # 应为 DYNAMIC（不缓存）
+# 后台改一篇文章后数秒内 cf.ywda.net / eo.ywda.net 均刷新
+```
+
+---
+
 ## 附录 A：相关 commit 一览（按时间倒序）
 
 | commit    | 主题                                                         |

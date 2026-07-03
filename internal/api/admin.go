@@ -219,6 +219,7 @@ func (s *Server) createTag(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "创建标签失败。"})
 		return
 	}
+	s.revalidateFrontend([]string{"labels"}, []string{"/labels"})
 	c.JSON(http.StatusCreated, gin.H{"id": id, "status": "ok"})
 }
 
@@ -258,6 +259,7 @@ func (s *Server) renameTag(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "标签不存在。"})
 		return
 	}
+	s.revalidateFrontend([]string{"labels"}, []string{"/labels"})
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
@@ -295,6 +297,7 @@ func (s *Server) deleteTag(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "提交失败。"})
 		return
 	}
+	s.revalidateFrontend([]string{"labels"}, []string{"/labels"})
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
@@ -383,6 +386,7 @@ func (s *Server) createNotification(c *gin.Context) {
 		return
 	}
 	id, _ := res.LastInsertId()
+	s.revalidateFrontend([]string{"home"}, []string{"/"})
 	c.JSON(http.StatusCreated, gin.H{"id": id, "status": "ok"})
 }
 
@@ -432,6 +436,7 @@ func (s *Server) updateNotification(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "通知不存在。"})
 		return
 	}
+	s.revalidateFrontend([]string{"home"}, []string{"/"})
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
@@ -453,6 +458,7 @@ func (s *Server) deleteNotification(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "通知不存在。"})
 		return
 	}
+	s.revalidateFrontend([]string{"home"}, []string{"/"})
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
@@ -477,6 +483,7 @@ func (s *Server) updateSettings(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "保存设置失败。"})
 		return
 	}
+	s.revalidateFrontend([]string{"site", "home"}, []string{"/"})
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
@@ -610,6 +617,7 @@ func (s *Server) addSubsiteLink(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "添加失败。"})
 		return
 	}
+	s.revalidateFrontend([]string{"site", "home"}, []string{"/"})
 	c.JSON(http.StatusCreated, gin.H{"status": "ok"})
 }
 
@@ -631,6 +639,7 @@ func (s *Server) deleteSubsiteLink(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "链接不存在。"})
 		return
 	}
+	s.revalidateFrontend([]string{"site", "home"}, []string{"/"})
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
@@ -657,6 +666,7 @@ func (s *Server) addFeatured(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "添加失败。"})
 		return
 	}
+	s.revalidateFrontend([]string{"home"}, []string{"/"})
 	c.JSON(http.StatusCreated, gin.H{"status": "ok"})
 }
 
@@ -678,6 +688,7 @@ func (s *Server) deleteFeatured(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "推荐不存在。"})
 		return
 	}
+	s.revalidateFrontend([]string{"home"}, []string{"/"})
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 

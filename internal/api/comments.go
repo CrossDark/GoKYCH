@@ -63,6 +63,8 @@ func (s *Server) addComment(c *gin.Context) {
 		return
 	}
 	cm.ContentHTML = s.rewriteStaticAssetURLs(parsers.RenderSafeMarkdown(cm.Content))
+	atype, slug := c.Param("type"), c.Param("slug")
+	s.revalidateFrontend([]string{"article:" + atype + ":" + slug}, []string{"/" + atype + "/" + slug})
 	c.JSON(http.StatusCreated, cm)
 }
 
@@ -134,6 +136,8 @@ func (s *Server) addLineComment(c *gin.Context) {
 		return
 	}
 	cm.ContentHTML = s.rewriteStaticAssetURLs(parsers.RenderSafeMarkdown(cm.Content))
+	atype, slug := c.Param("type"), c.Param("slug")
+	s.revalidateFrontend([]string{"article:" + atype + ":" + slug}, []string{"/" + atype + "/" + slug})
 	c.JSON(http.StatusCreated, cm)
 }
 

@@ -6,7 +6,8 @@ import type { ArticleDetail, Comment } from "@/lib/types";
 import { RatingWidget } from "./RatingWidget";
 import { CommentSection } from "./CommentSection";
 import { SafeMarkdown } from "./SafeMarkdown";
-import { getMe, getCsrf, addLineComment, apiUrl } from "@/lib/api";
+import { addLineComment, apiUrl } from "@/lib/api";
+import { useApp } from "./AppProviders";
 import { UserAvatar } from "@/components/admin/UserAvatar";
 import { hydrateMarkdown } from "@/lib/markdown-hydrate";
 import { LineCommentBubble, CommentAvatar, commentDisplayName, formatBubbleTime } from "./article-view";
@@ -28,9 +29,10 @@ export function ArticleView({ data, articleType, articleSlug }: Props) {
   const lineDataRef = useRef<Record<number, Comment[]>>({});
 
   const [lineCounts, setLineCounts] = useState<Record<number, number>>(rawLineCounts ?? {});
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
-  const [currentUser, setCurrentUser] = useState<{ nickname?: string; username: string } | null>(null);
-  const [csrfToken, setCsrfToken] = useState("");
+  // Auth (user + csrfToken) comes from the shared <AppProviders> context
+  // instead of a per-component getMe/getCsrf fetch — see P1.
+  const { user: currentUser, csrfToken } = useApp();
+  const isLoggedIn = !!currentUser;
   const [panelOpen, setPanelOpen] = useState(true);
   const [guideOpen, setGuideOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -74,12 +76,8 @@ export function ArticleView({ data, articleType, articleSlug }: Props) {
     setBubbleHeights(heights);
   }, []);
 
-  // Auth
-  useEffect(() => {
-    getMe().then((r) => {
-      if (r.user) { setIsLoggedIn(true); setCurrentUser(r.user); getCsrf().then((c) => setCsrfToken(c.csrf_token)).catch(() => {}); }
-    }).catch(() => {});
-  }, []);
+  // Auth is now provided by <AppProviders> (single getMe/getCsrf for the
+  // whole page), so this component no longer fires its own auth fetch.
 
   // Initialise line-comment refs from server data. Runs once per data
   // change (new article navigation). DO NOT include lineCounts/commentedLines
@@ -342,7 +340,7 @@ export function ArticleView({ data, articleType, articleSlug }: Props) {
               title="下载 PDF（首次点击会触发 typst 编译，约 1–2 秒）"
             >📄 下载 PDF</a>
           )}
-          {can_edit && <Link href={`/admin/articles?editType=${article.type}&editSlug=${article.slug}`} className="edit-link">✏️ 编辑</Link>}</div>
+          {can_edit || isLoggedIn ? <Link href={`/admin/articles?editType=${article.type}&editSlug=${article.slug}`} className="edit-link">✏️ 编辑</Link> : null}</div>
       </header>
       <div className="article-content-wrap">
         <div

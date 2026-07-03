@@ -54,6 +54,8 @@ func (s *Server) setRating(c *gin.Context) {
 		respondInternalErr(c, "评分失败。")
 		return
 	}
+	atype, slug := c.Param("type"), c.Param("slug")
+	s.revalidateFrontend([]string{"article:" + atype + ":" + slug}, []string{"/" + atype + "/" + slug})
 	c.JSON(http.StatusOK, rs)
 }
 
@@ -80,6 +82,8 @@ func (s *Server) deleteRating(c *gin.Context) {
 		respondNotFound(c, "未找到评分记录。")
 		return
 	}
+	atype, slug := c.Param("type"), c.Param("slug")
+	s.revalidateFrontend([]string{"article:" + atype + ":" + slug}, []string{"/" + atype + "/" + slug})
 	rs, err := content.GetRatingSummaryCtx(ctx, s.DB, articleID, voterKey)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
