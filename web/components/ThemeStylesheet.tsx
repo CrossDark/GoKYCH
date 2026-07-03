@@ -1,47 +1,35 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { getSite, listThemes, apiUrl } from "@/lib/api";
+import { useApp } from "./AppProviders";
+import { apiUrl } from "@/lib/api";
 
 /**
  * ThemeStylesheet — loads /api/themes/<style_theme>.css into the document
- * head, so the active theme's :root variables override the built-in defaults
- * from globals.css. If settings.yml has no style_theme (or the named
- * theme doesn't exist on disk), nothing is injected and globals.css wins.
+ * so the active theme's :root variables override the built-in defaults
+ * from globals.css.
  *
- * Uses the theme's updated_at timestamp as a cache-busting query parameter
- * (e.g. ?v=1719900000). This gives us:
- * - CDN/browser caching while the theme file is unchanged (same URL)
- * - Immediate cache invalidation when the CSS or theme.yaml is edited
- *   (new timestamp → new URL → cache miss)
+ * Previously this fired two client-side fetches (getSite + listThemes) on
+ * every mount. It now reads both from the <AppData> SSR context, so the
+ * <link> is computed synchronously and present in the SSR HTML — no flash,
+ * no client fetch, and ISR-friendly (no dynamic API).
+ *
+ * The theme's updated_at timestamp is appended as ?v= for cache-busting
+ * (same URL while unchanged → CDN/browser cache; new timestamp on edit →
+ * cache miss).
  */
 export function ThemeStylesheet() {
-  const [href, setHref] = useState<string | null>(null);
+  const { site, themes } = useApp();
+  const name = (site?.appearance as { style_theme?: string } | undefined)
+    ?.style_theme;
+  if (!name || !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(name)) return null;
 
-  useEffect(() => {
-    let cancelled = false;
-    Promise.all([getSite(), listThemes()])
-      .then(([s, themes]) => {
-        if (cancelled) return;
-        const name = (s.appearance as any)?.style_theme;
-        if (name && typeof name === "string" && /^[a-z0-9][a-z0-9_-]{0,63}$/.test(name)) {
-          const theme = themes.find((t) => t.name === name);
-          let url = apiUrl(`/api/themes/${name}`);
-          if (theme?.updated_at) {
-            const timestamp = new Date(theme.updated_at).getTime();
-            if (!isNaN(timestamp)) {
-              url += `?v=${timestamp}`;
-            }
-          }
-          setHref(url);
-        } else {
-          setHref(null);
-        }
-      })
-      .catch(() => setHref(null));
-    return () => { cancelled = true; };
-  }, []);
-
-  if (!href) return null;
-  return <link rel="stylesheet" href={href} data-theme-stylesheet="active" />;
+  const theme = themes.find((t) => t.name === name);
+  let url = apiUrl(`/api/themes/${name}`);
+  if (theme?.updated_at) {
+    const timestamp = new Date(theme.updated_at).getTime();
+    if (!isNaN(timestamp)) {
+      url += `?v=${timestamp}`;
+    }
+  }
+  return <link rel="stylesheet" href={url} data-theme-stylesheet="active" />;
 }

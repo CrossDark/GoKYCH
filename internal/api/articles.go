@@ -73,7 +73,7 @@ func (s *Server) listArticles(c *gin.Context) {
 	}
 	currentUser := CurrentUserFromContext(c)
 	if currentUser == nil {
-		c.Header("Cache-Control", "public, max-age=60, stale-while-revalidate=300")
+		c.Header("Cache-Control", "public, max-age=300, stale-while-revalidate=600")
 	} else {
 		c.Header("Cache-Control", "private, max-age=30")
 	}
@@ -121,7 +121,7 @@ func (s *Server) getArticle(c *gin.Context) {
 		// Anonymous: allow CDN/Edge caching since HTML is identical for all.
 		// 5 min fresh + 1 hour stale-while-revalidate for good CDN hit ratio
 		// while keeping content reasonably up-to-date.
-		c.Header("Cache-Control", "public, max-age=300, stale-while-revalidate=3600")
+		c.Header("Cache-Control", "public, max-age=1800, stale-while-revalidate=3600")
 	} else {
 		// Logged-in: private cache with short freshness + short SWR.
 		c.Header("Cache-Control", "private, max-age=30, stale-while-revalidate=60")
@@ -394,6 +394,10 @@ func (s *Server) createArticle(c *gin.Context) {
 	if len(in.Tags) > 0 {
 		_ = content.SetArticleTagsCtx(ctx, s.DB, s.Typst, a.ID, in.Tags)
 	}
+	s.revalidateFrontend(
+		revalidateArticleTags(atype, in.Slug, len(in.Tags) > 0),
+		revalidateArticlePaths(atype, in.Slug, len(in.Tags) > 0),
+	)
 	// Attach compile status for the response
 	if atype == "typst" {
 		if cs, err := s.Typst.GetCompileStatusCtx(ctx, a.ID); err == nil && cs != nil {
@@ -451,6 +455,10 @@ func (s *Server) updateArticle(c *gin.Context) {
 	if in.Tags != nil {
 		_ = content.SetArticleTagsCtx(ctx, s.DB, s.Typst, a.ID, in.Tags)
 	}
+	s.revalidateFrontend(
+		revalidateArticleTags(atype, slug, in.Tags != nil),
+		revalidateArticlePaths(atype, slug, in.Tags != nil),
+	)
 	if atype == "typst" {
 		if cs, err := s.Typst.GetCompileStatusCtx(ctx, a.ID); err == nil && cs != nil {
 			c.JSON(http.StatusOK, gin.H{"article": a, "compile_status": cs})
@@ -489,6 +497,10 @@ func (s *Server) deleteArticle(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "文章不存在。"})
 		return
 	}
+	s.revalidateFrontend(
+		revalidateArticleTags(atype, slug, true),
+		revalidateArticlePaths(atype, slug, true),
+	)
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
@@ -502,7 +514,7 @@ func (s *Server) listLabels(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载标签失败。"})
 		return
 	}
-	c.Header("Cache-Control", "public, max-age=300, stale-while-revalidate=3600")
+	c.Header("Cache-Control", "public, max-age=600, stale-while-revalidate=3600")
 	c.JSON(http.StatusOK, tags)
 }
 
@@ -521,7 +533,7 @@ func (s *Server) getLabelArticles(c *gin.Context) {
 	}
 	currentUser := CurrentUserFromContext(c)
 	if currentUser == nil {
-		c.Header("Cache-Control", "public, max-age=60, stale-while-revalidate=300")
+		c.Header("Cache-Control", "public, max-age=300, stale-while-revalidate=600")
 	} else {
 		c.Header("Cache-Control", "private, max-age=30")
 	}

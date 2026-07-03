@@ -4,7 +4,7 @@ import { ArticleView } from "@/components/ArticleView";
 import { getSiteTitle, formatPageTitle } from "@/lib/site-title";
 import type { Metadata } from "next";
 
-export const revalidate = 300;
+export const revalidate = 1800;
 
 interface Props {
   params: Promise<{ slug: string }>;

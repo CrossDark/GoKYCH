@@ -3,37 +3,48 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import Link from "next/link";
 import { useTheme } from "next-themes";
-import type { User, SubsiteLink } from "@/lib/types";
-import { getMe, listLabels, getSite } from "@/lib/api";
-import type { TagWithCount, SiteConfig } from "@/lib/types";
+import type { SubsiteLink, TagWithCount } from "@/lib/types";
+import { listLabels } from "@/lib/api";
+import { useApp } from "./AppProviders";
 import { UserAvatar } from "@/components/admin/UserAvatar";
 
 const LABELS_CACHE_TTL = 5 * 60 * 1000;
 
 export function Header() {
-  const [user, setUser] = useState<User | null>(null);
+  const { site, labels: ctxLabels, user } = useApp();
   const { theme, setTheme } = useTheme();
   const [mounted, setMounted] = useState(false);
 
-  // Tag sidebar state
+  // Tag sidebar state. ctxLabels (SSR-fetched by <AppData>) seeds both the
+  // visible list and the in-memory TTL cache so opening the sidebar no
+  // longer fires a client fetch within the cache window.
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [tags, setTags] = useState<TagWithCount[]>([]);
+  const [tags, setTags] = useState<TagWithCount[]>(ctxLabels);
   const tagsCacheRef = useRef<{ data: TagWithCount[]; timestamp: number } | null>(null);
 
-  // Subsite links (admin-editable nav links, served from /api/site so we
-  // don't double-fetch with the homepage).
-  const [subsiteLinks, setSubsiteLinks] = useState<SubsiteLink[]>([]);
-  const [site, setSite] = useState<SiteConfig["site"] | null>(null);
+  // Subsite links + site settings come straight from the SSR context — no
+  // more getSite() on mount.
+  const subsiteLinks: SubsiteLink[] = site?.subsite_links ?? [];
+  const siteSetting = site?.site ?? null;
   // When site.logo_path points at a 404 (older settings still carry
   // "/static/img/logo.png" which the SPA origin can't serve) we don't want
   // a broken-image icon in the header — flip to the 🌅 fallback instead.
   // Reset on URL change so editing the setting in /admin/settings kicks in.
   const [logoFailed, setLogoFailed] = useState(false);
-  useEffect(() => { setLogoFailed(false); }, [site?.logo_path]);
+  useEffect(() => {
+    setLogoFailed(false);
+    // Keep the visible tag list in sync when SSR context refreshes (e.g.
+    // after an on-demand revalidate swaps in newer data on navigation).
+    setTags(ctxLabels);
+    tagsCacheRef.current = { data: ctxLabels, timestamp: Date.now() };
+  }, [ctxLabels, siteSetting?.logo_path]);
 
   const fetchLabels = useCallback(() => {
     const now = Date.now();
-    if (tagsCacheRef.current && now - tagsCacheRef.current.timestamp < LABELS_CACHE_TTL) {
+    if (
+      tagsCacheRef.current &&
+      now - tagsCacheRef.current.timestamp < LABELS_CACHE_TTL
+    ) {
       setTags(tagsCacheRef.current.data);
       return Promise.resolve();
     }
@@ -47,17 +58,7 @@ export function Header() {
 
   useEffect(() => {
     setMounted(true);
-    getMe()
-      .then((r) => setUser(r.user))
-      .catch(() => {});
-    fetchLabels();
-    getSite()
-      .then((d) => {
-        setSubsiteLinks(d.subsite_links ?? []);
-        setSite(d.site ?? null);
-      })
-      .catch(() => {});
-  }, [fetchLabels]);
+  }, []);
 
   const toggleTheme = () => {
     setTheme(theme === "dark" ? "light" : "dark");
@@ -86,20 +87,20 @@ export function Header() {
       <header className="site-header">
         <div className="header-inner">
           <Link href="/" className="site-title">
-            {site?.logo_path && !logoFailed ? (
+            {siteSetting?.logo_path && !logoFailed ? (
               // Admin can upload a custom logo under 「站点信息 → Logo 路径」;
               // the field is /uploads/... or an absolute URL. onError flips
               // logoFailed → fallback 🌅 pill renders instead.
               <img
-                src={site.logo_path}
-                alt={site.title || "site logo"}
+                src={siteSetting.logo_path}
+                alt={siteSetting.title || "site logo"}
                 className="site-logo"
                 onError={() => setLogoFailed(true)}
               />
             ) : (
               <span className="site-logo-fallback" aria-hidden="true">🌅</span>
             )}
-            <span>{site?.title || "跨越晨昏"}</span>
+            <span>{siteSetting?.title || "跨越晨昏"}</span>
           </Link>
           {/* Middle: admin-editable subsite links */}
           <nav className="header-subsites">

@@ -1,7 +1,7 @@
 import { request, cache, dedupClient, isSSR } from "./client";
 import type { TagWithCount, ArticleListResult } from "@/lib/types";
 
-const _listLabelsSSR = cache(() => request<TagWithCount[]>("/labels", { anon: true }));
+const _listLabelsSSR = cache(() => request<TagWithCount[]>("/labels", { anon: true, next: { tags: ["labels"], revalidate: 600 } }));
 
 export function listLabels() {
   if (isSSR) return _listLabelsSSR();

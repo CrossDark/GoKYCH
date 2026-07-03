@@ -26,6 +26,45 @@ if (isProd && !isStandalone && !process.env.NEXT_PUBLIC_API_BASE_URL) {
   );
 }
 
+// CSP origin derivation. The backend lives on a different origin
+// (https://api.ywda.net) from the frontends (cf.ywda.net / eo.ywda.net),
+// so the browser makes cross-origin fetches to it for API calls, plus
+// <img> from /uploads/* and <link> theme CSS. CSP must therefore allow
+// that origin in connect-src / img-src / style-src / media-src, otherwise
+// enforcing CSP would silently break every article page. In dev the env
+// is unset (same-origin via next.config rewrites), so apiOrigin is "".
+const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL || "";
+let apiOrigin = "";
+try {
+  if (apiBase) apiOrigin = new URL(apiBase).origin;
+} catch {
+  // Malformed env — leave empty; build guard above should have caught
+  // production, but be defensive rather than crash the build here.
+}
+
+const cspHeader = [
+  "default-src 'self'",
+  // No per-request nonce: a nonce forced layout.tsx to call headers(),
+  // which opted every route into dynamic rendering and disabled Next.js
+  // Full Route Cache (so neither EdgeOne nor Cloudflare Workers could
+  // cache SSR HTML at the edge). 'unsafe-inline' is the cache-friendly
+  // trade-off; server-side sanitisation (bluemonday / DOMPurify / goldmark)
+  // remains the primary XSS defence.
+  "script-src 'self' 'unsafe-inline'",
+  "style-src 'self' 'unsafe-inline'" + (apiOrigin ? " " + apiOrigin : ""),
+  // Article HTML may embed external images (user content), so allow any
+  // https image rather than just self/api origin.
+  "img-src https: data: blob:",
+  "font-src 'self' data:",
+  "connect-src 'self'" + (apiOrigin ? " " + apiOrigin : "") + " ws: wss:",
+  "media-src 'self'" + (apiOrigin ? " " + apiOrigin : "") + " data: blob:",
+  // Wikidot/HTML articles can embed YouTube etc. via <iframe>.
+  "frame-src https:",
+  "frame-ancestors 'none'",
+  "base-uri 'self'",
+  "form-action 'self'",
+].join("; ");
+
 const nextConfig: NextConfig = {
   // EdgeOne Makers (the current prod target) auto-detects Next.js and
   // builds with its own adapter — leave output un-set so its build picks
@@ -37,6 +76,25 @@ const nextConfig: NextConfig = {
   // (EdgeOne's build pipeline doesn't set this env, so it's invisible
   // to that path.)
   ...(process.env.STANDALONE === "1" ? { output: "standalone" as const } : {}),
+
+  // Static security headers (incl. CSP). Set via next.config rather than
+  // middleware so they are baked into cached/ISR responses at the edge
+  // (middleware may not run on platform-served cache hits). Removing the
+  // old middleware.ts also removes the per-request nonce generation that
+  // forced dynamic rendering.
+  async headers() {
+    return [
+      {
+        source: "/:path*",
+        headers: [
+          { key: "Content-Security-Policy", value: cspHeader },
+          { key: "X-Content-Type-Options", value: "nosniff" },
+          { key: "X-Frame-Options", value: "DENY" },
+          { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+        ],
+      },
+    ];
+  },
 
   // Proxy /api/*, /uploads/*, and /avatars/* to the Go backend in development.
   // /uploads and /avatars are served by Gin.Static in main.go; without these

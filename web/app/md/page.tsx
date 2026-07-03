@@ -3,7 +3,7 @@ import { getSiteTitle, formatPageTitle } from "@/lib/site-title";
 import type { Metadata } from "next";
 
 // ISR: revalidate article lists every 60s so new articles appear quickly.
-export const revalidate = 60;
+export const revalidate = 300;
 
 export async function generateMetadata(): Promise<Metadata> {
   const siteTitle = await getSiteTitle();

@@ -2,7 +2,8 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
-import { setRating, getRating, undoRating, getRatingDetails, getCsrf, getMe } from "@/lib/api";
+import { setRating, getRating, undoRating, getRatingDetails } from "@/lib/api";
+import { useApp } from "./AppProviders";
 
 interface Props {
   articleType: string;
@@ -34,21 +35,13 @@ export function RatingWidget({
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState("");
   const [messageType, setMessageType] = useState<"" | "error" | "success">("");
-  const [csrfToken, setCsrfToken] = useState("");
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  // Auth (user + csrfToken) comes from <AppProviders> context — no
+  // per-component getMe/getCsrf fetch.
+  const { user, csrfToken } = useApp();
+  const isLoggedIn = !!user;
   const [detailOpen, setDetailOpen] = useState(false);
   const [details, setDetails] = useState<RatingDetail[]>([]);
   const [detailsLoading, setDetailsLoading] = useState(false);
-
-  // Auth
-  useEffect(() => {
-    getMe().then((r) => {
-      if (r.user) {
-        setIsLoggedIn(true);
-        getCsrf().then((c) => setCsrfToken(c.csrf_token)).catch(() => {});
-      }
-    }).catch(() => {});
-  }, []);
 
   // Client-side fallback for user_score. The article detail endpoint returns
   // user_score from the server-side session context (CurrentUserFromContext),

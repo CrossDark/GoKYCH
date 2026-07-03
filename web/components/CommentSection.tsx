@@ -2,10 +2,11 @@
 
 import { useState, useEffect } from "react";
 import Link from "next/link";
-import { addComment, getCsrf, getMe } from "@/lib/api";
+import { addComment } from "@/lib/api";
 import type { Comment } from "@/lib/types";
 import { SafeMarkdown } from "@/components/SafeMarkdown";
 import { UserAvatar } from "@/components/admin/UserAvatar";
+import { useApp } from "./AppProviders";
 
 interface Props {
   articleType: string;
@@ -30,25 +31,17 @@ export function CommentSection({
   const [content, setContent] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
-  const [csrfToken, setCsrfToken] = useState("");
-  const [authChecked, setAuthChecked] = useState(false);
-  const [isLoggedIn, setIsLoggedIn] = useState(true);
-  const [currentUser, setCurrentUser] = useState<{ nickname?: string; username: string } | null>(null);
+  // Auth (user + csrfToken) comes from <AppProviders> context — no
+  // per-component getMe/getCsrf fetch.
+  const { user: currentUser, csrfToken } = useApp();
+  const isLoggedIn = !!currentUser;
 
+  // Pre-fill the comment author name from the logged-in user's profile.
   useEffect(() => {
-    getMe().then((r) => {
-      if (r.user) {
-        setIsLoggedIn(true);
-        setCurrentUser(r.user);
-        setName(r.user.nickname || r.user.username);
-        getCsrf().then((c) => setCsrfToken(c.csrf_token)).catch(() => {});
-      } else {
-        setIsLoggedIn(false);
-      }
-    }).catch(() => {
-      setIsLoggedIn(false);
-    }).finally(() => setAuthChecked(true));
-  }, []);
+    if (currentUser) {
+      setName(currentUser.nickname || currentUser.username);
+    }
+  }, [currentUser]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

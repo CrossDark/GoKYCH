@@ -1,7 +1,7 @@
 import { request, cache, dedupClient, isSSR } from "./client";
 import type { SiteConfig } from "@/lib/types";
 
-const _getSiteSSR = cache(() => request<SiteConfig>("/site", { anon: true }));
+const _getSiteSSR = cache(() => request<SiteConfig>("/site", { anon: true, next: { revalidate: 600 } }));
 
 export function getSite() {
   if (isSSR) return _getSiteSSR();
