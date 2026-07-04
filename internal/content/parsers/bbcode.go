@@ -4,6 +4,7 @@ import (
 	"html"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -154,9 +155,172 @@ var (
 	reAudio    = regexp.MustCompile(`(?is)\[audio\](.*?)\[/audio\]`)
 	reAnchor   = regexp.MustCompile(`(?is)\[anchor\](.*?)\[/anchor\]`)
 	reList     = regexp.MustCompile(`(?is)\[list(?:=(1))?\](.*?)\[/list\]`)
+	reH1       = regexp.MustCompile(`(?is)\[h1\](.*?)\[/h1\]`)
+	reH2       = regexp.MustCompile(`(?is)\[h2\](.*?)\[/h2\]`)
+	reH3       = regexp.MustCompile(`(?is)\[h3\](.*?)\[/h3\]`)
+	reH4       = regexp.MustCompile(`(?is)\[h4\](.*?)\[/h4\]`)
+	reH5       = regexp.MustCompile(`(?is)\[h5\](.*?)\[/h5\]`)
+	reH6       = regexp.MustCompile(`(?is)\[h6\](.*?)\[/h6\]`)
+	rePlainNum = regexp.MustCompile(`^\d+(\.\d+)?$`)
 	reEscLeft  = regexp.MustCompile(`\\\[`)
 	reEscRight = regexp.MustCompile(`\\\]`)
 )
+
+// sizeScaleMap maps the classic 1-7 HTML font scale (BBCode `[size=N]`
+// for N in 1..7) to rem values, so `[size=7]` renders huge instead of an
+// invalid unitless `font-size:7`.
+var sizeScaleMap = map[string]string{
+	"1": "0.5rem", "2": "0.75rem", "3": "1rem",
+	"4": "1.25rem", "5": "1.5rem", "6": "1.75rem", "7": "2rem",
+}
+
+// reBBSizeOpen matches only the opener portion of `[size=…]…[/size]`,
+// separate from reSize so the depth-counter loop below doesn't confuse
+// the opener end with a close.
+var reBBSizeOpen = regexp.MustCompile(`(?is)\[size=[^\]]+\]`)
+
+// extractBBCodeSizeBody scans `text` starting at `from` (just past a
+// `[size=…]` opener) for the matching `[/size]`, accounting for nested
+// `[size=…]` openers. Returns the inner body, ok=true on success, and
+// the index immediately after the close tag (caller resumes from
+// there). Returns ok=false when no close is found.
+func extractBBCodeSizeBody(text string, from int) (string, bool, int) {
+	const close = "[/size]"
+	j := from
+	depth := 1
+	for j < len(text) {
+		nextOpen := reBBSizeOpen.FindStringIndex(text[j:])
+		nextClose := strings.Index(text[j:], close)
+		switch {
+		case nextClose < 0:
+			return "", false, 0
+		case nextOpen != nil && (j+nextOpen[0]) < (j+nextClose):
+			depth++
+			j = j + nextOpen[1]
+		default:
+			depth--
+			closeAt := j + nextClose
+			closeEnd := closeAt + len(close)
+			if depth == 0 {
+				return text[from:closeAt], true, closeEnd
+			}
+			j = closeEnd
+		}
+	}
+	return "", false, 0
+}
+
+// reBBSizeExplicitUnit matches a number with an explicit CSS unit
+// (`12pt`, `0.8em`, `24px`, `80%`, `1.25rem`). Used as a whitelist
+// for non-keyword size values: anything outside this shape (e.g.
+// `[size=giant]`, a made-up keyword the author probably typo'd) is
+// rejected so it doesn't sneak through sanitizeCSSValue's loose
+// alphanumerics-only filter and render as `font-size:giant`.
+//
+// Mirrors Wikidot's `reWDSizeValue` whitelist
+// (`^\d+(\.\d+)?(px|em|%)?$`), extended with `pt` and `rem` so the
+// common BBCode usages keep working.
+var reBBSizeExplicitUnit = regexp.MustCompile(`(?i)^\d+(?:\.\d+)?(?:px|pt|em|rem|%)$`)
+
+// resolveBBCodeSize turns a `[size=X]` value into a valid CSS font-size.
+// Accepted forms:
+//  1. keyword in sizeMap (small/large/medium/…) → rem.
+//  2. plain integer 1-7 → HTML font scale (sizeScaleMap, rem).
+//  3. plain number >7: ≤40 → Npx (e.g. [size=14] → 14px); >40 → N%
+//     (e.g. [size=150] → 150%, the phpBB percentage convention).
+//  4. explicit unit (Npx/Nem/Nrem/N%/Npt) → validated via sanitizeCSSValue.
+// Returns "" when the value can't be made safe (caller drops the wrapper
+// rather than emitting invalid CSS like `font-size:150`).
+func resolveBBCodeSize(token string) string {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return ""
+	}
+	if v, ok := sizeMap[strings.ToLower(token)]; ok {
+		return v
+	}
+	if rePlainNum.MatchString(token) {
+		if v, ok := sizeScaleMap[token]; ok {
+			return v
+		}
+		f, _ := strconv.ParseFloat(token, 64)
+		if f > 40 {
+			return token + "%"
+		}
+		return token + "px"
+	}
+	if reBBSizeExplicitUnit.MatchString(token) {
+		if css := sanitizeCSSValue(token); css != "" {
+			return css
+		}
+	}
+	return ""
+}
+
+// renderBBCodeSizeBlocks walks `text` left-to-right, matching
+// `[size=…]…[/size]` blocks via a depth counter so a nested
+// `[size=…]` inside the inner body doesn't trip the outer close.
+// The body itself is recursively processed so nested size blocks
+// become nested `<span style="font-size:…">` wrappers.
+//
+// Per [size=N] value handling is delegated to resolveBBCodeSize:
+// keyword → rem, `1`-`7` → HTML font scale (rem), bare number ≤40
+// → Npx, bare number >40 → N% (phpBB convention), explicit unit
+// (e.g. `0.8em`, `12pt`) → as-is after sanitizeCSSValue. Invalid
+// values (e.g. `giant`, CSS injection payloads) fall through to the
+// inner text so the author sees the broken construct instead of an
+// invisible wrapper.
+//
+// Mirrors renderWikidotSizeBlocks but for the `[size=N]…[/size]`
+// BBCode syntax (vs Wikidot's `[[size N]]…[[/size]]`).
+func renderBBCodeSizeBlocks(text string) string {
+	const close = "[/size]"
+	var sb strings.Builder
+	i := 0
+	for i < len(text) {
+		loc := reBBSizeOpen.FindStringIndex(text[i:])
+		if loc == nil {
+			sb.WriteString(text[i:])
+			return sb.String()
+		}
+		openerStart := i + loc[0]
+		openerEnd := i + loc[1]
+		// Emit prefix verbatim.
+		sb.WriteString(text[i:openerStart])
+		// Extract the size value between `[size=` and `]`.
+		m := reBBSizeOpen.FindStringSubmatch(text[openerStart:])
+		if m == nil {
+			sb.WriteString(text[openerStart:openerEnd])
+			i = openerEnd
+			continue
+		}
+		css := resolveBBCodeSize(strings.TrimSuffix(strings.TrimPrefix(m[0], "[size="), "]"))
+		body, ok, next := extractBBCodeSizeBody(text, openerEnd)
+		if !ok {
+			// No matching close — leave the opener raw.
+			sb.WriteString(text[openerStart:])
+			return sb.String()
+		}
+		if css == "" {
+			// Unrecognised size value (typo or sanitiser-rejected CSS
+			// injection like `[size=12px; background:url(javascript:…)]`).
+			// Wikidot's `[[size bad]]x[[/size]]` collapses the whole
+			// construct down to `x`; we do the same — drop the wrapper
+			// and re-emit only the inner body (recursively so any
+			// nested valid `[size=…]` still renders).
+			sb.WriteString(renderBBCodeSizeBlocks(body))
+		} else {
+			bodyRendered := renderBBCodeSizeBlocks(body)
+			sb.WriteString(`<span style="font-size:`)
+			sb.WriteString(css)
+			sb.WriteString(`">`)
+			sb.WriteString(bodyRendered)
+			sb.WriteString(`</span>`)
+		}
+		i = next
+	}
+	return sb.String()
+}
 
 // RenderBBCode converts BBCode source to HTML.
 func RenderBBCode(text string) string {
@@ -187,6 +351,15 @@ func RenderBBCode(text string) string {
 	out = reCenter.ReplaceAllString(out, `<div style="text-align:center">$1</div>`)
 	out = reRight.ReplaceAllString(out, `<div style="text-align:right">$1</div>`)
 	out = reLeft.ReplaceAllString(out, `<div style="text-align:left">$1</div>`)
+
+	// Headings (block-level). Inline formatting inside is still processed
+	// by the inline passes below, so `[h1][b]x[/b][/h1]` → <h1><strong>x</strong></h1>.
+	out = reH1.ReplaceAllString(out, "<h1>$1</h1>")
+	out = reH2.ReplaceAllString(out, "<h2>$1</h2>")
+	out = reH3.ReplaceAllString(out, "<h3>$1</h3>")
+	out = reH4.ReplaceAllString(out, "<h4>$1</h4>")
+	out = reH5.ReplaceAllString(out, "<h5>$1</h5>")
+	out = reH6.ReplaceAllString(out, "<h6>$1</h6>")
 
 	// Inline formatting.
 	out = reBold.ReplaceAllString(out, `<strong>$1</strong>`)
@@ -231,16 +404,21 @@ func RenderBBCode(text string) string {
 	// Style-bearing tags: known tokens (sizeMap / colorNames) pass through
 	// verbatim; everything else is filtered through sanitizeCSSValue which
 	// only permits alphanumerics + a small set of CSS-safe punctuation.
-	out = reSize.ReplaceAllStringFunc(out, func(s string) string {
-		m := reSize.FindStringSubmatch(s)
-		css := m[1]
-		if v, ok := sizeMap[strings.ToLower(css)]; ok {
-			css = v
-		} else if css = sanitizeCSSValue(css); css == "" {
-			return m[2]
-		}
-		return `<span style="font-size:` + css + `">` + m[2] + `</span>`
-	})
+	// Style-bearing tags: known tokens (sizeMap / colorNames) pass through
+	// verbatim; everything else is filtered through sanitizeCSSValue which
+	// only permits alphanumerics + a small set of CSS-safe punctuation.
+	//
+	// `[size=N]` has a richer grammar than `[color]`/[font]/[bg]: beyond
+	// the keyword table we accept `1`-`7` (HTML font scale, rem) and a
+	// bare number with implicit `px` (≤40) or `%` (>40, phpBB convention).
+	// resolveBBCodeSize encodes that table; falling back to it makes
+	// `[size=14]` render at 14px and `[size=150]` at 150% instead of
+	// producing unitless `font-size:14` / `font-size:150` (which the
+	// browser silently ignores — the whole reason this branch used to
+	// look "broken"). We also re-run the replace from the head of the
+	// emitted span so a nested `[size=…]` inside the inner text is
+	// handled by the same logic on the second pass.
+	out = renderBBCodeSizeBlocks(out)
 	out = reColor.ReplaceAllStringFunc(out, func(s string) string {
 		m := reColor.FindStringSubmatch(s)
 		css := m[1]

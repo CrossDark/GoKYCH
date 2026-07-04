@@ -16,6 +16,131 @@ const sizeMap: Record<string, string> = {
   larger: "2.5rem",
 };
 
+// Maps the classic HTML 1-7 font scale (`[size=N]` for N in 1..7)
+// to rem values, so `[size=7]` renders huge instead of an invalid
+// unitless `font-size:7`.
+const sizeScaleMap: Record<string, string> = {
+  "1": "0.5rem",
+  "2": "0.75rem",
+  "3": "1rem",
+  "4": "1.25rem",
+  "5": "1.5rem",
+  "6": "1.75rem",
+  "7": "2rem",
+};
+
+// resolveBBCodeSize turns a `[size=X]` token into a valid CSS
+// font-size. Mirrors the Go backend's resolveBBCodeSize so the live
+// preview in the admin editor matches what readers actually see.
+//
+// Accepted forms:
+//   1. keyword in sizeMap (xx-small, large, medium, …) → rem
+//   2. plain integer 1-7 → HTML font scale (sizeScaleMap, rem)
+//   3. plain number >7: ≤40 → Npx (e.g. `[size=14]` → 14px);
+//      >40 → N% (e.g. `[size=150]` → 150%, the phpBB convention)
+//   4. numeric + explicit CSS unit (`12pt`, `0.8em`, `24px`,
+//      `1.25rem`, `80%`) → as-is
+//
+// Returns "" when the value can't be made safe — caller drops the
+// wrapper rather than emitting invalid CSS like `font-size:150`.
+// Anything outside the four shapes (e.g. `[size=giant]`, a made-up
+// keyword) returns "" so it doesn't slip through sanitizeCssValue's
+// loose alphanumerics-only filter and render as `font-size:giant`.
+const SIZE_EXPLICIT_UNIT = /^\d+(?:\.\d+)?(?:px|pt|em|rem|%)$/i;
+function resolveBBCodeSize(token: string): string {
+  const trimmed = token.trim();
+  if (!trimmed) return "";
+  const keyword = sizeMap[trimmed.toLowerCase()];
+  if (keyword) return keyword;
+  // Bare number (int or decimal like `12.5`).
+  if (/^\d+(\.\d+)?$/.test(trimmed)) {
+    if (sizeScaleMap[trimmed]) return sizeScaleMap[trimmed];
+    const n = parseFloat(trimmed);
+    if (n > 40) return trimmed + "%";
+    return trimmed + "px";
+  }
+  // Numeric + explicit unit. Whitelist match gates the value before
+  // we hand it to sanitizeCssValue so made-up keywords can't slip
+  // through alphanumerics-only filtering.
+  if (SIZE_EXPLICIT_UNIT.test(trimmed)) {
+    const css = sanitizeCssValue(trimmed);
+    if (css) return css;
+  }
+  return "";
+}
+
+// extractBBCodeSizeBody scans `text` from `from` (just past a
+// `[size=…]` opener) for the matching `[/size]`, accounting for
+// nested `[size=…]` openers. Returns the inner body + ok flag + the
+// index immediately after the close tag. ok=false means no close.
+function extractBBCodeSizeBody(
+  text: string,
+  from: number
+): { body: string; ok: boolean; next: number } {
+  const close = "[/size]";
+  let j = from;
+  let depth = 1;
+  const openRe = /\[size=[^\]]+\]/gi;
+  while (j < text.length) {
+    openRe.lastIndex = j;
+    const openMatch = openRe.exec(text);
+    const openStart = openMatch ? openMatch.index : -1;
+    const openEnd = openMatch ? openStart + openMatch[0].length : -1;
+    const closeAt = text.indexOf(close, j);
+    if (closeAt < 0) return { body: "", ok: false, next: 0 };
+    if (openStart >= 0 && openStart < closeAt) {
+      depth++;
+      j = openEnd;
+      continue;
+    }
+    depth--;
+    const closeEnd = closeAt + close.length;
+    if (depth === 0) {
+      return { body: text.slice(from, closeAt), ok: true, next: closeEnd };
+    }
+    j = closeEnd;
+  }
+  return { body: "", ok: false, next: 0 };
+}
+
+// renderBBCodeSizeBlocks mirrors the Go backend's
+// renderBBCodeSizeBlocks: depth-counted walk over `[size=…]…[/size]`
+// so nested size blocks become nested `<span style="font-size:…">`
+// wrappers. Unknown size values (typo or sanitiser-rejected CSS
+// injection) drop the wrapper and re-emit only the inner body, the
+// same as Wikidot's `[[size bad]]x[[/size]]` → `x` fallback.
+function renderBBCodeSizeBlocks(text: string): string {
+  let out = "";
+  let i = 0;
+  const openRe = /\[size=[^\]]+\]/gi;
+  while (i < text.length) {
+    openRe.lastIndex = i;
+    const m = openRe.exec(text);
+    if (!m) {
+      out += text.slice(i);
+      return out;
+    }
+    // Emit prefix verbatim.
+    out += text.slice(i, m.index);
+    const openerEnd = m.index + m[0].length;
+    const css = resolveBBCodeSize(m[0].slice("[size=".length, -1));
+    const { body, ok, next } = extractBBCodeSizeBody(text, openerEnd);
+    if (!ok) {
+      // No matching close — leave the opener raw and bail.
+      out += text.slice(m.index);
+      return out;
+    }
+    if (css) {
+      out += `<span style="font-size:${css}">${renderBBCodeSizeBlocks(body)}</span>`;
+    } else {
+      // Bad/unknown value — drop the wrapper, re-emit only the body.
+      out += renderBBCodeSizeBlocks(body);
+    }
+    i = next;
+  }
+  return out;
+}
+
 // Color name map (matches Go backend colorNames)
 const colorNames: Record<string, string> = {
   red: "#e74c3c",
@@ -206,6 +331,19 @@ export function renderBBCode(source: string): string {
   out = out.replace(/\[right\]([\s\S]*?)\[\/right\]/gi, '<div style="text-align:right">$1</div>');
   out = out.replace(/\[left\]([\s\S]*?)\[\/left\]/gi, '<div style="text-align:left">$1</div>');
 
+  // Headings (block-level). Inline formatting inside is still processed
+  // by the inline passes below, so `[h1][b]x[/b][/h1]` →
+  // <h1><strong>x</strong></h1>. Done before `[size=…]` so a heading
+  // that contains a `[size=14]` wrapper keeps the heading as the
+  // outer tag (otherwise the span would wrap part of the heading
+  // text). Matches the Go backend's heading pass.
+  out = out.replace(/\[h1\]([\s\S]*?)\[\/h1\]/gi, "<h1>$1</h1>");
+  out = out.replace(/\[h2\]([\s\S]*?)\[\/h2\]/gi, "<h2>$1</h2>");
+  out = out.replace(/\[h3\]([\s\S]*?)\[\/h3\]/gi, "<h3>$1</h3>");
+  out = out.replace(/\[h4\]([\s\S]*?)\[\/h4\]/gi, "<h4>$1</h4>");
+  out = out.replace(/\[h5\]([\s\S]*?)\[\/h5\]/gi, "<h5>$1</h5>");
+  out = out.replace(/\[h6\]([\s\S]*?)\[\/h6\]/gi, "<h6>$1</h6>");
+
   // Inline
   out = out.replace(/\[b\]([\s\S]*?)\[\/b\]/gi, "<strong>$1</strong>");
   out = out.replace(/\[i\]([\s\S]*?)\[\/i\]/gi, "<em>$1</em>");
@@ -244,17 +382,16 @@ export function renderBBCode(source: string): string {
     return "";
   });
 
-  // Style tags
-  out = out.replace(/\[size=([^\]]+)\]([\s\S]*?)\[\/size\]/gi, (_match, size, text) => {
-    let css = size.toLowerCase();
-    if (sizeMap[css]) {
-      css = sizeMap[css];
-    } else {
-      css = sanitizeCssValue(size);
-      if (!css) return text;
-    }
-    return `<span style="font-size:${css}">${text}</span>`;
-  });
+  // Style tags — `[size=…]` has a richer grammar than `[color]`/
+  // `[font]`/`[bg]`: beyond the keyword table we accept `1`-`7`
+  // (HTML font scale, rem) and a bare number with implicit `px`
+  // (≤40) or `%` (>40, phpBB convention). resolveBBCodeSize encodes
+  // that table; falling back to it makes `[size=14]` render at 14px
+  // and `[size=150]` at 150% instead of producing unitless
+  // `font-size:14` / `font-size:150` (which the browser silently
+  // ignores — the whole reason this branch used to look "broken").
+  // Depth-counted walker handles nested `[size=…]` correctly.
+  out = renderBBCodeSizeBlocks(out);
   out = out.replace(/\[color=([^\]]+)\]([\s\S]*?)\[\/color\]/gi, (_match, color, text) => {
     let css = color.toLowerCase();
     if (colorNames[css]) {
