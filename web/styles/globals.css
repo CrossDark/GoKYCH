@@ -510,6 +510,17 @@ hr {
 }
 
 .article-header {
+    /* The global `header` selector (line ~62) is `position: sticky;
+     * top: 0; z-index: 400` so the page header stays above modals.
+     * That selector ALSO matches this in-article header element, which
+     * then sticks to the viewport top and z-index 400 puts it above the
+     * right-slide tag sidebar (z-index 201). On mobile the sidebar covers
+     * the article body but the article header pokes through near the
+     * top — exactly the "穿模" symptom reported. Force back to static
+     * and reset z-index; the in-article header should scroll with the
+     * page like normal flow. */
+    position: static;
+    z-index: auto;
     margin-bottom: 1.5rem;
 }
 
@@ -3523,6 +3534,19 @@ hr {
 
     .content-body {
         padding: 1.25rem;
+    }
+
+    /* Mobile tag sidebar: take the full viewport width so it
+     * actually covers the article body instead of leaving ~113px
+     * exposed on the left (which looked like the sidebar was
+     * "穿模" — overlapping the page). Pure-CSS override, no JS
+     * cost; the existing `right`/`transition` animation still
+     * works because the closed state (`-100%`) is matched against
+     * the new 100% width. */
+    .sidebar {
+        width: 100%;
+        right: -100%;
+        box-shadow: none;
     }
 }
 
