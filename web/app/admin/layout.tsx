@@ -18,6 +18,7 @@ const BREADCRUMB: { match: (p: string) => boolean; label: string; parent?: strin
   { match: (p) => p.startsWith("/admin/tags"), label: "标签管理", parent: "管理" },
   { match: (p) => p.startsWith("/admin/files"), label: "文件管理", parent: "管理" },
   { match: (p) => p.startsWith("/admin/notifications"), label: "通知管理", parent: "管理" },
+  { match: (p) => p.startsWith("/admin/sidebar-cards"), label: "侧栏卡片", parent: "管理" },
   { match: (p) => p.startsWith("/admin/users"), label: "用户管理", parent: "管理" },
   { match: (p) => p.startsWith("/admin/settings"), label: "站点设置", parent: "设置" },
   { match: (p) => p.startsWith("/admin/api-keys"), label: "API Key", parent: "管理" },

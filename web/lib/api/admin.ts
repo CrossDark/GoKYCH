@@ -8,6 +8,7 @@ import type {
   AdminFile,
   SiteSettings,
   ApiKey,
+  AdminSidebarCard,
   CreateApiKeyResponse,
   PasskeyInfo,
   MyPasskeyInfo,
@@ -186,6 +187,50 @@ export function renameTag(csrf: string, id: number, name: string) {
 
 export function deleteAdminTag(csrf: string, id: number) {
   return request<{ status: string }>(`/admin/tags/${id}`, {
+    method: "DELETE",
+    headers: { "X-CSRF-Token": csrf },
+  });
+}
+
+// ── Sidebar cards admin CRUD ────────────────────────────────────────
+// All admin writes invalidate the [\"home\", \"sidebar_cards\"] frontend
+// cache tags server-side (see revalidateFrontend in admin.go), so the
+// `request(...)` calls here don't have to issue per-write cache
+// invalidations themselves; the next page fetch picks up the change
+// within seconds.
+
+export function listAdminSidebarCards(csrf: string) {
+  return request<AdminSidebarCard[]>("/admin/sidebar-cards", {
+    headers: { "X-CSRF-Token": csrf },
+    next: { revalidate: 0 },
+  });
+}
+
+export function createSidebarCard(csrf: string, body: AdminSidebarCard) {
+  // Stamp out the fields we don't want to round-trip from the
+  // admin form (id / created_at / updated_at). The backend accepts
+  // is_active/is_external as *bool with default-true semantics for
+  // omission, so a stale admin form that omits them still produces
+  // a sensible row.
+  const { id: _id, ...payload } = body;
+  return request<{ id: number; status: string }>("/admin/sidebar-cards", {
+    method: "POST",
+    headers: { "X-CSRF-Token": csrf },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updateSidebarCard(csrf: string, id: number, body: AdminSidebarCard) {
+  const { id: _id, ...payload } = body;
+  return request<{ status: string }>(`/admin/sidebar-cards/${id}`, {
+    method: "PUT",
+    headers: { "X-CSRF-Token": csrf },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function deleteAdminSidebarCard(csrf: string, id: number) {
+  return request<{ status: string }>(`/admin/sidebar-cards/${id}`, {
     method: "DELETE",
     headers: { "X-CSRF-Token": csrf },
   });

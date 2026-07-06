@@ -194,6 +194,22 @@ export interface AdminTag {
   count: number;
 }
 
+// ── Admin: Sidebar cards ──────────────────────────────────────────────
+// Admin-managed cards rendered inside the front-end <SideDrawer> (the
+// ☰ drawer to the left of the site name). Distinct from AdminTag —
+// the two drawers serve different intents (cards = site nav, tags =
+// article index).
+export interface AdminSidebarCard {
+  id: number;
+  title: string;
+  url: string;
+  icon: string;
+  description: string;
+  sort_order: number;
+  is_external: boolean;
+  is_active: boolean;
+}
+
 // ── Admin: Files ──────────────────────────────────────────────────────
 export interface AdminFile {
   id: number;
