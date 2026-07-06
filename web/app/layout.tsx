@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Script from "next/script";
 import { ThemeProvider } from "@/components/ThemeProvider";
 import { ThemeStylesheet } from "@/components/ThemeStylesheet";
 import { AppData } from "@/components/AppData";
@@ -32,7 +33,21 @@ export default async function RootLayout({
   return (
     <html lang="zh-CN" suppressHydrationWarning>
       <head>
-        <script
+        {/* Theme bootstrap — must run before React hydration so the
+         * dark/light class matches the SSR baseline. `next/script`
+         * with `strategy="beforeInteractive"` + a stable `id` is the
+         * only path that:
+         *   1. renders the inline content server-side (so the user's
+         *      theme is already correct before the first paint), and
+         *   2. skips React's "script inside component tree" warning
+         *      that hits `<script dangerouslySetInnerHTML>` directly,
+         *   3. dedupes — without the id, Next.js dev re-injects this
+         *      script on every HMR refresh and the second copy breaks
+         *      React 19's hydration diff.
+         */}
+        <Script
+          id="kokoro-theme-init"
+          strategy="beforeInteractive"
           dangerouslySetInnerHTML={{
             __html: `
               (function() {
