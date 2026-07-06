@@ -2877,11 +2877,21 @@ hr {
      * 220 outside + 240 outside-margin + 8 minimum, so the panel
      * can always sit at least 40px clear of the article. The
      * 220 → 240 px cushion also gives Safari / zoomed viewports
-     * extra headroom so the panel never visually kisses the title. */
+     * extra headroom so the panel never visually kisses the title.
+     *
+     * The panel sits on the RIGHT of the article (its previous
+     * left-rail placement competed with reading eyes landing on
+     * the article header on every load). Symmetric anchor via
+     * `right:` keeps the same 40px-clear-of-article guarantee
+     * unchanged — the formula `max(calc((100vw - 720)/2 - 240px), 16px)`
+     * is applied to the screen edge from the article column outward,
+     * so a 16px fallback leaves a comfortable gap against a narrow
+     * right edge the same way the left-rail formula did. */
     .line-comments-container {
         display: block;
         position: fixed;
-        left: max(calc((100vw - var(--max-width, 720px)) / 2 - 240px), 16px);
+        right: max(calc((100vw - var(--max-width, 720px)) / 2 - 240px), 16px);
+        left: auto;
         top: 120px;
         width: 180px;
         max-height: calc(100vh - 160px);
