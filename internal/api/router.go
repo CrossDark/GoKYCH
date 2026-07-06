@@ -81,6 +81,17 @@ func (s *Server) Setup(r *gin.Engine) {
 		// Typst-only: download the compiled PDF. 404 if the article isn't
 		// a typst article or typst isn't installed.
 		apiG.GET("/articles/:type/:slug/pdf", s.getArticlePDF)
+		// Article revision history (V3) — public read, same visibility as
+		// the article itself. The list endpoint omits the diff body to
+		// keep the response small for articles with hundreds of
+		// revisions; per-version content is fetched separately.
+		apiG.GET("/articles/:type/:slug/revisions", s.listRevisions)
+		// diff must be registered before {seq} so gin's tree router
+		// matches the literal segment "diff" instead of trying to
+		// parse it as an int (and 400-ing). Same goes for any future
+		// literal sub-routes under /revisions/.
+		apiG.GET("/articles/:type/:slug/revisions/diff", s.getRevisionDiff)
+		apiG.GET("/articles/:type/:slug/revisions/:seq", s.getRevision)
 		apiG.GET("/labels", s.listLabels)
 		apiG.GET("/labels/:tag", s.getLabelArticles)
 		// Sidebar cards (left rail ☰ drawer) — public read of active

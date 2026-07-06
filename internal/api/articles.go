@@ -642,3 +642,220 @@ func (s *Server) recompileArticle(c *gin.Context) {
 	cs, _ := s.Typst.GetCompileStatusCtx(ctx, a.ID)
 	c.JSON(http.StatusOK, gin.H{"status": "ok", "compile_status": cs})
 }
+
+// ──────────────────────── Article revision history (V3) ────────────────────────
+//
+// Three public read endpoints let any visitor inspect the version history of
+// an article. None of them expose the diff body in the list payload —
+// fetching a single revision's content is a separate call. The diff
+// endpoint rebuilds both endpoints via RebuildToSeq and emits a
+// fresh ComputePatch between them, so the user always sees a coherent
+// unified diff even if the stored chain has degraded over time.
+
+// revisionListResponse is the JSON shape of GET /revisions. It mirrors
+// the ArticleListResult shape used elsewhere (total / page / per_page /
+// total_pages) so the front-end can reuse the same pagination component.
+type revisionListResponse struct {
+	Revisions  []content.RevisionListItem `json:"revisions"`
+	Total      int                        `json:"total"`
+	Page       int                        `json:"page"`
+	PerPage    int                        `json:"per_page"`
+	TotalPages int                        `json:"total_pages"`
+}
+
+// resolveArticleID looks up an article by (type, slug) and returns its
+// primary key. Used by all three revision endpoints as the first step;
+// the revision chain is keyed on article_id, not on the (type, slug)
+// pair. A missing article is reported as 404, mirroring the existing
+// /api/articles/{type}/{slug} handler's behaviour.
+func (s *Server) resolveArticleID(c *gin.Context, atype, slug string) (int, bool) {
+	ctx := c.Request.Context()
+	a, err := content.GetArticleCtx(ctx, s.DB, atype, slug)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusNotFound, gin.H{"error": "文章不存在。"})
+			return 0, false
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载文章失败。"})
+		return 0, false
+	}
+	return a.ID, true
+}
+
+// GET /api/articles/{type}/{slug}/revisions?page=1&per_page=20
+// Public — same visibility as reading the article itself. The list
+// payload omits the (potentially large) Patch body to keep the response
+// small even for articles with hundreds of revisions.
+func (s *Server) listRevisions(c *gin.Context) {
+	ctx := c.Request.Context()
+	atype := c.Param("type")
+	slug := c.Param("slug")
+
+	articleID, ok := s.resolveArticleID(c, atype, slug)
+	if !ok {
+		return
+	}
+
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	if page < 1 {
+		page = 1
+	}
+	perPage, _ := strconv.Atoi(c.DefaultQuery("per_page", "20"))
+	if perPage <= 0 {
+		perPage = 20
+	}
+	// Cap to prevent an "accidentally huge" response. 100 revisions ×
+	// ~200B per item ≈ 20 KB JSON — generous for a list view that the
+	// user will likely scroll through rather than dump.
+	if perPage > 100 {
+		perPage = 100
+	}
+
+	items, total, err := content.ListRevisionsCtx(ctx, s.DB, articleID, page, perPage)
+	if err != nil {
+		slog.Error("listRevisions: db error", "article_id", articleID, "err", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载历史版本失败。"})
+		return
+	}
+	totalPages := (total + perPage - 1) / perPage
+	if totalPages < 1 {
+		totalPages = 1
+	}
+	c.Header("Cache-Control", "public, max-age=30, stale-while-revalidate=60")
+	c.JSON(http.StatusOK, revisionListResponse{
+		Revisions:  items,
+		Total:      total,
+		Page:       page,
+		PerPage:    perPage,
+		TotalPages: totalPages,
+	})
+}
+
+// GET /api/articles/{type}/{slug}/revisions/{seq}
+// Public. Returns the full Revision (with Patch) and the reconstructed
+// content at that seq. The reconstruction walks the chain via
+// RebuildToSeq, so even if the user asks for a 5-revisions-ago seq the
+// content is exactly what articles.content was at that save.
+func (s *Server) getRevision(c *gin.Context) {
+	ctx := c.Request.Context()
+	atype := c.Param("type")
+	slug := c.Param("slug")
+	seq, err := strconv.Atoi(c.Param("seq"))
+	if err != nil || seq < 1 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的版本号。"})
+		return
+	}
+
+	articleID, ok := s.resolveArticleID(c, atype, slug)
+	if !ok {
+		return
+	}
+
+	rev, err := content.GetRevisionCtx(ctx, s.DB, articleID, seq)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("版本 #%d 不存在。", seq)})
+			return
+		}
+		slog.Error("getRevision: db error", "article_id", articleID, "seq", seq, "err", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载历史版本失败。"})
+		return
+	}
+
+	// Reconstruct the full content by walking the chain. We do this
+	// here (not in the content layer) because the rebuild is a read
+	// operation that doesn't need to share state with anything else.
+	revs, err := content.GetAllRevisionsForArticleCtx(ctx, s.DB, articleID)
+	if err != nil {
+		slog.Error("getRevision: load chain", "article_id", articleID, "err", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载历史版本失败。"})
+		return
+	}
+	// GetRevisionCtx already proved this seq exists, so the rebuild
+	// can't legitimately fail unless the chain is corrupt. We surface
+	// the error rather than silently 500 — it's a data-integrity
+	// alarm the operator should see.
+	contentAtSeq, err := content.RebuildToSeq(revs, seq)
+	if err != nil {
+		slog.Error("getRevision: rebuild", "article_id", articleID, "seq", seq, "err", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "重建历史版本内容失败。"})
+		return
+	}
+
+	c.Header("Cache-Control", "public, max-age=86400, stale-while-revalidate=86400")
+	c.JSON(http.StatusOK, gin.H{
+		"revision": rev,
+		"content":  contentAtSeq,
+	})
+}
+
+// GET /api/articles/{type}/{slug}/revisions/diff?from=10&to=15
+// Public. Reconstructs the content at both seqs, then emits a fresh
+// ComputePatch between them. The fresh patch may differ slightly from
+// the stored chain's intermediate diffs (cleanups, whitespace) but is
+// always a valid unified diff for the (from, to) pair.
+//
+// `to` is a positive integer seq. The V0 plan mentioned a "HEAD"
+// sentinel — we kept it integer-only here to avoid string parsing on
+// the hot path; clients wanting "to=current" should GET the article
+// first to learn current seq, or pass seq=max+1 (no, that would 404).
+// A future iteration can add ?to=current if usage warrants.
+func (s *Server) getRevisionDiff(c *gin.Context) {
+	ctx := c.Request.Context()
+	atype := c.Param("type")
+	slug := c.Param("slug")
+
+	from, ferr := strconv.Atoi(c.Query("from"))
+	to, terr := strconv.Atoi(c.Query("to"))
+	if ferr != nil || terr != nil || from < 1 || to < 1 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "from 和 to 必须是正整数版本号。"})
+		return
+	}
+	if from > to {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "from 不能大于 to。"})
+		return
+	}
+
+	articleID, ok := s.resolveArticleID(c, atype, slug)
+	if !ok {
+		return
+	}
+
+	revs, err := content.GetAllRevisionsForArticleCtx(ctx, s.DB, articleID)
+	if err != nil {
+		slog.Error("getRevisionDiff: load chain", "article_id", articleID, "err", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载历史版本失败。"})
+		return
+	}
+	if to > len(revs) {
+		c.JSON(http.StatusNotFound, gin.H{
+			"error":         fmt.Sprintf("版本 #%d 不存在(最新是 #%d)。", to, len(revs)),
+			"current_seq":   len(revs),
+		})
+		return
+	}
+
+	fromContent, err := content.RebuildToSeq(revs, from)
+	if err != nil {
+		slog.Error("getRevisionDiff: rebuild from", "article_id", articleID, "from", from, "err", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "重建 from 版本内容失败。"})
+		return
+	}
+	toContent, err := content.RebuildToSeq(revs, to)
+	if err != nil {
+		slog.Error("getRevisionDiff: rebuild to", "article_id", articleID, "to", to, "err", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "重建 to 版本内容失败。"})
+		return
+	}
+
+	diffText := content.ComputePatch(fromContent, toContent)
+
+	c.Header("Cache-Control", "public, max-age=86400, stale-while-revalidate=86400")
+	c.JSON(http.StatusOK, gin.H{
+		"from":       from,
+		"to":         to,
+		"from_title": revs[from-1].Title,
+		"to_title":   revs[to-1].Title,
+		"diff":       diffText,
+	})
+}
