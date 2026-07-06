@@ -8,7 +8,6 @@
 
 ## 项目简介
 
-GoKYCH 是一个个人 wiki/blog 平台，参考 PyKYCH（同作者的 Python 前身）实现。后端用 Go 写，
 前端用 Next.js 16（App Router + TypeScript）。数据落在 MySQL，静态资源走文件系统。
 
 支持 5 种文章类型：
@@ -25,7 +24,7 @@ GoKYCH 是一个个人 wiki/blog 平台，参考 PyKYCH（同作者的 Python �
 
 - 标签（多对多）
 - 评分（-1 到 1 的浮点）
-- 行评论（≤20 字符，电脑端侧边浮泡，移动端底部）
+- 行评论（≤20 字符，电脑端侧边浮泡，移动端不支持）
 - 全文评论（支持 Markdown）
 - 缩略图、推荐位、置顶
 
