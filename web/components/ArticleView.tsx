@@ -18,6 +18,67 @@ interface Props {
   articleSlug: string;
 }
 
+const youtubeIdRe = /^[A-Za-z0-9_-]{11}$/;
+
+function hydrateYoutubeEmbeds(container: HTMLElement) {
+  container.querySelectorAll<HTMLElement>(".wikidot-youtube[data-youtube-id]").forEach((placeholder) => {
+    const id = placeholder.dataset.youtubeId || "";
+    if (!youtubeIdRe.test(id)) return;
+    const iframe = document.createElement("iframe");
+    iframe.src = `https://www.youtube.com/embed/${id}`;
+    iframe.loading = "lazy";
+    iframe.allowFullscreen = true;
+    iframe.frameBorder = "0";
+    iframe.referrerPolicy = "strict-origin-when-cross-origin";
+    iframe.title = "YouTube video";
+    iframe.className = "wikidot-yt-embed";
+    placeholder.replaceWith(iframe);
+  });
+}
+
+function isSafeAvatarURL(src: string) {
+  if (!src) return false;
+  if (src.startsWith("/uploads/") || src.startsWith("/avatars/")) return true;
+  try {
+    const u = new URL(src, window.location.origin);
+    return u.protocol === "https:" || u.protocol === "http:";
+  } catch {
+    return false;
+  }
+}
+
+function hydrateUserMentions(container: HTMLElement) {
+  container.querySelectorAll<HTMLAnchorElement>("a.user-mention[data-avatar]").forEach((link) => {
+    if (link.dataset.userMentionHydrated === "1") return;
+    const avatar = (link.dataset.avatar || "").trim();
+    if (!isSafeAvatarURL(avatar)) return;
+    const img = document.createElement("img");
+    img.className = "user-mention-avatar";
+    img.src = avatar;
+    img.alt = "";
+    img.loading = "lazy";
+    img.decoding = "async";
+    link.insertBefore(img, link.firstChild);
+    link.dataset.userMentionHydrated = "1";
+  });
+}
+
+function hydrateObfuscatedEmails(container: HTMLElement) {
+  container.querySelectorAll<HTMLAnchorElement>("a.wikidot-email[data-user][data-domain]").forEach((link) => {
+    if (link.getAttribute("href")) return;
+    const user = (link.dataset.user || "").trim();
+    const domain = (link.dataset.domain || "").trim();
+    if (!user || !domain || /[\s<>"'`]/.test(user + domain)) return;
+    link.href = `mailto:${user}@${domain}`;
+  });
+}
+
+function hydrateArticleRuntime(container: HTMLElement) {
+  hydrateYoutubeEmbeds(container);
+  hydrateUserMentions(container);
+  hydrateObfuscatedEmails(container);
+}
+
 export function ArticleView({ data, articleType, articleSlug }: Props) {
   const { article, html, rating, comments: rawComments, line_comment_counts: rawLineCounts, can_edit } = data;
   const comments = rawComments ?? [];
@@ -129,25 +190,26 @@ export function ArticleView({ data, articleType, articleSlug }: Props) {
   // So the client MUST NOT:
   //   • Run DOMPurify (already done server-side; importing it is dead weight)
   //   • Rewrite innerHTML (would force a synchronous layout)
-  //   • Convert youtube placeholders (already converted)
   //   • Add lazy/decode attrs to images (already there)
   //   • Assign data-line (already numbered)
   //
   // What the client still needs to do (things that depend on browser
   // state or runtime data that the server cannot predict):
-  //   1. Wire up Wikidot [[tabview]] click handlers (pure JS event binding)
-  //   2. Toggle .has-line-comments class based on live comment counts
+  //   1. Hydrate browser-side helpers that need preserved data-* attributes
+  //      (nested YouTube fallbacks, user mention avatars, obfuscated emails)
+  //   2. Wire up Wikidot [[tabview]] click handlers (pure JS event binding)
+  //   3. Toggle .has-line-comments class based on live comment counts
   //      (these change over time and are viewer-specific)
-  //   3. Deferred: hydrate KaTeX math ($...$) and mermaid diagrams in
+  //   4. Deferred: hydrate KaTeX math ($...$) and mermaid diagrams in
   //      Markdown/Wikidot articles (Typst uses native MathML so it
   //      doesn't need KaTeX). These are non-critical for reading and
   //      run via requestIdleCallback so they never block the main thread.
-  //   4. Measure comment bubble positions (needs real layout).
+  //   5. Measure comment bubble positions (needs real layout).
   //
   // The content div is pre-populated via dangerouslySetInnerHTML on the
   // first render (SSR + initial client paint), so readers see article
-  // text immediately — this effect does zero DOM writes beyond adding
-  // event listeners and the comment-marker class.
+  // text immediately — this effect only performs small, idempotent runtime
+  // hydrations and event/class updates after the first paint.
   useEffect(() => {
     const container = contentRef.current;
     if (!container) return;
@@ -160,28 +222,30 @@ export function ArticleView({ data, articleType, articleSlug }: Props) {
     // that don't exist.
     const isTypst = container.querySelector?.(".typst-content") !== null;
 
-    // 1. Wire up Wikidot [[tabview]] clicks (idempotent — harmless if
+    // 1. Restore small runtime behaviours that depend on browser-side data
+    //    and preserved data-* attributes.
+    hydrateArticleRuntime(container);
+
+    // 2. Wire up Wikidot [[tabview]] clicks (idempotent — harmless if
     //    no tabviews are present).
-    container.querySelectorAll<HTMLElement>(".wikidot-tabview").forEach((tv) => {
+    const handleTabClick = (event: MouseEvent) => {
+      const target = event.target as HTMLElement | null;
+      const tab = target?.closest(".wikidot-tab-tab") as HTMLElement | null;
+      if (!tab || !container.contains(tab)) return;
+      const tv = tab.closest(".wikidot-tabview") as HTMLElement | null;
+      if (!tv) return;
+      event.preventDefault();
+      const id = tab.dataset.tabId;
+      if (id === undefined) return;
       const tabs = tv.querySelectorAll<HTMLElement>(".wikidot-tab-tab");
       const panels = tv.querySelectorAll<HTMLElement>(".wikidot-tab-panel");
-      tabs.forEach((tab) => {
-        tab.addEventListener("click", (e) => {
-          e.preventDefault();
-          const id = tab.dataset.tabId;
-          if (id === undefined) return;
-          tabs.forEach((t) => t.classList.remove("active"));
-          panels.forEach((p) => p.classList.remove("active"));
-          tab.classList.add("active");
-          const target = tv.querySelector<HTMLElement>(
-            `.wikidot-tab-panel[data-tab-id="${id}"]`,
-          );
-          if (target) target.classList.add("active");
-        });
-      });
-    });
+      tabs.forEach((t) => t.classList.remove("active"));
+      panels.forEach((p) => p.classList.toggle("active", p.dataset.tabId === id));
+      tab.classList.add("active");
+    };
+    container.addEventListener("click", handleTabClick);
 
-    // 2. Apply comment-marker dots. data-line is already on elements
+    // 3. Apply comment-marker dots. data-line is already on elements
     //    from the server; we only toggle the class based on current
     //    comment counts (which change after load).
     const counts = lineCountsRef.current;
@@ -191,7 +255,7 @@ export function ArticleView({ data, articleType, articleSlug }: Props) {
       block.classList.toggle("has-line-comments", count > 0);
     });
 
-    // 3. Deferred KaTeX + mermaid hydration. Skipped for Typst (native
+    // 4. Deferred KaTeX + mermaid hydration. Skipped for Typst (native
     //    MathML, no mermaid blocks). Uses requestIdleCallback so it
     //    never blocks scrolling/interaction.
     if (!isTypst) {
@@ -218,6 +282,7 @@ export function ArticleView({ data, articleType, articleSlug }: Props) {
 
     return () => {
       cancelled = true;
+      container.removeEventListener("click", handleTabClick);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [html]);
@@ -311,129 +376,129 @@ export function ArticleView({ data, articleType, articleSlug }: Props) {
   }, [popup, closePopup]);
 
   return (
-    <article className="article-detail">
-      <header className="article-header">
-        <div className="article-type-row"><span className="article-type-badge">{article.type}</span>
-          <div className="article-tags">{articleTags.map((tag: string) => <Link key={tag} href={`/labels/${tag}`} className="tag-badge">{tag}</Link>)}</div></div>
-        <h1 className="article-title">{article.title}</h1>
-        <div className="article-meta">
-          {article.author_name && (
-            <span className="article-author">
+      <article className="article-detail">
+        <header className="article-header">
+          <div className="article-type-row"><span className="article-type-badge">{article.type}</span>
+            <div className="article-tags">{articleTags.map((tag: string) => <Link key={tag} href={`/labels/${tag}`} className="tag-badge">{tag}</Link>)}</div></div>
+          <h1 className="article-title">{article.title}</h1>
+          <div className="article-meta">
+            {article.author_name && (
+                <span className="article-author">
               <UserAvatar
-                user={{
-                  nickname: article.author_nickname || "",
-                  username: article.author_name || "",
-                  avatar: article.author_avatar || "",
-                }}
-                size={28}
+                  user={{
+                    nickname: article.author_nickname || "",
+                    username: article.author_name || "",
+                    avatar: article.author_avatar || "",
+                  }}
+                  size={28}
               />
               <span>{article.author_nickname || article.author_name}</span>
             </span>
-          )}
-          <time>发布于 {new Date(article.created_at).toLocaleDateString("zh-CN")}</time>
-          {article.created_at !== article.updated_at && <time className="updated-at">· 更新于 {new Date(article.updated_at).toLocaleDateString("zh-CN")}</time>}
-          {article.type === "typst" && (
-            <a
-              href={apiUrl(`/api/articles/${article.type}/${article.slug}/pdf`)}
-              className="edit-link"
-              download
-              title="下载 PDF（首次点击会触发 typst 编译，约 1–2 秒）"
-            >📄 下载 PDF</a>
-          )}
-          {can_edit || isLoggedIn ? <Link href={`/admin/articles?editType=${article.type}&editSlug=${article.slug}`} className="edit-link">✏️ 编辑</Link> : null}</div>
-      </header>
-      <div className="article-content-wrap">
-        <div
-          className="content-body"
-          ref={contentRef}
-          onClick={handleContentClick}
-          // Pre-populate with server-rendered HTML so content is visible
-          // in the SSR response AND on the first client paint — no blank
-          // wait for JS hydration. The useEffect above re-runs DOMPurify
-          // as defense-in-depth and only overwrites innerHTML if the
-          // sanitised output differs, so we avoid a redundant DOM write
-          // for the common case where server output is already clean.
-          dangerouslySetInnerHTML={{ __html: html ?? "" }}
-          suppressHydrationWarning
-        />
-        {/* Line comment bubbles — outside the text area, aligned with each commented line */}
-        <div className="line-bubble-layer" aria-hidden={false}>
-          {commentedLines.map((ln) => {
-            const cmts = lineDataRef.current[ln] || [];
-            if (cmts.length === 0) return null;
-            const top = bubbleTops[ln];
-            const height = bubbleHeights[ln];
-            if (top === undefined || height === undefined) return null;
-            return (
-              <LineCommentBubble
-                key={ln}
-                lineNum={ln}
-                comments={cmts}
-                top={top}
-                height={height}
-                onClickLine={(n) => {
-                  scrollToLine(n);
-                  const block = contentRef.current?.querySelector(`[data-line="${n}"]`);
-                  if (block) openPopupForLine(n, block.getBoundingClientRect());
-                }}
-              />
-            );
-          })}
+            )}
+            <time>发布于 {new Date(article.created_at).toLocaleDateString("zh-CN")}</time>
+            {article.created_at !== article.updated_at && <time className="updated-at">· 更新于 {new Date(article.updated_at).toLocaleDateString("zh-CN")}</time>}
+            {article.type === "typst" && (
+                <a
+                    href={apiUrl(`/api/articles/${article.type}/${article.slug}/pdf`)}
+                    className="edit-link"
+                    download
+                    title="下载 PDF（首次点击会触发 typst 编译，约 1–2 秒）"
+                >📄 下载 PDF</a>
+            )}
+            {can_edit || isLoggedIn ? <Link href={`/admin/articles?editType=${article.type}&editSlug=${article.slug}`} className="edit-link">✏️ 编辑</Link> : null}</div>
+        </header>
+        <div className="article-content-wrap">
+          <div
+              className="content-body"
+              ref={contentRef}
+              onClick={handleContentClick}
+              // Pre-populate with server-rendered HTML so content is visible
+              // in the SSR response AND on the first client paint — no blank
+              // wait for JS hydration. The useEffect above re-runs DOMPurify
+              // as defense-in-depth and only overwrites innerHTML if the
+              // sanitised output differs, so we avoid a redundant DOM write
+              // for the common case where server output is already clean.
+              dangerouslySetInnerHTML={{ __html: html ?? "" }}
+              suppressHydrationWarning
+          />
+          {/* Line comment bubbles — outside the text area, aligned with each commented line */}
+          <div className="line-bubble-layer" aria-hidden={false}>
+            {commentedLines.map((ln) => {
+              const cmts = lineDataRef.current[ln] || [];
+              if (cmts.length === 0) return null;
+              const top = bubbleTops[ln];
+              const height = bubbleHeights[ln];
+              if (top === undefined || height === undefined) return null;
+              return (
+                  <LineCommentBubble
+                      key={ln}
+                      lineNum={ln}
+                      comments={cmts}
+                      top={top}
+                      height={height}
+                      onClickLine={(n) => {
+                        scrollToLine(n);
+                        const block = contentRef.current?.querySelector(`[data-line="${n}"]`);
+                        if (block) openPopupForLine(n, block.getBoundingClientRect());
+                      }}
+                  />
+              );
+            })}
+          </div>
         </div>
-      </div>
 
-      {/* Side panel */}
-      <div className="line-comments-container"><div className="line-comments-panel">
-        <div className="line-comments-header"><span>行评论</span><div className="line-comments-header-actions">
-          <span className={`line-comments-help ${guideOpen ? "active" : ""}`} onClick={() => setGuideOpen(!guideOpen)} title="使用帮助">?</span>
-          <span className="line-comments-toggle" onClick={() => setPanelOpen(!panelOpen)} title={panelOpen ? "隐藏行评论" : "显示行评论"}>{panelOpen ? "×" : "+"}</span></div></div>
-        {guideOpen && <div className="line-comments-guide"><div className="line-comments-guide-content"><p><strong>📖 行评论使用说明</strong></p><ul><li>已评论的行左侧显示与行等高的浮泡</li><li>单条：头像+昵称+时间+内容紧凑展示</li><li>多条：折叠显示"点击展开"，点击后展示全部</li><li>点击文章中的任意行可添加新评论</li><li>每条评论最多 <strong>20 字</strong></li></ul></div></div>}
-        {panelOpen && <div className="line-comments-list">
-          {commentedLines.length === 0
-            ? <div className="line-comments-empty">暂无行评论<br /><span className="line-comments-empty-hint">点击文章中的行可添加短评</span></div>
-            : commentedLines.map((ln) => {
-                const count = lineCounts[ln] || 0;
-                const cmts = lineDataRef.current[ln] || [];
-                const latest = cmts.length > 0 ? cmts[cmts.length - 1].content : "";
-                return (
-                  <div key={ln} className="line-comment-row" onClick={(e) => {
-                    e.stopPropagation();
-                    const block = contentRef.current?.querySelector(`[data-line="${ln}"]`);
-                    if (block) {
-                      contentRef.current?.querySelectorAll(".line-active").forEach(el => el.classList.remove("line-active"));
-                      block.classList.add("line-active");
-                      openPopupForLine(ln, block.getBoundingClientRect());
-                      block.scrollIntoView({ behavior: "smooth", block: "center" });
-                    }
-                  }}>
-                    <span className="line-comment-line-num">L{ln}</span>
-                    <span className="line-comment-text">
+        {/* Side panel */}
+        <div className="line-comments-container"><div className="line-comments-panel">
+          <div className="line-comments-header"><span>行评论</span><div className="line-comments-header-actions">
+            <span className={`line-comments-help ${guideOpen ? "active" : ""}`} onClick={() => setGuideOpen(!guideOpen)} title="使用帮助">?</span>
+            <span className="line-comments-toggle" onClick={() => setPanelOpen(!panelOpen)} title={panelOpen ? "隐藏行评论" : "显示行评论"}>{panelOpen ? "×" : "+"}</span></div></div>
+          {guideOpen && <div className="line-comments-guide"><div className="line-comments-guide-content"><p><strong>📖 行评论使用说明</strong></p><ul><li>已评论的行左侧显示与行等高的浮泡</li><li>单条：头像+昵称+时间+内容紧凑展示</li><li>多条：折叠显示"点击展开"，点击后展示全部</li><li>点击文章中的任意行可添加新评论</li><li>每条评论最多 <strong>20 字</strong></li></ul></div></div>}
+          {panelOpen && <div className="line-comments-list">
+            {commentedLines.length === 0
+                ? <div className="line-comments-empty">暂无行评论<br /><span className="line-comments-empty-hint">点击文章中的行可添加短评</span></div>
+                : commentedLines.map((ln) => {
+                  const count = lineCounts[ln] || 0;
+                  const cmts = lineDataRef.current[ln] || [];
+                  const latest = cmts.length > 0 ? cmts[cmts.length - 1].content : "";
+                  return (
+                      <div key={ln} className="line-comment-row" onClick={(e) => {
+                        e.stopPropagation();
+                        const block = contentRef.current?.querySelector(`[data-line="${ln}"]`);
+                        if (block) {
+                          contentRef.current?.querySelectorAll(".line-active").forEach(el => el.classList.remove("line-active"));
+                          block.classList.add("line-active");
+                          openPopupForLine(ln, block.getBoundingClientRect());
+                          block.scrollIntoView({ behavior: "smooth", block: "center" });
+                        }
+                      }}>
+                        <span className="line-comment-line-num">L{ln}</span>
+                        <span className="line-comment-text">
                       {latest
-                        ? <SafeMarkdown html={(cmts[cmts.length - 1] as any).content_html} text={latest} />
-                        : "—"}
+                          ? <SafeMarkdown html={(cmts[cmts.length - 1] as any).content_html} text={latest} />
+                          : "—"}
                     </span>
-                    {count > 1 && <span className="line-comment-count">{count}</span>}
-                  </div>
-                );
-              })
-          }
-        </div>}
-      </div></div>
+                        {count > 1 && <span className="line-comment-count">{count}</span>}
+                      </div>
+                  );
+                })
+            }
+          </div>}
+        </div></div>
 
-      {/* Popup */}
-      {popup && <div className="line-comment-popup" style={{ left: popup.x, top: popup.y }} onClick={(e) => e.stopPropagation()}>
-        <div className="line-comment-popup-header">
-          <span className="line-comment-popup-title">第 {popup.lineNum} 行</span>
-          <span className="line-comment-popup-count">{popupComments.length} 条评论</span>
-          <button className="line-comment-popup-close" onClick={closePopup}>×</button>
-        </div>
-        <div className="line-comment-popup-comments">{popupComments.length === 0 ? <div className="line-comment-popup-empty">暂无评论，来说两句吧</div> :
-          popupComments.map((c) => <div key={c.id} className="line-comment-popup-item"><CommentAvatar c={c} size={28} /><div className="line-comment-popup-body"><div className="line-comment-popup-author">{commentDisplayName(c)} · {new Date(c.created_at).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</div><div className="line-comment-popup-content"><SafeMarkdown html={c.content_html} text={c.content} /></div></div></div>)}</div>
-        {isLoggedIn ? <div className="line-comment-popup-form"><div className="line-comment-input-wrap"><input type="text" className="line-comment-input" maxLength={20} placeholder="输入短评（最多20字）..." value={popupInput} onChange={(e) => setPopupInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !submitting) handleLineCommentSubmit(); if (e.key === "Escape") closePopup(); }} disabled={submitting} /><span className={`line-comment-counter ${popupInput.length >= 20 ? "overlimit" : ""}`}>{popupInput.length}/20</span></div><button className="line-comment-submit" onClick={handleLineCommentSubmit} disabled={submitting || !popupInput.trim()}>{submitting ? "…" : "发送"}</button></div>
-        : <div className="line-comment-popup-form"><div className="line-comment-login-hint"><Link href={`/auth/login?next=/${articleType}/${articleSlug}`}>登录</Link>后添加行评论</div></div>}
-      </div>}
-      {rating && <RatingWidget articleType={articleType} articleSlug={articleSlug} initialAvg={rating.average_score} initialVoters={rating.total_voters} initialUserScore={rating.user_score} />}
-      <CommentSection articleType={articleType} articleSlug={articleSlug} initialComments={comments} />
-    </article>
+        {/* Popup */}
+        {popup && <div className="line-comment-popup" style={{ left: popup.x, top: popup.y }} onClick={(e) => e.stopPropagation()}>
+          <div className="line-comment-popup-header">
+            <span className="line-comment-popup-title">第 {popup.lineNum} 行</span>
+            <span className="line-comment-popup-count">{popupComments.length} 条评论</span>
+            <button className="line-comment-popup-close" onClick={closePopup}>×</button>
+          </div>
+          <div className="line-comment-popup-comments">{popupComments.length === 0 ? <div className="line-comment-popup-empty">暂无评论，来说两句吧</div> :
+              popupComments.map((c) => <div key={c.id} className="line-comment-popup-item"><CommentAvatar c={c} size={28} /><div className="line-comment-popup-body"><div className="line-comment-popup-author">{commentDisplayName(c)} · {new Date(c.created_at).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</div><div className="line-comment-popup-content"><SafeMarkdown html={c.content_html} text={c.content} /></div></div></div>)}</div>
+          {isLoggedIn ? <div className="line-comment-popup-form"><div className="line-comment-input-wrap"><input type="text" className="line-comment-input" maxLength={20} placeholder="输入短评（最多20字）..." value={popupInput} onChange={(e) => setPopupInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !submitting) handleLineCommentSubmit(); if (e.key === "Escape") closePopup(); }} disabled={submitting} /><span className={`line-comment-counter ${popupInput.length >= 20 ? "overlimit" : ""}`}>{popupInput.length}/20</span></div><button className="line-comment-submit" onClick={handleLineCommentSubmit} disabled={submitting || !popupInput.trim()}>{submitting ? "…" : "发送"}</button></div>
+              : <div className="line-comment-popup-form"><div className="line-comment-login-hint"><Link href={`/auth/login?next=/${articleType}/${articleSlug}`}>登录</Link>后添加行评论</div></div>}
+        </div>}
+        {rating && <RatingWidget articleType={articleType} articleSlug={articleSlug} initialAvg={rating.average_score} initialVoters={rating.total_voters} initialUserScore={rating.user_score} />}
+        <CommentSection articleType={articleType} articleSlug={articleSlug} initialComments={comments} />
+      </article>
   );
 }
