@@ -31,6 +31,8 @@
 package content
 
 import (
+	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"time"
@@ -228,4 +230,170 @@ func newDMP() *diffmatchpatch.DiffMatchPatch {
 	dmp := diffmatchpatch.New()
 	dmp.DiffTimeout = dmpTimeout
 	return dmp
+}
+
+// ──────────────────────── DB layer (V3) ────────────────────────
+//
+// All three functions below assume article_id has been resolved by the
+// caller (the API layer does this from the {type, slug} URL params). The
+// article_id → seq chain is the only data the revision log cares about;
+// we never embed the (type, slug) into article_revisions to keep the
+// schema single-purpose and to avoid sync issues on slug renames.
+
+// scanRevisionListItem reads the lightweight columns needed for the list
+// endpoint. Patch is intentionally NOT scanned — shipping every diff
+// body in the list payload would inflate responses for articles with
+// hundreds of revisions. Callers fetch a single revision's full content
+// via GetRevisionCtx.
+func scanRevisionListItem(s rowScanner, r *RevisionListItem) error {
+	var authorID sql.NullInt64
+	if err := s.Scan(
+		&r.ID, &r.Seq, &r.Title, &r.IsSnapshot, &authorID,
+		&r.Message, &r.CreatedAt,
+	); err != nil {
+		return err
+	}
+	if authorID.Valid {
+		v := int(authorID.Int64)
+		r.AuthorID = &v
+	}
+	return nil
+}
+
+// scanRevisionFull reads every column of an article_revisions row, including
+// the patch body. Used by GetRevisionCtx (single-version fetch) and
+// GetAllRevisionsForArticleCtx (RebuildToSeq input).
+func scanRevisionFull(s rowScanner, r *Revision) error {
+	var authorID sql.NullInt64
+	var parentSeq sql.NullInt64
+	if err := s.Scan(
+		&r.ID, &r.ArticleID, &r.Seq, &r.Title, &r.Patch, &r.IsSnapshot,
+		&parentSeq, &authorID, &r.Message, &r.CreatedAt,
+	); err != nil {
+		return err
+	}
+	if parentSeq.Valid {
+		v := int(parentSeq.Int64)
+		r.ParentSeq = &v
+	}
+	if authorID.Valid {
+		v := int(authorID.Int64)
+		r.AuthorID = &v
+	}
+	return nil
+}
+
+// ListRevisionsCtx returns the list of revisions for an article, sorted
+// by seq DESC (newest first), paginated. The Patch column is omitted —
+// callers wanting a specific seq's content should call GetRevisionCtx.
+//
+// Returns:
+//   - items:   the page of revisions (length ≤ perPage)
+//   - total:   total number of revisions for the article (for pager UI)
+//   - err:     any database error
+//
+// `perPage <= 0` is normalised to 20; `page < 1` is normalised to 1.
+func ListRevisionsCtx(ctx context.Context, db *sql.DB, articleID, page, perPage int) ([]RevisionListItem, int, error) {
+	if perPage <= 0 {
+		perPage = 20
+	}
+	if page < 1 {
+		page = 1
+	}
+	offset := (page - 1) * perPage
+
+	var total int
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM article_revisions WHERE article_id = ?`,
+		articleID,
+	).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	if total == 0 {
+		return []RevisionListItem{}, 0, nil
+	}
+
+	rows, err := db.QueryContext(ctx,
+		`SELECT id, seq, title, is_snapshot, author_id, message, created_at
+		 FROM article_revisions
+		 WHERE article_id = ?
+		 ORDER BY seq DESC
+		 LIMIT ? OFFSET ?`,
+		articleID, perPage, offset,
+	)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	items := make([]RevisionListItem, 0, perPage)
+	for rows.Next() {
+		var r RevisionListItem
+		if err := scanRevisionListItem(rows, &r); err != nil {
+			return nil, 0, err
+		}
+		items = append(items, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	return items, total, nil
+}
+
+// GetRevisionCtx fetches a single revision by (article_id, seq), including
+// the full Patch body. Returns sql.ErrNoRows if the revision doesn't exist.
+func GetRevisionCtx(ctx context.Context, db *sql.DB, articleID, seq int) (*Revision, error) {
+	r := &Revision{}
+	err := db.QueryRowContext(ctx,
+		`SELECT id, article_id, seq, title, patch, is_snapshot, parent_seq,
+		        author_id, message, created_at
+		 FROM article_revisions
+		 WHERE article_id = ? AND seq = ?`,
+		articleID, seq,
+	).Scan(
+		&r.ID, &r.ArticleID, &r.Seq, &r.Title, &r.Patch, &r.IsSnapshot,
+		&r.ParentSeq, &r.AuthorID, &r.Message, &r.CreatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return r, nil
+}
+
+// GetAllRevisionsForArticleCtx returns every revision for an article, sorted
+// by seq ASC (so the slice is in chronological order). This is the input
+// that RebuildToSeq expects.
+//
+// Implementation note: the (article_id, seq) UNIQUE index makes this an
+// index range scan; cost is O(N) where N is the number of revisions.
+// For articles with 1000+ revisions this could become slow; a future
+// optimisation is to stream rows in batches and call RebuildToSeq
+// incrementally. The snapshot-every-N rule bounds N at "user saved the
+// article fewer than 50 × perPage_list_views" times in practice.
+func GetAllRevisionsForArticleCtx(ctx context.Context, db *sql.DB, articleID int) ([]Revision, error) {
+	rows, err := db.QueryContext(ctx,
+		`SELECT id, article_id, seq, title, patch, is_snapshot, parent_seq,
+		        author_id, message, created_at
+		 FROM article_revisions
+		 WHERE article_id = ?
+		 ORDER BY seq ASC`,
+		articleID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	revs := make([]Revision, 0, 32)
+	for rows.Next() {
+		var r Revision
+		if err := scanRevisionFull(rows, &r); err != nil {
+			return nil, err
+		}
+		revs = append(revs, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return revs, nil
 }
