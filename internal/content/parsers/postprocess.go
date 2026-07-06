@@ -68,6 +68,16 @@ func init() {
 		"target", "rel", "referrerpolicy", "allowfullscreen", "frameborder",
 		"controls", "muted", "loop", "autoplay", "preload", "poster",
 		"data-line", "data-tab-id", "data-toggle", "data-source",
+		// Hydration data — emitted by the wikidot parsers and consumed by the
+		// client-side hydrators in web/components/ArticleView.tsx. None of
+		// these carry content the server trusts at render time — they all
+		// pass through DOMPurify / bluemonday exactly because we never let
+		// user-controlled strings reach innerHTML without re-escape.
+		//   data-user, data-domain     → <a class="wikidot-email"> split-addr
+		//   data-username, data-user-id, data-avatar
+		//                              → <a class="user-mention"> lookup result
+		"data-user", "data-domain",
+		"data-username", "data-user-id", "data-avatar",
 		"data-youtube-id",
 		"data-math-rendered", "data-math-error",
 		"data-mermaid-rendered", "data-mermaid-error",
@@ -255,30 +265,7 @@ func PostProcessArticleHTML(raw string, extraClasses ...string) string {
 	}
 
 	line := 0
-	var childrenToReplace = map[*html.Node]*html.Node{}
 	for _, child := range contentChildren {
-		// Collect YouTube placeholder replacement (we'll do it after
-		// the loop to avoid mutating contentChildren during iteration).
-		if child.Type == html.ElementNode && child.Data == "div" {
-			if id := getAttr(child, "data-youtube-id"); id != "" && youtubeIDRe.MatchString(id) {
-				iframe := &html.Node{
-					Type: html.ElementNode,
-					Data: "iframe",
-					Attr: []html.Attribute{
-						{Key: "src", Val: "https://www.youtube.com/embed/" + id},
-						{Key: "loading", Val: "lazy"},
-						{Key: "allowfullscreen", Val: "allowfullscreen"},
-						{Key: "frameborder", Val: "0"},
-						{Key: "referrerpolicy", Val: "strict-origin-when-cross-origin"},
-						{Key: "title", Val: "YouTube video"},
-						{Key: "class", Val: "wikidot-yt-embed"},
-					},
-				}
-				childrenToReplace[child] = iframe
-				continue
-			}
-		}
-
 		// Assign data-line to direct block children, skipping layout
 		// containers.
 		if child.Type == html.ElementNode && isBlock(child.Data) && !skipContainerClass(child) {
@@ -309,13 +296,16 @@ func PostProcessArticleHTML(raw string, extraClasses ...string) string {
 		})
 	}
 
+	// Convert YouTube placeholders anywhere in the sanitised tree, not only
+	// when the placeholder is a direct top-level child. Wikidot authors often
+	// place [[youtube ...]] inside [[div]], tab panels, collapsibles, or floated
+	// wrappers; the old top-level-only replacement left those nested placeholders
+	// as empty boxes on the article page.
+	contentChildren = replaceYouTubePlaceholders(contentChildren)
+
 	// Append all children (with placeholders replaced by iframes) to wrapper.
 	for _, child := range contentChildren {
-		if repl, ok := childrenToReplace[child]; ok {
-			wrapper.AppendChild(repl)
-		} else {
-			wrapper.AppendChild(child)
-		}
+		wrapper.AppendChild(child)
 	}
 
 	bodyNode.AppendChild(wrapper)
@@ -343,6 +333,57 @@ func walkHTML(n *html.Node, fn func(*html.Node)) {
 	fn(n)
 	for c := n.FirstChild; c != nil; c = c.NextSibling {
 		walkHTML(c, fn)
+	}
+}
+
+// replaceYouTubePlaceholders swaps every valid Wikidot YouTube placeholder in
+// nodes for a safe iframe. It handles both detached top-level nodes and nested
+// nodes. The nested walk saves next pointers before mutation so replacing a
+// node never skips one of its siblings.
+func replaceYouTubePlaceholders(nodes []*html.Node) []*html.Node {
+	var walk func(*html.Node)
+	walk = func(n *html.Node) {
+		for c := n.FirstChild; c != nil; {
+			next := c.NextSibling
+			walk(c)
+			c = next
+		}
+
+		if n.Type != html.ElementNode || n.Data != "div" {
+			return
+		}
+		id := getAttr(n, "data-youtube-id")
+		if id == "" || !youtubeIDRe.MatchString(id) || n.Parent == nil {
+			return
+		}
+		n.Parent.InsertBefore(newYouTubeIframe(id), n)
+		n.Parent.RemoveChild(n)
+	}
+	for i, n := range nodes {
+		if n.Type == html.ElementNode && n.Data == "div" {
+			if id := getAttr(n, "data-youtube-id"); id != "" && youtubeIDRe.MatchString(id) {
+				nodes[i] = newYouTubeIframe(id)
+				continue
+			}
+		}
+		walk(n)
+	}
+	return nodes
+}
+
+func newYouTubeIframe(id string) *html.Node {
+	return &html.Node{
+		Type: html.ElementNode,
+		Data: "iframe",
+		Attr: []html.Attribute{
+			{Key: "src", Val: "https://www.youtube.com/embed/" + id},
+			{Key: "loading", Val: "lazy"},
+			{Key: "allowfullscreen", Val: "allowfullscreen"},
+			{Key: "frameborder", Val: "0"},
+			{Key: "referrerpolicy", Val: "strict-origin-when-cross-origin"},
+			{Key: "title", Val: "YouTube video"},
+			{Key: "class", Val: "wikidot-yt-embed"},
+		},
 	}
 }
 
