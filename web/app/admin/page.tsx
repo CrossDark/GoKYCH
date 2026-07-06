@@ -43,6 +43,13 @@ const QUICK_LINKS = [
     color: "orange",
   },
   {
+    href: "/admin/sidebar-cards",
+    icon: "📋",
+    title: "侧栏卡片",
+    desc: "管理前端 ☰ 抽屉中的导航卡片",
+    color: "indigo",
+  },
+  {
     href: "/admin/home",
     icon: "🏠",
     title: "首页管理",
