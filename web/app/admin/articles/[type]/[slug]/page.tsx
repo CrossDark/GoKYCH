@@ -9,6 +9,7 @@ import { useToast, useBeforeUnload } from "@/lib/admin-feedback";
 import { AdminConfirm } from "@/components/admin/AdminConfirm";
 import { MarkdownEditor } from "@/components/admin/MarkdownEditor";
 import { RevisionDrawer, type RevisionAction } from "@/components/admin/RevisionDrawer";
+import { RevisionDiffModal } from "@/components/admin/RevisionDiffModal";
 import { fmtDateTime } from "@/lib/format";
 
 const TYPE_LABELS: Record<string, string> = {
@@ -41,11 +42,13 @@ export default function AdminArticleDetail({ params }: PageProps) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   // V5 — revision history drawer. `revisionsOpen` controls visibility;
   // `revisionAction` records the most recent user-initiated action so
-  // a future V5b/V5c modal can read it. In V5a the action is just
-  // toasted — V5b will wire 查看 / 对比当前 to a diff modal, V5c will
-  // wire 回滚 to a confirm modal.
+  // the diff modal (V5b) / restore modal (V5c) can read it.
+  // `currentSeq` is the article's latest revision seq, fed back to us
+  // by the drawer's onLoaded callback — used as the `to` in compare
+  // mode so "对比 #N" always diffs against the live state.
   const [revisionsOpen, setRevisionsOpen] = useState(false);
   const [revisionAction, setRevisionAction] = useState<RevisionAction | null>(null);
+  const [currentSeq, setCurrentSeq] = useState<number | null>(null);
 
   const isDirty = form.title !== initial.title
     || form.content !== initial.content
@@ -140,18 +143,14 @@ export default function AdminArticleDetail({ params }: PageProps) {
     }
   };
 
-  // V5a — placeholder handler for revision actions. V5b will replace
-  // the 查看 / 对比当前 branches with a diff modal, V5c will replace
-  // 回滚 with a confirm modal. The drawer itself stays the same.
+  // V5 — handle a revision action from the drawer. Setting
+  // `revisionAction` opens the corresponding modal:
+  //   - view / compare  → RevisionDiffModal (V5b)
+  //   - restore         → RevisionRestoreModal (V5c, to come)
+  // The drawer itself stays the same; only the parent's
+  // `revisionAction` state is read by the modals.
   const handleRevisionAction = (action: RevisionAction) => {
     setRevisionAction(action);
-    if (action.kind === "view") {
-      toast.info(`查看 #${action.seq} 将在 V5b 实现。`);
-    } else if (action.kind === "compare") {
-      toast.info(`对比 #${action.seq} ↔ 当前 将在 V5b 实现。`);
-    } else {
-      toast.info(`回滚到 #${action.seq} 将在 V5c 实现。`);
-    }
   };
 
   if (loadError) {
@@ -377,14 +376,30 @@ export default function AdminArticleDetail({ params }: PageProps) {
       />
 
       {/* V5 — revision history drawer. See RevisionDrawer.tsx for the
-          list rendering; V5b/V5c will add the per-action modals
-          driven by `revisionAction` (currently a no-op toast). */}
+          list rendering; RevisionDiffModal (V5b) handles 查看 / 对比
+          current via `revisionAction`; RevisionRestoreModal (V5c) will
+          handle 回滚 next. */}
       <RevisionDrawer
         open={revisionsOpen}
         onClose={() => setRevisionsOpen(false)}
         type={article.type}
         slug={article.slug}
         onAction={handleRevisionAction}
+        onLoaded={setCurrentSeq}
+      />
+
+      {/* V5b — view single version + diff against current. Closes
+          by setting `revisionAction` back to null. */}
+      <RevisionDiffModal
+        action={
+          revisionAction?.kind === "view" || revisionAction?.kind === "compare"
+            ? revisionAction
+            : null
+        }
+        type={article.type}
+        slug={article.slug}
+        currentSeq={currentSeq}
+        onClose={() => setRevisionAction(null)}
       />
     </div>
   );

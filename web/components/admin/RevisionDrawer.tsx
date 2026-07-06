@@ -35,6 +35,14 @@ interface RevisionDrawerProps {
   slug: string;
   /** Dispatched when the user clicks 查看 / 对比当前 / 回滚 on a row. */
   onAction: (action: RevisionAction) => void;
+  /**
+   * Called once per successful fetch with the list's `total` — i.e.
+   * the current (latest) revision seq. The parent uses this to
+   * populate the "compare against current" modal's `to` parameter
+   * so a click on row #N diffs against the live state, not against
+   * #N itself.
+   */
+  onLoaded?: (currentSeq: number) => void;
 }
 
 export function RevisionDrawer({
@@ -43,6 +51,7 @@ export function RevisionDrawer({
   type,
   slug,
   onAction,
+  onLoaded,
 }: RevisionDrawerProps) {
   const [state, setState] = useState<
     | { kind: "idle" }
@@ -56,13 +65,21 @@ export function RevisionDrawer({
     try {
       const data = await listRevisions(type, slug, 1, 100);
       setState({ kind: "ok", data });
+      if (onLoaded && data.total > 0) {
+        // The list endpoint already gives us `total` (the article's
+        // current seq), so we don't need a second fetch to learn
+        // the latest seq. Fire onLoaded only on success so the
+        // parent's `currentSeq` doesn't get reset to 0 on a
+        // transient fetch failure.
+        onLoaded(data.total);
+      }
     } catch (e: any) {
       setState({
         kind: "error",
         message: e?.message || "加载历史版本失败。",
       });
     }
-  }, [type, slug]);
+  }, [type, slug, onLoaded]);
 
   // Lazy fetch: only when the drawer is actually opened. Re-fetch
   // when type/slug change (the editor can navigate between articles
