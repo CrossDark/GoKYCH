@@ -176,8 +176,20 @@ export default function AdminArticleDetail({ params }: PageProps) {
     // (server's invariant: restore always creates the next seq),
     // and the drawer's onLoaded callback will re-fetch when the
     // user reopens the drawer.
-    setCurrentSeq((prev) => (prev === null ? null : prev + 1));
-    toast.success(`已回滚到 #${restored.id ? "" : ""}。`);
+    const nextSeq = currentSeq === null ? null : currentSeq + 1;
+    setCurrentSeq(nextSeq);
+    // Toast reflects the seq the user actually rolled back TO, not
+    // the new seq we just created. revisionAction was just cleared
+    // above so we read it from the previous render's closure. In
+    // practice the user just clicked "回滚 to #N", so saying
+    // "已回滚到 #N" matches their intent — the new row is #N+1,
+    // but that's an audit detail, not what they meant by the action.
+    const targetSeq = revisionAction?.kind === "restore" ? revisionAction.seq : null;
+    toast.success(
+      targetSeq !== null
+        ? `已回滚到 #${targetSeq}。`
+        : "已回滚。"
+    );
   };
 
   if (loadError) {

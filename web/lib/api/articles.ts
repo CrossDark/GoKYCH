@@ -36,7 +36,17 @@ const _getArticleSSR = cache((type: string, slug: string) =>
 
 export function getArticle(type: string, slug: string) {
   if (isSSR) return _getArticleSSR(type, slug);
-  return request<ArticleDetail>(`/articles/${type}/${slug}`);
+  // The server sends `Cache-Control: private, max-age=30` for the
+  // authenticated read (see api/articles.go getArticle). That cache is
+  // fine for the public anonymous reader — it lives behind the edge —
+  // but for the admin editor it would mean a page reload within 30s of
+  // a save/restore still shows the pre-mutation content. Bypass the
+  // browser cache here so the editor always reflects the latest server
+  // state on mount. The admin editor navigates often anyway, so the
+  // 30s reuse wasn't buying much in this path.
+  return request<ArticleDetail>(`/articles/${type}/${slug}`, {
+    cache: "no-store",
+  });
 }
 
 export function createArticle(
@@ -126,9 +136,14 @@ export function listRevisions(
   const q = new URLSearchParams();
   q.set("page", String(page));
   q.set("per_page", String(perPage));
+  // History is short, queried rarely, and the user expects to see the
+  // freshest rows after a save / restore — bypass the browser cache so
+  // a same-tab reload after a restore doesn't show the pre-restore list
+  // (backend serves Cache-Control: max-age=30 + swr=60). Matches the
+  // pattern used by getAllArticleSlugs above.
   return request<RevisionListResult>(
     `/articles/${type}/${slug}/revisions?${q.toString()}`,
-    { anon: true }
+    { anon: true, cache: "no-store" }
   );
 }
 
