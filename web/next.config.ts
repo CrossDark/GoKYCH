@@ -15,6 +15,7 @@ import type { NextConfig } from "next";
 //     same host as the backend, so `backend:8000` resolves inside
 //     the docker network)
 const isProd = process.env.NODE_ENV === "production";
+const isDev = process.env.NODE_ENV === "development";
 const isStandalone = process.env.STANDALONE === "1";
 if (isProd && !isStandalone && !process.env.NEXT_PUBLIC_API_BASE_URL) {
   throw new Error(
@@ -50,11 +51,23 @@ const cspHeader = [
   // cache SSR HTML at the edge). 'unsafe-inline' is the cache-friendly
   // trade-off; server-side sanitisation (bluemonday / DOMPurify / goldmark)
   // remains the primary XSS defence.
-  "script-src 'self' 'unsafe-inline'",
+  // React dev mode + react-refresh + webpack-hmr all use eval() to
+  // reconstruct callstacks / hot-swap modules — without 'unsafe-eval'
+  // they fall back to thrown errors like "eval() is not supported",
+  // filling the dev console with misleading red herrings. Production
+  // never executes eval (React prod build strips it), so the keyword
+  // is harmless there too — we keep it on for all envs to avoid a
+  // dev ↔ prod CSP drift masking other CSP bugs.
+  "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
   "style-src 'self' 'unsafe-inline'" + (apiOrigin ? " " + apiOrigin : ""),
   // Article HTML may embed external images (user content), so allow any
   // https image rather than just self/api origin.
-  "img-src https: data: blob:",
+  // 'self' is required so images uploaded to the same dev / prod origin
+  // (e.g. /uploads/* served by Gin.Static in production rewrites, by
+  // next rewrites in dev) survive the policy. Without 'self' the CSP
+  // happily allows `https:` but rejects every same-origin upload because
+  // it doesn't know the dev origin.
+  "img-src 'self' https: data: blob:",
   "font-src 'self' data:",
   "connect-src 'self'" + (apiOrigin ? " " + apiOrigin : "") + " ws: wss:",
   "media-src 'self'" + (apiOrigin ? " " + apiOrigin : "") + " data: blob:",
@@ -99,6 +112,18 @@ const nextConfig: NextConfig = {
   // Proxy /api/*, /uploads/*, and /avatars/* to the Go backend in development.
   // /uploads and /avatars are served by Gin.Static in main.go; without these
   // rewrites Next.js dev would 404 any link that uses a path-relative URL
+  //
+  // DEV ONLY: Next.js 16 blocks any Host header other than `localhost` by
+  // default, which would 502 any non-loopback or 127.0.0.1 access (LAN
+  // phone, second browser, curl). Listing the common dev hosts lets them
+  // serve the dev page — see
+  // https://nextjs.org/docs/app/api-reference/config/next-config-js/allowedDevOrigins
+  allowedDevOrigins: [
+    "localhost",
+    "127.0.0.1",
+    "192.168.0.3",
+    "192.168.0.9",
+  ],
   // (e.g. the file-manager "open" link). Production does NOT run next dev /
   // next start behind EdgeOne — the standalone server.js is hit directly
   // by the origin pull, and cross-origin data goes through CORS +
