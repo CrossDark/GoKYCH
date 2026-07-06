@@ -10,6 +10,7 @@ import { AdminConfirm } from "@/components/admin/AdminConfirm";
 import { MarkdownEditor } from "@/components/admin/MarkdownEditor";
 import { RevisionDrawer, type RevisionAction } from "@/components/admin/RevisionDrawer";
 import { RevisionDiffModal } from "@/components/admin/RevisionDiffModal";
+import { RevisionRestoreModal } from "@/components/admin/RevisionRestoreModal";
 import { fmtDateTime } from "@/lib/format";
 
 const TYPE_LABELS: Record<string, string> = {
@@ -146,11 +147,37 @@ export default function AdminArticleDetail({ params }: PageProps) {
   // V5 — handle a revision action from the drawer. Setting
   // `revisionAction` opens the corresponding modal:
   //   - view / compare  → RevisionDiffModal (V5b)
-  //   - restore         → RevisionRestoreModal (V5c, to come)
+  //   - restore         → RevisionRestoreModal (V5c)
   // The drawer itself stays the same; only the parent's
   // `revisionAction` state is read by the modals.
   const handleRevisionAction = (action: RevisionAction) => {
     setRevisionAction(action);
+  };
+
+  // V5c — handle a successful restore. The server returns the updated
+  // article; we re-sync form + initial so the editor immediately
+  // reflects the rolled-back content. `isDirty` clears as a side
+  // effect (form === initial), and we toast a success message.
+  // We also re-fetch the revision list so currentSeq is current —
+  // restore creates a new seq row, so a subsequent "对比当前" against
+  // it would otherwise diff against the pre-restore state.
+  const handleRestored = (restored: Article) => {
+    setArticle(restored);
+    const init = {
+      title: restored.title,
+      content: restored.content,
+      tags: (restored.tags || []).join(", "),
+    };
+    setForm(init);
+    setInitial(init);
+    setRevisionAction(null);
+    // Bump currentSeq to reflect the new latest revision. We don't
+    // re-fetch the list — we know the new seq is currentSeq+1
+    // (server's invariant: restore always creates the next seq),
+    // and the drawer's onLoaded callback will re-fetch when the
+    // user reopens the drawer.
+    setCurrentSeq((prev) => (prev === null ? null : prev + 1));
+    toast.success(`已回滚到 #${restored.id ? "" : ""}。`);
   };
 
   if (loadError) {
@@ -400,6 +427,21 @@ export default function AdminArticleDetail({ params }: PageProps) {
         slug={article.slug}
         currentSeq={currentSeq}
         onClose={() => setRevisionAction(null)}
+      />
+
+      {/* V5c — restore confirmation. Only opens for the restore
+          action; the diff modal handles view/compare. On success,
+          the page re-syncs form/initial to the returned article
+          and bumps currentSeq by 1 (the new revision row). */}
+      <RevisionRestoreModal
+        seq={
+          revisionAction?.kind === "restore" ? revisionAction.seq : null
+        }
+        type={article.type}
+        slug={article.slug}
+        csrf={csrf}
+        onClose={() => setRevisionAction(null)}
+        onRestored={handleRestored}
       />
     </div>
   );
