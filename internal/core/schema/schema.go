@@ -366,4 +366,24 @@ var allTables = [...]string{
 		FOREIGN KEY (article_id)    REFERENCES articles(id) ON DELETE CASCADE,
 		FOREIGN KEY (depends_on_id) REFERENCES articles(id) ON DELETE CASCADE
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
+	// ═══ 17. sidebar_cards — admin-managed left-rail nav drawer ═══
+	// Drives the front-end <SideDrawer> that the site-header ☰ icon opens.
+	// Distinct from the article label cloud (the existing right-side 🏷️
+	// drawer): these are site-level navigation entries, not content
+	// indices. Sort order is admin-controlled (low = top); `is_active`
+	// toggles visibility without losing the row.
+	`CREATE TABLE IF NOT EXISTS sidebar_cards (
+		id           INT AUTO_INCREMENT PRIMARY KEY,
+		title        VARCHAR(64)  NOT NULL,
+		url          VARCHAR(512) NOT NULL,
+		icon         VARCHAR(32)  NOT NULL DEFAULT '',
+		description  VARCHAR(256) NOT NULL DEFAULT '',
+		sort_order   INT          NOT NULL DEFAULT 0,
+		is_external  TINYINT(1)   NOT NULL DEFAULT 0,
+		is_active    TINYINT(1)   NOT NULL DEFAULT 1,
+		created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		updated_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+		INDEX idx_active_order (is_active, sort_order, id)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 }
