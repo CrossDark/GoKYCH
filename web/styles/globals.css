@@ -2867,11 +2867,21 @@ hr {
     display: none;
 }
 
-@media (min-width: 1024px) {
+@media (min-width: 1180px) {
+    /* Show only when the viewport is wide enough to fit the panel
+     * outside the article's centered 720px column. The previous
+     * 1024px breakpoint plus the `left: max((100vw - 720)/2 - 220)`
+     * formula allowed overlap in the 1024-1160px range (the
+     * `max(..., 8px)` fallback kicked in and pushed the panel onto
+     * the article itself — the "穿模" symptom). 1180px = 720 main +
+     * 220 outside + 240 outside-margin + 8 minimum, so the panel
+     * can always sit at least 40px clear of the article. The
+     * 220 → 240 px cushion also gives Safari / zoomed viewports
+     * extra headroom so the panel never visually kisses the title. */
     .line-comments-container {
         display: block;
         position: fixed;
-        left: max(calc((100vw - var(--max-width, 720px)) / 2 - 220px), 8px);
+        left: max(calc((100vw - var(--max-width, 720px)) / 2 - 240px), 16px);
         top: 120px;
         width: 180px;
         max-height: calc(100vh - 160px);
