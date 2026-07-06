@@ -7,6 +7,7 @@ import type { SubsiteLink, TagWithCount } from "@/lib/types";
 import { listLabels } from "@/lib/api";
 import { useApp } from "./AppProviders";
 import { UserAvatar } from "@/components/admin/UserAvatar";
+import { SideDrawer } from "./SideDrawer";
 
 const LABELS_CACHE_TTL = 5 * 60 * 1000;
 
@@ -19,6 +20,11 @@ export function Header() {
   // visible list and the in-memory TTL cache so opening the sidebar no
   // longer fires a client fetch within the cache window.
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  // New: left-rail navigation drawer (admin-managed cards). Sits next
+  // to the site title (`☰` button immediately to the right). The
+  // existing 🏷️ button continues to drive the right-side tag drawer —
+  // two drawers, two intents, no overlap.
+  const [sideDrawerOpen, setSideDrawerOpen] = useState(false);
   const [tags, setTags] = useState<TagWithCount[]>(ctxLabels);
   const tagsCacheRef = useRef<{ data: TagWithCount[]; timestamp: number } | null>(null);
 
@@ -102,6 +108,19 @@ export function Header() {
             )}
             <span>{siteSetting?.title || "跨越晨昏"}</span>
           </Link>
+          {/* New: ☰ button immediately to the right of the site title.
+              Opens the left-rail <SideDrawer> for admin-managed
+              navigation cards. Distinct from the existing 🏷️ button
+              (right rail) which still controls the tag cloud. */}
+          <button
+            type="button"
+            className="nav-link side-drawer-toggle-btn"
+            aria-label="打开导航侧栏"
+            title="导航侧栏"
+            onClick={() => setSideDrawerOpen(true)}
+          >
+            ☰
+          </button>
           {/* Middle: admin-editable subsite links */}
           <nav className="header-subsites">
             {subsiteLinks.map((link) => (
@@ -196,6 +215,13 @@ export function Header() {
           </Link>
         </div>
       </aside>
+
+      {/* Left-rail navigation drawer — admin-managed cards. Sits to the
+          left of the page; the existing ☰ button (in the header next
+          to the site title) toggles it. Behavior mirrors the right-rail
+          tag sidebar (overlay + body-scroll-lock + Escape closes) so
+          users have one mental model for the two drawers. */}
+      <SideDrawer open={sideDrawerOpen} onClose={() => setSideDrawerOpen(false)} />
     </>
   );
 }
