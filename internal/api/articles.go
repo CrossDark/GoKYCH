@@ -305,6 +305,14 @@ type articleInput struct {
 	Title   string   `json:"title"`
 	Content string   `json:"content"`
 	Tags    []string `json:"tags"`
+	// Message is the optional commit message recorded in
+	// article_revisions.message for this save. Empty is fine — the
+	// front-end default UI doesn't pop a modal, but a power user
+	// scripting the API can pass "fix typo" or "add intro section"
+	// to label their change. Capped at 500 chars to match the column
+	// (DB enforces it; we trim+cap here for a clean 400 instead of
+	// a 500 from a too-long insert).
+	Message string `json:"message"`
 }
 
 // canModifyArticle reports whether u is allowed to edit/delete the article.
@@ -441,7 +449,16 @@ func (s *Server) updateArticle(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "标题不能为空。"})
 		return
 	}
-	a, err = content.UpdateArticleCtx(ctx, s.DB, s.Typst, atype, slug, in.Title, in.Content)
+	// Trim+cap the message up-front so we get a clean 400 with a clear
+	// error string rather than a 500 from MySQL's "Data too long for
+	// column" path. Article revisions cap the field at 500 chars to
+	// match the column width.
+	in.Message = strings.TrimSpace(in.Message)
+	if n := len([]rune(in.Message)); n > 500 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("提交说明长度不能超过 500 个字符(当前 %d)。", n)})
+		return
+	}
+	a, err = content.UpdateArticleCtx(ctx, s.DB, s.Typst, atype, slug, in.Title, in.Content, in.Message)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "更新文章失败。"})
 		return
