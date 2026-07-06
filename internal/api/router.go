@@ -145,6 +145,11 @@ func (s *Server) Setup(r *gin.Engine) {
 				art.PUT("/:type/:slug", s.updateArticle)
 				art.DELETE("/:type/:slug", s.deleteArticle)
 				art.POST("/:type/:slug/recompile", s.recompileArticle)
+				// Restore-to-old-version (V4): mutates articles.content +
+				// appends a new revision row. Same auth model as
+				// updateArticle — handler does the per-article ownership
+				// check via canModifyArticle.
+				art.POST("/:type/:slug/revisions/:seq/restore", s.restoreRevision)
 			}
 
 			// Admin management.

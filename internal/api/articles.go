@@ -485,6 +485,97 @@ func (s *Server) updateArticle(c *gin.Context) {
 	c.JSON(http.StatusOK, a)
 }
 
+// restoreRevisionInput is the POST body for restoring to a historical
+// version. Empty body {} is fine — both fields are optional.
+type restoreRevisionInput struct {
+	// Message is the optional commit message recorded in
+	// article_revisions.message for the new restore row. When
+	// empty, content.RestoreRevisionCtx writes a self-explanatory
+	// "restore from #N" placeholder.
+	Message string `json:"message"`
+}
+
+// POST /api/articles/{type}/{slug}/revisions/{seq}/restore
+// Auth: requireLogin on the route, then per-article canModifyArticle
+// (same model as PUT /api/articles/{type}/{slug}). Body is optional;
+// POST with an empty body and the server will fill in a default
+// commit message.
+//
+// This is the "revert, not reset" half of the design — see
+// content.RestoreRevisionCtx. A successful restore is visible in
+// the revision list as a new seq=current_max+1 row with a diff
+// against the prior content; no historical row is ever deleted.
+func (s *Server) restoreRevision(c *gin.Context) {
+	ctx := c.Request.Context()
+	atype := c.Param("type")
+	slug := c.Param("slug")
+	seq, err := strconv.Atoi(c.Param("seq"))
+	if err != nil || seq < 1 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的版本号。"})
+		return
+	}
+
+	// Re-load the article to do the ownership check. We do this
+	// before parsing the body so a 404/403 returns before any
+	// input validation noise. The check mirrors updateArticle's.
+	a, err := content.GetArticleCtx(ctx, s.DB, atype, slug)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusNotFound, gin.H{"error": "文章不存在。"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载文章失败。"})
+		return
+	}
+	if !s.canModifyArticle(CurrentUserFromContext(c), a) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "您没有权限编辑此文章。"})
+		return
+	}
+
+	// Body is optional. An empty POST {} is a valid request — we'll
+	// fall back to the default "restore from #N" commit message in
+	// RestoreRevisionCtx.
+	var in restoreRevisionInput
+	if err := c.ShouldBindJSON(&in); err != nil && err.Error() != "EOF" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请求格式错误。"})
+		return
+	}
+	in.Message = strings.TrimSpace(in.Message)
+	if n := len([]rune(in.Message)); n > 500 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("提交说明长度不能超过 500 个字符(当前 %d)。", n)})
+		return
+	}
+
+	restored, err := content.RestoreRevisionCtx(ctx, s.DB, s.Typst, atype, slug, seq, in.Message)
+	if err != nil {
+		// Distinguish "no such seq" from other failures so the
+		// client can surface a meaningful error. content layer
+		// returns fmt.Errorf("restore: target seq %d out of
+		// range [1, %d]", ...) which is awkward to parse but
+		// stable enough to grep for; we check the prefix and
+		// return 404 with a clean message + the current seq so
+		// the client can recover without a second GET.
+		if strings.HasPrefix(err.Error(), "restore: target seq ") && strings.Contains(err.Error(), "out of range") {
+			c.JSON(http.StatusNotFound, gin.H{
+				"error":       fmt.Sprintf("版本 #%d 不存在。", seq),
+				"current_seq": "",
+			})
+			return
+		}
+		slog.Error("restoreRevision: restore failed", "article_id", a.ID, "target_seq", seq, "err", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "回滚失败。"})
+		return
+	}
+
+	if atype == "typst" {
+		if cs, err := s.Typst.GetCompileStatusCtx(ctx, restored.ID); err == nil && cs != nil {
+			c.JSON(http.StatusOK, gin.H{"article": restored, "compile_status": cs, "restored_to": seq})
+			return
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"article": restored, "restored_to": seq})
+}
+
 // DELETE /api/articles/{type}/{slug} (admin/owner OR the article's author)
 func (s *Server) deleteArticle(c *gin.Context) {
 	ctx := c.Request.Context()

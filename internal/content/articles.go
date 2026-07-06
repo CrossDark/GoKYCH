@@ -3,6 +3,7 @@ package content
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"log/slog"
 	"math"
 	"strings"
@@ -386,6 +387,157 @@ func UpdateArticleCtx(ctx context.Context, db *sql.DB, w *typst.Worker, atype, s
 // Deprecated: Use UpdateArticleCtx instead.
 func UpdateArticle(db *sql.DB, w *typst.Worker, atype, slug, title, contentStr string) (*Article, error) {
 	return UpdateArticleCtx(context.TODO(), db, w, atype, slug, title, contentStr, "")
+}
+
+// RestoreRevisionCtx rolls an article back to a historical seq, creating
+// a NEW revision (seq = current_max + 1) that records the change. This
+// is the "revert, not reset" semantics agreed in V0: no revision row is
+// ever deleted, and the chain stays append-only. Auditors can see "at
+// seq=K the article was at version N" without losing what was there
+// in between.
+//
+// Behaviour
+// ─────────
+//  1. Open a tx with SELECT ... FOR UPDATE on the article row (same
+//     concurrency guard as UpdateArticleCtx — two simultaneous
+//     restores would race on the UNIQUE (article_id, seq) index
+//     otherwise).
+//  2. Load the full revision chain (read-only, via *sql.DB outside
+//     the tx — restore is low-frequency, the snapshot isolation gives
+//     us a coherent view, and a separate connection avoids holding
+//     a tx open across the rebuild).
+//  3. Validate targetSeq against len(revs) (1 ≤ targetSeq ≤ len(revs)).
+//  4. RebuildToSeq(revs, targetSeq) → restoredContent + restoredTitle.
+//  5. If restoredContent == current content, this is a no-op
+//     restore (user clicked restore on the current version). We
+//     commit and return the current article without writing a row
+//     or invalidating caches — same fast-path reasoning as
+//     UpdateArticleCtx's title-only branch.
+//  6. Otherwise: recordRevisionInTx writes a new row with the
+//     caller-provided (or default "restore from #N") message and
+//     the same parent_seq handling as a normal save. Then we
+//     UPDATE articles to the restored title + content.
+//  7. Commit, then run the same cache-invalidate + re-render dance
+//     as UpdateArticleCtx.
+//
+// `message` is optional — empty is allowed. When empty, the helper
+// records "restore from #N" so the chain still has a self-explanatory
+// label for the row.
+func RestoreRevisionCtx(ctx context.Context, db *sql.DB, w *typst.Worker, atype, slug string, targetSeq int, message string) (*Article, error) {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	// Same row lock as UpdateArticleCtx — the read-modify-write of
+	// "find latest seq → write new seq=N+1" is not safe under
+	// concurrent writers without a serialising lock on the article
+	// row.
+	var oldID int
+	var oldContent string
+	var oldAuthorID sql.NullInt64
+	if err := tx.QueryRowContext(ctx,
+		`SELECT id, content, author_id FROM articles WHERE type = ? AND slug = ? FOR UPDATE`,
+		atype, slug,
+	).Scan(&oldID, &oldContent, &oldAuthorID); err != nil {
+		return nil, err
+	}
+
+	// Load the chain outside the tx (separate connection — see
+	// step 2 in the doc above). A future optimisation could push
+	// this inside the tx for stronger isolation, but restore is
+	// rare and the current shape matches GetAllRevisionsForArticleCtx.
+	revs, err := GetAllRevisionsForArticleCtx(ctx, db, oldID)
+	if err != nil {
+		return nil, err
+	}
+	if targetSeq < 1 || targetSeq > len(revs) {
+		return nil, fmt.Errorf("restore: target seq %d out of range [1, %d]", targetSeq, len(revs))
+	}
+
+	restoredContent, err := RebuildToSeq(revs, targetSeq)
+	if err != nil {
+		return nil, fmt.Errorf("restore: rebuild seq=%d: %w", targetSeq, err)
+	}
+	restoredTitle := revs[targetSeq-1].Title
+
+	// No-op fast path: if the requested seq is byte-identical to the
+	// current state, we still return success (the user did ask
+	// for this version to be current — it already is), but we
+	// skip the revision row + cache invalidation. This also
+	// happens if the user restores to a seq whose content is
+	// unchanged (e.g. seq=2 and seq=3 had the same content because
+	// the third save was a title-only change that we filtered out
+	// from the chain in UpdateArticleCtx's fast path).
+	if oldContent == restoredContent {
+		if err := tx.Commit(); err != nil {
+			return nil, err
+		}
+		return GetArticleCtx(ctx, db, atype, slug)
+	}
+
+	var authorID *int
+	if oldAuthorID.Valid {
+		v := int(oldAuthorID.Int64)
+		authorID = &v
+	}
+
+	// Default commit message for the revert row. Without this, the
+	// row's message column would be empty and the audit trail
+	// (the only visible signal that "seq=N was a restore") would
+	// live only in the patch's content delta. Self-documenting
+	// message wins over terseness.
+	if message == "" {
+		message = fmt.Sprintf("restore from #%d", targetSeq)
+	}
+
+	if _, err := recordRevisionInTx(ctx, tx, oldID, oldContent, restoredContent, restoredTitle, message, authorID); err != nil {
+		return nil, err
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE articles SET title = ?, content = ? WHERE id = ?`,
+		restoredTitle, restoredContent, oldID,
+	); err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+
+	a, err := GetArticleCtx(ctx, db, atype, slug)
+	if err != nil {
+		return nil, err
+	}
+	invalidated := InvalidateCacheCascadingCtx(ctx, db, oldID)
+	if atype != "typst" {
+		if rerr := RenderAndSaveCtx(ctx, db, w, a); rerr != nil {
+			slog.Warn("restore: render cache failed", "article_id", a.ID, "err", rerr)
+		}
+		for _, did := range invalidated {
+			if did == a.ID {
+				continue
+			}
+			if derr := renderAndSaveByIDCtx(ctx, db, w, did); derr != nil {
+				slog.Warn("restore: dependent re-render failed", "dep_id", did, "err", derr)
+			}
+		}
+	} else {
+		if _, derr := db.ExecContext(ctx, `DELETE FROM typst_cache WHERE article_id = ?`, a.ID); derr != nil {
+			slog.Warn("restore: invalidate typst_cache", "article_id", a.ID, "err", derr)
+		}
+		if w != nil {
+			if qerr := w.EnqueueCompile(a.ID); qerr != nil {
+				slog.Warn("restore: enqueue typst compile", "article_id", a.ID, "err", qerr)
+			}
+			if ierr := w.EnqueueDependents(a.ID); ierr != nil {
+				slog.Warn("restore: enqueue typst dependents", "article_id", a.ID, "err", ierr)
+			}
+		}
+	}
+	return a, nil
 }
 
 func renderAndSaveByIDCtx(ctx context.Context, db *sql.DB, w *typst.Worker, id int) error {
