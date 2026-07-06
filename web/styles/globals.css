@@ -2238,6 +2238,195 @@ hr {
     color: var(--accent);
 }
 
+/* ===== Side Drawer (slide-in from LEFT, admin-managed cards) ===== */
+/* Mirror of the tag sidebar to the right — same overlay + body-scroll
+ * lock pattern, but anchored to the left edge. The grid inside uses
+ * dense columns so a 12-card admin list stays scannable on a typical
+ * 1280px desktop viewport. */
+
+.side-drawer-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.3);
+    z-index: 198;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.25s ease, visibility 0.25s ease;
+}
+
+.side-drawer-overlay.open {
+    opacity: 1;
+    visibility: visible;
+}
+
+.side-drawer {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 280px;
+    max-width: 90vw;
+    height: 100vh;
+    background: var(--bg-card);
+    border-right: 1px solid var(--border);
+    box-shadow: 4px 0 16px rgba(0, 0, 0, 0.18);
+    transform: translateX(-100%);
+    transition: transform 0.25s ease;
+    z-index: 199;
+    display: flex;
+    flex-direction: column;
+}
+
+.side-drawer.open {
+    transform: translateX(0);
+}
+
+.side-drawer-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 1.1rem 1.25rem;
+    border-bottom: 1px solid var(--border);
+    background: var(--admin-stripe);
+}
+
+.side-drawer-header h3 {
+    margin: 0;
+    font-size: 1rem;
+    font-weight: 600;
+}
+
+.side-drawer-close {
+    background: none;
+    border: none;
+    font-size: 1.4rem;
+    line-height: 1;
+    cursor: pointer;
+    color: var(--text-secondary);
+    padding: 0.25rem 0.5rem;
+    border-radius: 4px;
+    transition: color 0.15s, background 0.15s;
+}
+
+.side-drawer-close:hover {
+    color: var(--text-primary);
+    background: var(--hover-bg);
+}
+
+.side-drawer-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 0.75rem;
+}
+
+.side-drawer-empty {
+    text-align: center;
+    color: var(--text-muted);
+    padding: 2.5rem 1rem;
+    font-size: 0.92rem;
+}
+
+.side-drawer-retry {
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.25rem 0.75rem;
+    cursor: pointer;
+    margin-top: 0.5rem;
+    color: var(--accent);
+    font-size: 0.85rem;
+}
+
+.side-drawer-retry:hover {
+    background: var(--hover-bg);
+}
+
+/* Card grid: tightly packed, two columns on desktop. CSS Grid +
+ * `auto-fill, minmax(...)` lets us collapse to one column below 360px
+ * without a media-query break. */
+.side-drawer-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(118px, 1fr));
+    gap: 0.4rem;
+}
+
+.side-drawer-card {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    padding: 0.6rem 0.7rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-card);
+    color: var(--text-primary);
+    text-decoration: none;
+    transition: transform 0.15s ease, border-color 0.15s, box-shadow 0.15s;
+    min-height: 64px;
+    word-break: break-word;
+}
+
+.side-drawer-card:hover {
+    transform: translateY(-1px);
+    border-color: var(--accent);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
+}
+
+.side-drawer-card-icon {
+    font-size: 1.4rem;
+    line-height: 1;
+}
+
+.side-drawer-card-title {
+    font-weight: 600;
+    font-size: 0.92rem;
+    line-height: 1.2;
+}
+
+.side-drawer-card-desc {
+    color: var(--text-muted);
+    font-size: 0.78rem;
+    line-height: 1.25;
+}
+
+.side-drawer-footer {
+    padding: 0.65rem 1.25rem;
+    border-top: 1px solid var(--border);
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    background: var(--admin-stripe);
+}
+
+/* Toggle button in header — sits to the right of the site title */
+.side-drawer-toggle-btn {
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 1.1rem;
+    padding: 0;
+    line-height: 1;
+}
+
+.side-drawer-toggle-btn:hover {
+    color: var(--accent);
+}
+
+/* Mobile: full-screen drawer so taps aren't fighting a narrow
+ * 280px column on a 393px iPhone viewport (mirrors the tag-sidebar
+ * a70f31b sizing). */
+@media (max-width: 768px) {
+    .side-drawer {
+        width: 100vw;
+        max-width: 100vw;
+        box-shadow: none;
+    }
+    .side-drawer-grid {
+        grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+        gap: 0.5rem;
+    }
+}
+
 /* Sidebar toggle button in nav */
 .sidebar-toggle-btn {
     background: none;
