@@ -1,8 +1,8 @@
 # GoKYCH
 
-跨越晨昏的 Go 后端实现 — WikiDot 风格的多类型内容发布平台。
+我的个人网站,同时也用作[异闻档案馆](https://cf.ywda.net/)
 
-Go 1.26+ · Gin · MySQL 8 · Next.js 16 (React 19) 前端在 `web/`
+后端采用Go 1.26+ · Gin · MySQL 8 实现.前端采用Next.js 16 (React 19) 在 `web/`
 
 ---
 
