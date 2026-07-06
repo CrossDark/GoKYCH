@@ -496,6 +496,7 @@ arr = json.loads(open(f).read() or "[]")
 arr.append({
     "name": os.environ["FNAME"],
     "url": os.environ["CDN_URL"],
+    "browser_download_url": os.environ["CDN_URL"],
     "type": "attach",
 })
 open(f, "w").write(json.dumps(arr))
