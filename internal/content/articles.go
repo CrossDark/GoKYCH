@@ -200,13 +200,43 @@ func GetArticle(db *sql.DB, atype, slug string) (*Article, error) {
 }
 
 func CreateArticleCtx(ctx context.Context, db *sql.DB, w *typst.Worker, atype, slug, title, content string, authorID *int) (*Article, error) {
-	_, err := db.ExecContext(ctx,
-		`INSERT INTO articles (type, slug, title, content, author_id) VALUES (?, ?, ?, ?, ?)`,
-		atype, slug, title, content, authorID,
-	)
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO articles (type, slug, title, content, author_id) VALUES (?, ?, ?, ?, ?)`,
+		atype, slug, title, content, authorID,
+	); err != nil {
+		return nil, err
+	}
+
+	// Look up the assigned id inside the same tx so the seq=1 revision
+	// references a real article row even under concurrent inserts.
+	var articleID int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT id FROM articles WHERE type = ? AND slug = ?`, atype, slug,
+	).Scan(&articleID); err != nil {
+		return nil, err
+	}
+
+	// First revision is always a snapshot (ShouldSnapshot handles this
+	// rule, but calling it explicitly documents intent at the write site).
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO article_revisions
+		 (article_id, seq, title, patch, is_snapshot, parent_seq, author_id, message)
+		 VALUES (?, 1, ?, ?, 1, NULL, ?, '')`,
+		articleID, title, content, authorID,
+	); err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+
 	a, err := GetArticleCtx(ctx, db, atype, slug)
 	if err != nil {
 		return nil, err
@@ -230,23 +260,138 @@ func CreateArticle(db *sql.DB, w *typst.Worker, atype, slug, title, content stri
 	return CreateArticleCtx(context.TODO(), db, w, atype, slug, title, content, authorID)
 }
 
-func UpdateArticleCtx(ctx context.Context, db *sql.DB, w *typst.Worker, atype, slug, title, contentStr string) (*Article, error) {
-	old, err := GetArticleCtx(ctx, db, atype, slug)
+// UpdateArticleCtx saves a new revision of an article.
+//
+// Revision semantics
+// ──────────────────
+//   - If `content` is byte-identical to the stored `articles.content`,
+//     we treat it as a title-only edit: the title is updated in place
+//     and NO new article_revisions row is written. This keeps the
+//     history lean — a rename shouldn't pollute the diff log. Title
+//     changes are still discoverable via articles.updated_at.
+//   - If `content` actually changed, we open a transaction:
+//       1. SELECT ... FOR UPDATE on the article row (serialises
+//          concurrent writers on the same article)
+//       2. SELECT the latest revision to find last_seq
+//       3. ComputePatch(old, new) → ShouldSnapshot decides storage form
+//       4. INSERT into article_revisions
+//       5. UPDATE articles
+//       6. COMMIT
+//     Cache invalidation and re-render happen AFTER commit (they use a
+//     separate *sql.DB connection, which would deadlock if held inside
+//     the tx).
+//
+// The `message` parameter is the optional commit message supplied by
+// the caller (e.g. the API's `message` request body field). Empty is
+// fine — the column is VARCHAR(500) DEFAULT '' and we don't reject
+// empty messages at the content layer.
+func UpdateArticleCtx(ctx context.Context, db *sql.DB, w *typst.Worker, atype, slug, title, contentStr, message string) (*Article, error) {
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
-	_, err = db.ExecContext(ctx,
-		`UPDATE articles SET title = ?, content = ? WHERE type = ? AND slug = ?`,
-		title, contentStr, atype, slug,
-	)
-	if err != nil {
+	defer tx.Rollback()
+
+	// Lock the article row for the duration of the tx so two concurrent
+	// PUTs compute diffs against the same baseline. Without FOR UPDATE,
+	// both writers would see the same `old` and produce conflicting
+	// seq=N rows; one would 1062 on the UNIQUE (article_id, seq) index.
+	var oldID int
+	var oldContent string
+	var oldAuthorID sql.NullInt64
+	if err := tx.QueryRowContext(ctx,
+		`SELECT id, content, author_id FROM articles WHERE type = ? AND slug = ? FOR UPDATE`,
+		atype, slug,
+	).Scan(&oldID, &oldContent, &oldAuthorID); err != nil {
 		return nil, err
 	}
+
+	// Title-only fast path: don't pollute the revision log with renames.
+	if oldContent == contentStr {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE articles SET title = ? WHERE id = ?`, title, oldID,
+		); err != nil {
+			return nil, err
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, err
+		}
+		a, err := GetArticleCtx(ctx, db, atype, slug)
+		if err != nil {
+			return nil, err
+		}
+		// Title changes don't invalidate rendered_html — the rendered
+		// output references content blocks, not the <h1> title.
+		return a, nil
+	}
+
+	// Content actually changed → record a new revision.
+	var lastSeq int
+	var lastRevExists bool
+	err = tx.QueryRowContext(ctx,
+		`SELECT seq FROM article_revisions WHERE article_id = ? ORDER BY seq DESC LIMIT 1`,
+		oldID,
+	).Scan(&lastSeq)
+	switch {
+	case err == nil:
+		lastRevExists = true
+	case err == sql.ErrNoRows:
+		lastRevExists = false
+	default:
+		return nil, err
+	}
+
+	newSeq := 1
+	if lastRevExists {
+		newSeq = lastSeq + 1
+	}
+
+	patchText := ComputePatch(oldContent, contentStr)
+	isSnap := ShouldSnapshot(newSeq, patchText, contentStr)
+	if isSnap {
+		// When storing a snapshot, the "patch" column holds the full
+		// content verbatim — there's nothing to diff against, the
+		// chain terminates here.
+		patchText = contentStr
+	}
+
+	var parentSeq *int
+	if lastRevExists {
+		s := lastSeq
+		parentSeq = &s
+	}
+
+	var authorID *int
+	if oldAuthorID.Valid {
+		v := int(oldAuthorID.Int64)
+		authorID = &v
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO article_revisions
+		 (article_id, seq, title, patch, is_snapshot, parent_seq, author_id, message)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		oldID, newSeq, title, patchText, isSnap, parentSeq, authorID, message,
+	); err != nil {
+		return nil, err
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE articles SET title = ?, content = ? WHERE id = ?`,
+		title, contentStr, oldID,
+	); err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+
 	a, err := GetArticleCtx(ctx, db, atype, slug)
 	if err != nil {
 		return nil, err
 	}
-	invalidated := InvalidateCacheCascadingCtx(ctx, db, old.ID)
+	invalidated := InvalidateCacheCascadingCtx(ctx, db, oldID)
 	if atype != "typst" {
 		if rerr := RenderAndSaveCtx(ctx, db, w, a); rerr != nil {
 			slog.Warn("updateArticle: render cache failed", "article_id", a.ID, "err", rerr)
@@ -277,7 +422,7 @@ func UpdateArticleCtx(ctx context.Context, db *sql.DB, w *typst.Worker, atype, s
 
 // Deprecated: Use UpdateArticleCtx instead.
 func UpdateArticle(db *sql.DB, w *typst.Worker, atype, slug, title, contentStr string) (*Article, error) {
-	return UpdateArticleCtx(context.TODO(), db, w, atype, slug, title, contentStr)
+	return UpdateArticleCtx(context.TODO(), db, w, atype, slug, title, contentStr, "")
 }
 
 func renderAndSaveByIDCtx(ctx context.Context, db *sql.DB, w *typst.Worker, id int) error {
