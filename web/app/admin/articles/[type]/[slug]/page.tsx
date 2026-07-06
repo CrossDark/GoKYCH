@@ -8,6 +8,7 @@ import type { Article, User, ArticleDetail } from "@/lib/types";
 import { useToast, useBeforeUnload } from "@/lib/admin-feedback";
 import { AdminConfirm } from "@/components/admin/AdminConfirm";
 import { MarkdownEditor } from "@/components/admin/MarkdownEditor";
+import { RevisionDrawer, type RevisionAction } from "@/components/admin/RevisionDrawer";
 import { fmtDateTime } from "@/lib/format";
 
 const TYPE_LABELS: Record<string, string> = {
@@ -38,6 +39,13 @@ export default function AdminArticleDetail({ params }: PageProps) {
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  // V5 — revision history drawer. `revisionsOpen` controls visibility;
+  // `revisionAction` records the most recent user-initiated action so
+  // a future V5b/V5c modal can read it. In V5a the action is just
+  // toasted — V5b will wire 查看 / 对比当前 to a diff modal, V5c will
+  // wire 回滚 to a confirm modal.
+  const [revisionsOpen, setRevisionsOpen] = useState(false);
+  const [revisionAction, setRevisionAction] = useState<RevisionAction | null>(null);
 
   const isDirty = form.title !== initial.title
     || form.content !== initial.content
@@ -129,6 +137,20 @@ export default function AdminArticleDetail({ params }: PageProps) {
       toast.error(err.message || "删除失败。");
       setDeleting(false);
       throw err;
+    }
+  };
+
+  // V5a — placeholder handler for revision actions. V5b will replace
+  // the 查看 / 对比当前 branches with a diff modal, V5c will replace
+  // 回滚 with a confirm modal. The drawer itself stays the same.
+  const handleRevisionAction = (action: RevisionAction) => {
+    setRevisionAction(action);
+    if (action.kind === "view") {
+      toast.info(`查看 #${action.seq} 将在 V5b 实现。`);
+    } else if (action.kind === "compare") {
+      toast.info(`对比 #${action.seq} ↔ 当前 将在 V5b 实现。`);
+    } else {
+      toast.info(`回滚到 #${action.seq} 将在 V5c 实现。`);
     }
   };
 
@@ -246,6 +268,19 @@ export default function AdminArticleDetail({ params }: PageProps) {
           <Link href="/admin/articles" className="admin-btn admin-btn-ghost admin-btn-sm">
             ← 返回列表
           </Link>
+          {/* V5a — opens the right-rail history drawer. The drawer
+              itself dispatches 查看 / 对比当前 / 回滚 actions; the
+              V5a placeholder just toasts, V5b/V5c will replace with
+              modals. */}
+          <button
+            type="button"
+            className="admin-btn admin-btn-outline admin-btn-sm"
+            onClick={() => setRevisionsOpen(true)}
+            data-testid="open-revisions"
+            title="查看/对比/回滚历史版本"
+          >
+            📜 历史
+          </button>
           <button
             type="button"
             className={`admin-btn admin-btn-danger admin-btn-sm ${deleting ? "admin-btn-loading" : ""}`}
@@ -339,6 +374,17 @@ export default function AdminArticleDetail({ params }: PageProps) {
         variant="danger"
         onConfirm={doDelete}
         onCancel={() => setConfirmDelete(false)}
+      />
+
+      {/* V5 — revision history drawer. See RevisionDrawer.tsx for the
+          list rendering; V5b/V5c will add the per-action modals
+          driven by `revisionAction` (currently a no-op toast). */}
+      <RevisionDrawer
+        open={revisionsOpen}
+        onClose={() => setRevisionsOpen(false)}
+        type={article.type}
+        slug={article.slug}
+        onAction={handleRevisionAction}
       />
     </div>
   );

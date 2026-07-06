@@ -3,7 +3,7 @@ export type { RequestOptions } from "./client";
 
 export { getMe, getCsrf, login, logout } from "./auth";
 
-export { listArticles, getArticle, createArticle, updateArticle, deleteArticle, getAllArticleSlugs } from "./articles";
+export { listArticles, getArticle, createArticle, updateArticle, deleteArticle, getAllArticleSlugs, listRevisions, getRevision, getRevisionDiff, restoreRevision } from "./articles";
 
 export { addComment, getLineComments, addLineComment } from "./comments";
 

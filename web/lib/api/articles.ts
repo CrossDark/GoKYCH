@@ -1,5 +1,12 @@
 import { request, cache, isSSR, apiUrl } from "./client";
-import type { Article, ArticleListResult, ArticleDetail } from "@/lib/types";
+import type {
+  Article,
+  ArticleListResult,
+  ArticleDetail,
+  RevisionListResult,
+  RevisionDetail,
+  RevisionDiffResult,
+} from "@/lib/types";
 
 export function listArticles(
   type?: string,
@@ -102,4 +109,64 @@ export async function getAllArticleSlugs(type: string): Promise<{ slug: string }
     return [];
   }
   return out;
+}
+
+// ── Revision history (V5) ────────────────────────────────────────────
+//
+// Thin wrappers over the public read endpoints shipped in V3 (bea0a9e
+// / 987e17b) and the write endpoint shipped in V4 (62b5965). All are
+// anon-readable except restoreRevision which is a logged-in mutation.
+
+export function listRevisions(
+  type: string,
+  slug: string,
+  page = 1,
+  perPage = 20
+) {
+  const q = new URLSearchParams();
+  q.set("page", String(page));
+  q.set("per_page", String(perPage));
+  return request<RevisionListResult>(
+    `/articles/${type}/${slug}/revisions?${q.toString()}`,
+    { anon: true }
+  );
+}
+
+export function getRevision(type: string, slug: string, seq: number) {
+  return request<RevisionDetail>(
+    `/articles/${type}/${slug}/revisions/${seq}`,
+    { anon: true }
+  );
+}
+
+export function getRevisionDiff(
+  type: string,
+  slug: string,
+  from: number,
+  to: number
+) {
+  const q = new URLSearchParams();
+  q.set("from", String(from));
+  q.set("to", String(to));
+  return request<RevisionDiffResult>(
+    `/articles/${type}/${slug}/revisions/diff?${q.toString()}`,
+    { anon: true }
+  );
+}
+
+export function restoreRevision(
+  type: string,
+  slug: string,
+  seq: number,
+  csrf: string,
+  message: string
+) {
+  return request<{ article: Article; restored_to: number; compile_status?: unknown }>(
+    `/articles/${type}/${slug}/revisions/${seq}/restore`,
+    {
+      method: "POST",
+      headers: { "X-CSRF-Token": csrf },
+      body: JSON.stringify({ message }),
+    }
+  );
 }

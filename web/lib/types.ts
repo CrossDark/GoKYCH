@@ -66,6 +66,63 @@ export interface ArticleDetail {
   can_edit: boolean;
 }
 
+// ── Article revisions (V3/V4) ───────────────────────────────────────
+//
+// Wire shape returned by /api/articles/{type}/{slug}/revisions*.
+// Mirrors the Go side: Revision has the full revision metadata + patch
+// body; RevisionListItem omits Patch to keep list responses small.
+
+export interface Revision {
+  id: number;
+  article_id: number;
+  seq: number;
+  title: string;
+  patch: string;
+  is_snapshot: boolean;
+  parent_seq: number | null;
+  author_id: number | null;
+  message: string;
+  created_at: string;
+}
+
+export interface RevisionListItem {
+  id: number;
+  seq: number;
+  title: string;
+  is_snapshot: boolean;
+  author_id: number | null;
+  author_name?: string;
+  message: string;
+  created_at: string;
+}
+
+export interface RevisionListResult {
+  revisions: RevisionListItem[];
+  total: number;
+  page: number;
+  per_page: number;
+  total_pages: number;
+}
+
+export interface RevisionDetail {
+  revision: Revision;
+  /** Reconstructed content at this seq. The server runs RebuildToSeq
+   *  on the chain, so the value is byte-identical to articles.content
+   *  was at the time of that save. */
+  content: string;
+}
+
+export interface RevisionDiffResult {
+  from: number;
+  to: number;
+  from_title: string;
+  to_title: string;
+  /** Unified diff text (google-diff-match-patch format). Empty iff
+   *  from and to are byte-identical (shouldn't happen on a real restore
+   *  target, but possible on a no-op diff request). */
+  diff: string;
+}
+
 // ── Comments ─────────────────────────────────────────────────────────
 export interface Comment {
   id: number;
