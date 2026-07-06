@@ -330,7 +330,12 @@ if [[ "$UPLOAD" -eq 1 ]]; then
   if [[ -n "${GITCODE_TOKEN:-}" ]]; then
     log "上传到 GitCode (v5 API)…"
 
-    # Step 0: 先确保 release 存在(用 v5 POST /releases 创建)
+    # 认证统一用 Bearer header,不再把 access_token 同时塞 query 和 body ——
+    # 之前那次混用导致 server 端认证解析行为不确定。
+    GC_AUTH=(-H "Authorization: token ${GITCODE_TOKEN}")
+
+    # Step 0: 先确保 release 存在(用 v5 GET /releases/tags/<tag> 检查,
+    # 没有就 POST /releases 创建)
     GC_EXIST_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
       -H "User-Agent: $GC_UA" \
       "${GC_API_V5}/repos/${GC_OWNER}/${GC_REPO}/releases/tags/${TAG}" 2>/dev/null)
@@ -339,9 +344,10 @@ if [[ "$UPLOAD" -eq 1 ]]; then
       log "GitCode release ${TAG} 已存在"
     else
       log "创建 GitCode release ${TAG} (v5 API)…"
+      # POST /releases 在 v5 接受 multipart/form-data,用 -F 跟之前一致
       GC_CREATE_BODY=$(curl -s -w "\n%{http_code}" -X POST \
         -H "User-Agent: $GC_UA" \
-        -F "access_token=${GITCODE_TOKEN}" \
+        "${GC_AUTH[@]}" \
         -F "tag_name=${TAG}" \
         -F "name=gokych ${TAG}" \
         -F "body=<${RELEASE_NOTES}" \
@@ -360,22 +366,12 @@ if [[ "$UPLOAD" -eq 1 ]]; then
     if ! command -v python3 >/dev/null 2>&1; then
       warn "python3 未安装,跳过 GitCode 二进制附件上传 (Step 1 / Step 3 需要 json 解析)"
     else
-      # 取 release 当前已 attachment 的列表,用于合并去重(原本 v2 那段用
-      # cookie-based 端点拉 /assets.links;v5 GET 单个 release 的真实字段名
-      # 我没在文档里查到,先按 /assets 字段取,若空则跳过合并)。
-      GC_GET_BODY=$(curl -s -m 10 -w "\n%{http_code}" \
+      # 取 release 现有 assets 文件名集合(GitCode 不允许同名 asset 重复上传)
+      GC_GET_BODY=$(curl -s -m 10 \
         -H "User-Agent: $GC_UA" \
-        -H "Accept: application/json" \
-        -G --data-urlencode "access_token=${GITCODE_TOKEN}" \
+        "${GC_AUTH[@]}" \
         "${GC_API_V5}/repos/${GC_OWNER}/${GC_REPO}/releases/tags/${TAG}" 2>&1) || true
-      GC_GET_CODE=$(echo "$GC_GET_BODY" | tail -1)
-      GC_GET_RESP=$(echo "$GC_GET_BODY" | sed '$d')
-
-      # v5 GET 单个 release 响应的结构在我探测时不含 link 数组字段
-      # (只有 tag_name / name / assets[].name 等),所以这里把"现有附件
-      # 列表"取作"已存在 asset 文件名集合",Step 3 跳过重传 — 重传由
-      # 用户自己决定(目前 GitCode web 也不允许同名 asset 重复)。
-      GC_EXISTING_NAMES=$(echo "$GC_GET_RESP" | python3 -c '
+      GC_EXISTING_NAMES=$(printf '%s' "$GC_GET_BODY" | python3 -c '
 import json, re, sys
 try:
     d = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", " ", sys.stdin.read())
@@ -398,7 +394,6 @@ except Exception:
         esac
         fsize=$(stat -f%z "$f" 2>/dev/null || stat -c%s "$f" 2>/dev/null)
 
-        # 跳过已存在的 asset(GITCODE 不支持 overwrite)
         if printf '%s' "$GC_EXISTING_NAMES" | grep -Fq "\"$fname\""; then
           printf "  跳过 %s (已存在)\n" "$fname"
           continue
@@ -409,8 +404,8 @@ except Exception:
         # Step 1: GET 拿签名 URL
         SIGNED_BODY=$(curl -s -w "\n%{http_code}" \
           -H "User-Agent: $GC_UA" \
+          "${GC_AUTH[@]}" \
           -G \
-          --data-urlencode "access_token=${GITCODE_TOKEN}" \
           --data-urlencode "file_name=${fname}" \
           --data-urlencode "file_size=${fsize}" \
           --data-urlencode "content_type=${ftype}" \
@@ -419,51 +414,82 @@ except Exception:
         SIGNED_RESP=$(echo "$SIGNED_BODY" | sed '$d')
 
         if [[ "$SIGNED_CODE" != "200" ]]; then
-          echo "✗ (签名 URL HTTP ${SIGNED_CODE})"
-          echo "    $(echo "$SIGNED_RESP" | head -c 200)"
+          echo "✗ Step1 (upload_url) HTTP ${SIGNED_CODE}"
+          echo "    raw: $(echo "$SIGNED_RESP" | head -c 250)"
           continue
         fi
 
-        # 解析签名响应,字段名跟 v2 /api/v2/projects/.../releases/upload
-        # 不同(多了一层包成 {data, attachment, ...})— 这里用通用 parser:
-        # 找第一个 http(s) URL 作为 signed_url;剩余顶层字符串字段视情况。
-        SIGNED_JSON=$(SIGNED_RESP="$SIGNED_RESP" python3 -c '
-import os, json, sys
+        # 解析签名响应。从 v0.1.0 现存 release 看,真实 attachments 字段名是
+        # {name, browser_download_url, type}。响应可能在 uploa_url 里同样
+        # 风格,但 v5 OBS 签名层签名 URL 具体字段未知(docs 是 SPA
+        # skeleton)。这里用通用 http-URL 发现器 — 找到第一个 http(s)
+        # 字符串作 signed_url,然后把"剩余字符串字段"也打出来给运维
+        # 排错用。
+        SIGNED_PARSE=$(printf '%s' "$SIGNED_RESP" | python3 -c '
+import json, sys
 try:
-    j = json.loads(os.environ["SIGNED_RESP"])
-    # 找第一个 http(s) 开头的值作 signed URL
-    def walk(o, path=""):
-        if isinstance(o, dict):
-            for k, v in o.items():
-                if isinstance(v, str) and v.startswith(("http://","https://")) and "/upload" in v or (isinstance(v,str) and v.startswith(("http://","https://")) and ".obs." in v):
-                    print("URL:" + v)
-                    return
-                if isinstance(v, (dict, list)):
-                    walk(v, path+"."+k)
-        elif isinstance(o, list):
-            for it in o:
-                walk(it, path)
-    walk(j)
-except Exception as e:
-    sys.stderr.write(str(e))
-' 2>&1)
+    j = json.loads(sys.stdin.read())
+except Exception:
+    print("")
+    sys.exit(0)
 
-        SIGNED_URL=$(printf '%s' "$SIGNED_JSON" | grep '^URL:' | head -1 | sed 's/^URL://')
+# 通用:找到一个 https URL 视为 signed_url
+def find_url(o):
+    if isinstance(o, str):
+        if o.startswith(("http://","https://")):
+            return o
+        return None
+    if isinstance(o, dict):
+        for v in o.values():
+            r = find_url(v)
+            if r: return r
+    if isinstance(o, list):
+        for v in o:
+            r = find_url(v)
+            if r: return r
+    return None
+url = find_url(j)
+if url:
+    print("URL=" + url)
+# 额外的 header: 找出 x-obs-* 的字段名(有些服务器把它们放在第一层)
+for k, v in j.items():
+    if isinstance(v, str) and k.lower().startswith("x-obs-"):
+        print("HEADER:" + k + "=" + v)
+    if isinstance(v, dict):
+        for kk, vv in v.items():
+            if isinstance(vv, str) and kk.lower().startswith("x-obs-"):
+                print("HEADER:" + k + ":" + kk + "=" + vv)
+' 2>/dev/null) || true
+
+        SIGNED_URL=$(printf '%s' "$SIGNED_PARSE" | grep '^URL=' | head -1 | sed 's/^URL=//')
         if [[ -z "$SIGNED_URL" ]]; then
-          echo "✗ (解析签名响应失败,raw: $(echo "$SIGNED_RESP" | head -c 150))"
+          echo "✗ Step1 解析签名响应失败"
+          echo "    raw: $(echo "$SIGNED_RESP" | head -c 250)"
           continue
         fi
 
-        # Step 2: PUT 文件到 OBS 签名 URL
+        # Step 2: PUT 文件到 OBS 签名 URL(OBS 通常需要 x-obs-acl + Content-Type)
+        OBS_EXTRA=(-H "x-obs-acl: public-read")
+        PATCH_RESP_HEADERS=$(printf '%s' "$SIGNED_PARSE" | grep '^HEADER:')
+        if [[ -n "$PATCH_RESP_HEADERS" ]]; then
+          while IFS= read -r hline; do
+            OBS_EXTRA+=(-H "${hline#HEADER:}")
+          done <<< "$PATCH_RESP_HEADERS"
+        fi
+
         PUT_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
           -H "User-Agent: $GC_UA" \
           -H "Content-Type: ${ftype}" \
+          "${OBS_EXTRA[@]}" \
           --data-binary "@${f}" \
           "$SIGNED_URL" 2>/dev/null) || true
 
         if [[ "$PUT_CODE" -ge 200 && "$PUT_CODE" -lt 300 ]]; then
           echo "✓"
-          ATTACH_FILE="$GC_ATTACH_FILE" FNAME="$fname" CDN_URL="https://gitcode.com/${GC_OWNER}/${GC_REPO}/releases/download/${TAG}/${fname}" python3 -c '
+          # 把新上传的 asset 落盘,Step 3 一次性 PATCH 给 release
+          ATTACH_FILE="$GC_ATTACH_FILE" FNAME="$fname" \
+            CDN_URL="https://gitcode.com/${GC_OWNER}/${GC_REPO}/releases/download/${TAG}/${fname}" \
+            python3 -c '
 import os, json
 f = os.environ["ATTACH_FILE"]
 arr = json.loads(open(f).read() or "[]")
@@ -471,52 +497,58 @@ arr.append({
     "name": os.environ["FNAME"],
     "url": os.environ["CDN_URL"],
     "type": "attach",
-    "action": "create",
 })
 open(f, "w").write(json.dumps(arr))
 '
         else
-          echo "✗ (OBS PUT HTTP ${PUT_CODE})"
-          echo "    signed_url=$(echo "$SIGNED_URL" | head -c 120)"
+          echo "✗ Step2 (OBS PUT) HTTP ${PUT_CODE}"
+          echo "    raw_signed: $(echo "$SIGNED_URL" | head -c 120)"
         fi
       done
 
-      # Step 3: PATCH release 关联附件
-      GC_ATTACH_LINKS=$(cat "$GC_ATTACH_FILE")
+      GC_ATTACH_ASSETS=$(cat "$GC_ATTACH_FILE")
       rm -f "$GC_ATTACH_FILE"
 
-      if [[ "$GC_ATTACH_LINKS" != "[]" ]]; then
-        log "关联 ${TAG} 的附件到 GitCode release (PATCH v5 API)…"
+      if [[ "$GC_ATTACH_ASSETS" != "[]" ]]; then
+        log "Step3 关联附件 → PATCH /releases/${TAG} (v5 API)…"
 
-        GC_PUT_BODY=$(TAG="$TAG" RELEASE_NOTES="$RELEASE_NOTES" GC_ATTACH_LINKS="$GC_ATTACH_LINKS" python3 -c '
+        # PATCH body 字段名 — 从 v5 GET 真实响应(v0.1.0 release)看,assets
+        # 数组里每个对象是 {name, browser_download_url, type:"attach"|"source"};
+        # PATCH 时把现有 assets 数组整体替换,新上传的就用同样 shape。
+        # (不传 attachment_id,因为 v5 GET 响应里就没这字段。)
+        GC_PUT_BODY=$(TAG="$TAG" RELEASE_NOTES="$RELEASE_NOTES" GC_ATTACH_ASSETS="$GC_ATTACH_ASSETS" python3 -c '
 import os, json
 desc = open(os.environ["RELEASE_NOTES"]).read()
-links = json.loads(os.environ["GC_ATTACH_LINKS"])
+new_assets = json.loads(os.environ["GC_ATTACH_ASSETS"])
 body = {
     "tag_name": os.environ["TAG"],
     "name": "gokych " + os.environ["TAG"],
     "description": desc,
-    "links": links,
+    "assets": new_assets,
 }
 print(json.dumps(body))
 ' 2>/dev/null)
 
-        # v5 PATCH 用 JSON body + token;Server route 接受 JSON 或 form,这里走 JSON
-        GC_PATCH_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X PATCH \
+        # PATCH /releases/:tag — 单独 Authorization header,JSON body 走 --data
+        GC_PATCH_BODY=$(curl -s -w "\n%{http_code}" -X PATCH \
           -H "User-Agent: $GC_UA" \
           -H "Accept: application/json" \
           -H "Content-Type: application/json" \
-          -G --data-urlencode "access_token=${GITCODE_TOKEN}" \
+          "${GC_AUTH[@]}" \
           --data "${GC_PUT_BODY}" \
-          "${GC_API_V5}/repos/${GC_OWNER}/${GC_REPO}/releases/${TAG}" 2>/dev/null) || true
+          "${GC_API_V5}/repos/${GC_OWNER}/${GC_REPO}/releases/${TAG}" 2>&1) || true
+        GC_PATCH_CODE=$(echo "$GC_PATCH_BODY" | tail -1)
+        GC_PATCH_RESP=$(echo "$GC_PATCH_BODY" | sed '$d')
 
         if [[ "$GC_PATCH_CODE" -ge 200 && "$GC_PATCH_CODE" -lt 300 ]]; then
-          ok "GitCode 附件上传完成：https://gitcode.com/${GC_OWNER}/${GC_REPO}/releases/tag/${TAG}"
+          ok "GitCode 附件关联成功：https://gitcode.com/${GC_OWNER}/${GC_REPO}/releases/tag/${TAG}"
         else
-          warn "GitCode PATCH release 失败 (HTTP ${GC_PATCH_CODE}) — 文件已上传到 OBS,但未关联"
+          warn "Step3 (PATCH) HTTP ${GC_PATCH_CODE} — 文件已传到 OBS,没绑到 release"
+          warn "    raw: $(echo "$GC_PATCH_RESP" | head -c 250)"
+          warn "    body: $(echo "$GC_PUT_BODY" | head -c 250)"
         fi
       else
-        warn "没有新文件需要上传到 GitCode(全部 skip 或失败)"
+        log "没有新文件需要上传到 GitCode(全部 skip 或失败),跳过 PATCH"
       fi
     fi
   else
