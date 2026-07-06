@@ -132,12 +132,24 @@ func ListArticlesCtx(ctx context.Context, db *sql.DB, atype string, authorID *in
 	listSQL := `SELECT a.id, a.type, a.slug, a.title, LEFT(a.content, 200) AS content, NULL AS rendered_html, a.author_id,
 		            u.username, u.nickname, u.avatar, a.created_at, a.updated_at
 		 FROM articles a LEFT JOIN users u ON u.id = a.author_id WHERE ` + whereSQL
-	listArgs := append(append([]any{}, args...), perPage)
-	if beforeID > 0 {
+	listArgs := append([]any{}, args...)
+	switch {
+	case beforeID > 0:
+		// Cursor pagination: caller passed `before=<last seen id>`, so we
+		// take the next perPage items with id < that marker. Stable under
+		// inserts/deletes (no offset drift if a row is added at the head).
 		listSQL += " AND a.id < ?"
-		listArgs = append(listArgs[:len(listArgs)-1], beforeID, perPage)
+		listArgs = append(listArgs, beforeID, perPage)
+		listSQL += " ORDER BY a.id DESC LIMIT ?"
+	default:
+		// Offset fallback: callers that don't track the cursor (the admin
+		// "我的文章" / "文章管理" pager falls into this case, since the
+		// client only sends `page`) get the standard LIMIT/OFFSET slice.
+		// `page` is 1-indexed; page=1 ⇒ offset=0 which is the head of the
+		// list, same as before with a no-cursor call.
+		listSQL += " ORDER BY a.id DESC LIMIT ? OFFSET ?"
+		listArgs = append(listArgs, perPage, (page-1)*perPage)
 	}
-	listSQL += " ORDER BY a.id DESC LIMIT ?"
 
 	rows, err := db.QueryContext(ctx, listSQL, listArgs...)
 	if err != nil {
