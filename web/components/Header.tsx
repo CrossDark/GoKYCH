@@ -70,23 +70,60 @@ export function Header() {
     setTheme(theme === "dark" ? "light" : "dark");
   };
 
-  const openSidebar = useCallback(() => {
-    setSidebarOpen(true);
-    fetchLabels();
-    document.body.style.overflow = "hidden";
-  }, [fetchLabels]);
+  // Toggle the right-rail tag sidebar. Mutually exclusive with the
+  // left-rail <SideDrawer>: opening either closes the other so the
+  // two drawers never stack (which would crowd the article column on
+  // a 1280px viewport). `fetchLabels()` only fires when actually
+  // transitioning to open — closing a drawer that's already loaded
+  // its labels shouldn't hit the network again.
+  const toggleSidebar = useCallback(() => {
+    const willOpen = !sidebarOpen;
+    setSidebarOpen(willOpen);
+    setSideDrawerOpen(false);
+    if (willOpen) {
+      fetchLabels();
+    }
+  }, [sidebarOpen, fetchLabels]);
 
+  // closeSidebar is called by the in-drawer close affordances (X
+  // button, overlay click, tag link click, footer link click). It
+  // no longer touches document.body.style.overflow — that's the
+  // effect below's job, so transitions driven by user click and
+  // transitions driven by the toggle button share one code path
+  // for the body-scroll lock. (Likewise for the side-drawer mirror,
+  // which sets overflow from inside <SideDrawer>.)
   const closeSidebar = useCallback(() => {
     setSidebarOpen(false);
-    document.body.style.overflow = "";
   }, []);
 
-  // Cleanup body overflow on unmount in case sidebar was open when navigating away
+  // Toggle the left-rail nav drawer (admin-managed cards). Same
+  // mutual-exclusion rule as toggleSidebar. The <SideDrawer> owns
+  // its own body-overflow lock + Escape-close, so we don't touch
+  // document.body.style.overflow here at all — keeping both drawers'
+  // style.overflow handling in their own components avoids the two
+  // fighting over the same global property.
+  const toggleSideDrawer = useCallback(() => {
+    const willOpen = !sideDrawerOpen;
+    setSideDrawerOpen(willOpen);
+    setSidebarOpen(false);
+  }, [sideDrawerOpen]);
+
+  // Body-scroll lock — driven by sidebarOpen so opening the tag
+  // drawer (whether via toggle or via the in-drawer fetchLabels path)
+  // and closing it (whether via toggle, in-drawer close, or the
+  // toggle-side-drawer exclusive override) all share one effect.
+  // <SideDrawer> has its own mirror effect for the left-rail drawer;
+  // whichever drawer is open wins, and they're mutually exclusive so
+  // the two effects don't fight over body.style.overflow.
   useEffect(() => {
-    return () => {
-      document.body.style.overflow = "";
-    };
-  }, []);
+    if (sidebarOpen) {
+      const prev = document.body.style.overflow;
+      document.body.style.overflow = "hidden";
+      return () => {
+        document.body.style.overflow = prev;
+      };
+    }
+  }, [sidebarOpen]);
 
   return (
     <>
@@ -115,9 +152,10 @@ export function Header() {
           <button
             type="button"
             className="nav-link side-drawer-toggle-btn"
-            aria-label="打开导航侧栏"
-            title="导航侧栏"
-            onClick={() => setSideDrawerOpen(true)}
+            aria-label={sideDrawerOpen ? "关闭导航侧栏" : "打开导航侧栏"}
+            aria-expanded={sideDrawerOpen}
+            title={sideDrawerOpen ? "关闭导航侧栏" : "导航侧栏"}
+            onClick={toggleSideDrawer}
           >
             ☰
           </button>
@@ -139,10 +177,11 @@ export function Header() {
           {/* Right: tags, search, theme, user */}
           <div className="header-actions">
             <button
-              onClick={openSidebar}
+              onClick={toggleSidebar}
               className="nav-link sidebar-toggle-btn"
-              aria-label="标签列表"
-              title="标签"
+              aria-label={sidebarOpen ? "关闭标签列表" : "打开标签列表"}
+              aria-expanded={sidebarOpen}
+              title={sidebarOpen ? "关闭标签列表" : "标签"}
             >
               🏷️
             </button>
