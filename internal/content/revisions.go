@@ -397,3 +397,69 @@ func GetAllRevisionsForArticleCtx(ctx context.Context, db *sql.DB, articleID int
 	}
 	return revs, nil
 }
+
+// recordRevisionInTx inserts a new article_revisions row inside the
+// caller's transaction. Shared by UpdateArticleCtx (regular save) and
+// RestoreRevisionCtx (restore-to-old-version) so the "compute diff,
+// decide snapshot, insert" logic lives in exactly one place.
+//
+// Preconditions:
+//   - caller holds the article row lock (SELECT ... FOR UPDATE) on this tx
+//   - oldContent is the current articles.content (not a stale snapshot)
+//   - newContent is the new value being persisted
+//   - newTitle is the new article title (also stored in this row)
+//
+// Returns the assigned seq. The caller can ignore it (most do); logging
+// is the only thing that uses the return value today.
+//
+// Note: the "no prior revisions" branch (lastRevExists=false) is the
+// seq=1 case — ShouldSnapshot always returns true there, and parent_seq
+// is NULL. This invariant is asserted by RebuildToSeq (chain must start
+// with a snapshot) and re-enforced by the SQL constraint that the
+// article row exists before the revision row references it.
+func recordRevisionInTx(ctx context.Context, tx *sql.Tx, articleID int, oldContent, newContent, newTitle, message string, authorID *int) (newSeq int, err error) {
+	var lastSeq int
+	var lastRevExists bool
+	err = tx.QueryRowContext(ctx,
+		`SELECT seq FROM article_revisions WHERE article_id = ? ORDER BY seq DESC LIMIT 1`,
+		articleID,
+	).Scan(&lastSeq)
+	switch {
+	case err == nil:
+		lastRevExists = true
+	case err == sql.ErrNoRows:
+		lastRevExists = false
+	default:
+		return 0, err
+	}
+
+	newSeq = 1
+	if lastRevExists {
+		newSeq = lastSeq + 1
+	}
+
+	patchText := ComputePatch(oldContent, newContent)
+	isSnap := ShouldSnapshot(newSeq, patchText, newContent)
+	if isSnap {
+		// When storing a snapshot, the patch column holds the full
+		// content verbatim — there's nothing to diff against, the
+		// chain terminates here.
+		patchText = newContent
+	}
+
+	var parentSeq *int
+	if lastRevExists {
+		s := lastSeq
+		parentSeq = &s
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO article_revisions
+		 (article_id, seq, title, patch, is_snapshot, parent_seq, author_id, message)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		articleID, newSeq, newTitle, patchText, isSnap, parentSeq, authorID, message,
+	); err != nil {
+		return 0, err
+	}
+	return newSeq, nil
+}

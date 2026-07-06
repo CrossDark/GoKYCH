@@ -325,54 +325,17 @@ func UpdateArticleCtx(ctx context.Context, db *sql.DB, w *typst.Worker, atype, s
 		return a, nil
 	}
 
-	// Content actually changed → record a new revision.
-	var lastSeq int
-	var lastRevExists bool
-	err = tx.QueryRowContext(ctx,
-		`SELECT seq FROM article_revisions WHERE article_id = ? ORDER BY seq DESC LIMIT 1`,
-		oldID,
-	).Scan(&lastSeq)
-	switch {
-	case err == nil:
-		lastRevExists = true
-	case err == sql.ErrNoRows:
-		lastRevExists = false
-	default:
-		return nil, err
-	}
-
-	newSeq := 1
-	if lastRevExists {
-		newSeq = lastSeq + 1
-	}
-
-	patchText := ComputePatch(oldContent, contentStr)
-	isSnap := ShouldSnapshot(newSeq, patchText, contentStr)
-	if isSnap {
-		// When storing a snapshot, the "patch" column holds the full
-		// content verbatim — there's nothing to diff against, the
-		// chain terminates here.
-		patchText = contentStr
-	}
-
-	var parentSeq *int
-	if lastRevExists {
-		s := lastSeq
-		parentSeq = &s
-	}
-
+	// Content actually changed → record a new revision. The shared
+	// recordRevisionInTx helper handles seq assignment, diff vs
+	// snapshot policy, and the INSERT — the same logic RestoreRevisionCtx
+	// needs, so we don't duplicate it.
 	var authorID *int
 	if oldAuthorID.Valid {
 		v := int(oldAuthorID.Int64)
 		authorID = &v
 	}
 
-	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO article_revisions
-		 (article_id, seq, title, patch, is_snapshot, parent_seq, author_id, message)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		oldID, newSeq, title, patchText, isSnap, parentSeq, authorID, message,
-	); err != nil {
+	if _, err := recordRevisionInTx(ctx, tx, oldID, oldContent, contentStr, title, message, authorID); err != nil {
 		return nil, err
 	}
 
