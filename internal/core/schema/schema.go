@@ -386,4 +386,36 @@ var allTables = [...]string{
 		updated_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 		INDEX idx_active_order (is_active, sort_order, id)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
+	// ═══ 18. article_revisions — git-style version history ═══
+	// One row per save. `seq` is a per-article monotonic counter (1, 2, 3…)
+	// independent of `id` (so restored copies share a single seq namespace
+	// for the article). `patch` is either:
+	//   - a unified-diff text (is_snapshot=0) describing the change from
+	//     parent_seq; or
+	//   - the full content verbatim (is_snapshot=1), which terminates a
+	//     chain of diffs and bounds the cost of "rebuild to seq=N".
+	// A snapshot is forced at seq=1 (the first revision must be a snapshot
+	// because there's no parent) and at every 50th seq; see
+	// content.ShouldSnapshot for the full decision rule. The article
+	// identity (type, slug) is intentionally not duplicated here — we keep
+	// the article_id foreign key, so renames are tracked via the existing
+	// articles.title column and the per-revision `title` field stores the
+	// title at the time of that save.
+	`CREATE TABLE IF NOT EXISTS article_revisions (
+		id          INT AUTO_INCREMENT PRIMARY KEY,
+		article_id  INT NOT NULL,
+		seq         INT NOT NULL,
+		title       VARCHAR(255) NOT NULL,
+		patch       LONGTEXT NOT NULL,
+		is_snapshot TINYINT(1) NOT NULL DEFAULT 0,
+		parent_seq  INT DEFAULT NULL,
+		author_id   INT DEFAULT NULL,
+		message     VARCHAR(500) NOT NULL DEFAULT '',
+		created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		UNIQUE KEY uq_article_seq (article_id, seq),
+		INDEX idx_article_created (article_id, created_at),
+		FOREIGN KEY (article_id) REFERENCES articles(id) ON DELETE CASCADE,
+		FOREIGN KEY (author_id)   REFERENCES users(id)   ON DELETE SET NULL
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 }
