@@ -83,6 +83,9 @@ func (s *Server) Setup(r *gin.Engine) {
 		apiG.GET("/articles/:type/:slug/pdf", s.getArticlePDF)
 		apiG.GET("/labels", s.listLabels)
 		apiG.GET("/labels/:tag", s.getLabelArticles)
+		// Sidebar cards (left rail ☰ drawer) — public read of active
+		// rows only. Mutated via /api/admin/sidebar-cards (below).
+		apiG.GET("/sidebar-cards", s.listSidebarCards)
 		apiG.GET("/search", s.search)
 		apiG.GET("/articles/:type/:slug/comments", s.listComments)
 		apiG.GET("/articles/:type/:slug/line-comments", s.listLineComments)
@@ -146,10 +149,17 @@ func (s *Server) Setup(r *gin.Engine) {
 				adminG.PUT("/notifications/:id", requireAdmin, s.updateNotification)
 				adminG.DELETE("/notifications/:id", requireAdmin, s.deleteNotification)
 
-				adminG.GET("/tags", requireAdmin, s.listAdminTags)
-				adminG.POST("/tags", requireAdmin, s.createTag)
-				adminG.PUT("/tags/:id", requireAdmin, s.renameTag)
-				adminG.DELETE("/tags/:id", requireAdmin, s.deleteTag)
+			adminG.GET("/tags", requireAdmin, s.listAdminTags)
+			adminG.POST("/tags", requireAdmin, s.createTag)
+			adminG.PUT("/tags/:id", requireAdmin, s.renameTag)
+			adminG.DELETE("/tags/:id", requireAdmin, s.deleteTag)
+
+			// Sidebar cards admin CRUD. requireAdmin — the public
+			// /api/sidebar-cards above is anonymous.
+			adminG.GET("/sidebar-cards", requireAdmin, s.listAdminSidebarCards)
+			adminG.POST("/sidebar-cards", requireAdmin, s.createSidebarCard)
+			adminG.PUT("/sidebar-cards/:id", requireAdmin, s.updateSidebarCard)
+			adminG.DELETE("/sidebar-cards/:id", requireAdmin, s.deleteSidebarCard)
 
 				adminG.GET("/settings", requireAdmin, s.getSettings)
 				adminG.PUT("/settings", requireOwner, s.updateSettings)
