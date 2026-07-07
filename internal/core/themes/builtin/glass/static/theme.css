@@ -19,8 +19,13 @@
 :root {
     /* Light 极光 — 透明基底, 让背景图透出来 */
     --bg: #e0c3fc;
-    --bg-card: rgba(255, 255, 255, 0.42);
-    --bg-card-hover: rgba(255, 255, 255, 0.55);
+    /* 卡片 RGB + alpha 分离: alpha 运行时可调 (admin 设置 → particles.js
+     * setProperty('--glass-card-alpha')), RGB 是固定色相。hover 在
+     * alpha 上自动 +0.13 而不是写死, 这样透明度调高时 hover 不会撞顶。 */
+    --bg-card-rgb: 255, 255, 255;
+    --glass-card-alpha: 0.42;
+    --bg-card: rgba(var(--bg-card-rgb), var(--glass-card-alpha));
+    --bg-card-hover: rgba(var(--bg-card-rgb), calc(var(--glass-card-alpha) + 0.13));
     --text: rgba(30, 25, 60, 0.92);
     --text-secondary: rgba(50, 40, 90, 0.78);
     --text-muted: rgba(80, 70, 120, 0.55);
@@ -56,8 +61,11 @@
 
 [data-theme="dark"] {
     --bg: #0f0c29;
-    --bg-card: rgba(40, 35, 80, 0.42);
-    --bg-card-hover: rgba(50, 45, 100, 0.55);
+    --bg-card-rgb: 40, 35, 80;
+    /* dark 默认 alpha 同 light — 一致性更好, 深色下调低反而看不清 */
+    --glass-card-alpha: 0.42;
+    --bg-card: rgba(var(--bg-card-rgb), var(--glass-card-alpha));
+    --bg-card-hover: rgba(var(--bg-card-rgb), calc(var(--glass-card-alpha) + 0.13));
     --text: rgba(240, 240, 255, 0.94);
     --text-secondary: rgba(200, 200, 230, 0.78);
     --text-muted: rgba(160, 160, 195, 0.55);

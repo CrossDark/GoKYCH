@@ -19,12 +19,15 @@
  *   gokych:glass:effect_mode       "none" | "rain" | "sunlight"
  *   gokych:glass:particle_density  "0".."100"
  *   gokych:glass:background_image  URL 字符串(直接套到 CSS 变量)
+ *   (card_alpha 不入 localStorage — 仅 admin 通过后台设置, 离线场景
+ *    退回 theme.css 默认值 0.42 已经足够)
  *
  * 公开 API:
  *   window.GlassFX.setMode(mode)
  *   window.GlassFX.getMode()
  *   window.GlassFX.setDensity(0..100)
  *   window.GlassFX.setBackgroundImage(url)  // url 为空字符串清掉
+ *   window.GlassFX.setCardAlpha(0..100)     // 透明度,0..100 整数
  */
 (function () {
     'use strict';
@@ -241,6 +244,19 @@
                     // per-visitor localStorage pick (offline / dev only)
                     this._applyStoredBgImage();
                 }
+                // card_alpha — server value (0..100 整数) 直接套到
+                // --glass-card-alpha CSS 变量 (除以 100 转 0..1)。
+                // theme.css 把这个变量插进 rgba(), 所以 admin 调一调
+                // 玻璃卡片的透明度就即时生效 (hover 自动 +0.13 由
+                // CSS calc 处理, 不用 JS 算)。如果没设, theme.css 的
+                // 默认 0.42 自己顶上去。
+                const alphaVal = values.card_alpha != null
+                    ? parseInt(values.card_alpha, 10)
+                    : (typeof def('card_alpha') === 'number' ? def('card_alpha') : NaN);
+                if (!isNaN(alphaVal)) {
+                    const clamped = Math.max(0, Math.min(100, alphaVal));
+                    this.setCardAlpha(clamped);
+                }
                 return;
             } catch (e) {
                 // network/CORS/etc — fall back to localStorage entirely
@@ -323,6 +339,14 @@
                 document.documentElement.style.removeProperty('--glass-bg-image');
                 localStorage.removeItem(STORAGE_KEYS.bgImage);
             }
+        }
+
+        // setCardAlpha(value 0..100) — 把卡片透明度直接套到 CSS 变量。
+        // 不写 localStorage: 该值由 admin 在后台配, 离线场景退化到
+        // theme.css 默认值即可, 不需要每个浏览器本地存一份。
+        setCardAlpha(value) {
+            const v = Math.max(0, Math.min(100, value | 0));
+            document.documentElement.style.setProperty('--glass-card-alpha', String(v / 100));
         }
 
         _applyStoredBgImage() {

@@ -13,6 +13,14 @@ description: 透明玻璃主题 — 渐变背景 + 透明隔离层 + 彩色玻�
 # page 增加 Modal, 后端新增 theme_settings 表 (theme_name, key, value)。
 # 当前: particles.js 启动时按 schema default → localStorage 覆盖顺序读。
 settings:
+  - key: card_alpha
+    type: range
+    label: 卡片透明度
+    min: 0
+    max: 100
+    step: 5
+    default: 40
+    hint: "玻璃卡片的底色透明度 (0=完全透明, 100=完全不透明)。hover 时自动 +13%"
   - key: effect_mode
     type: select
     label: 效果模式
