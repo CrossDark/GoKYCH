@@ -403,6 +403,13 @@ export function ArticleView({ data, articleType, articleSlug }: Props) {
                     className="edit-link"
                     download
                     title="下载 PDF（首次点击会触发 typst 编译，约 1–2 秒）"
+                    // apiUrl() 在 dev 模式下服务端返回 http://localhost:8000
+                    // (SSR 直接连后端), 客户端返回 "" (走 next proxy)。两端
+                    // href 不一致会触发 React hydration 警告。生产环境
+                    // NEXT_PUBLIC_API_BASE_URL 配好后两端都是绝对 URL 一致,
+                    // 警告自动消失。两种 URL 都能访问同一个 endpoint,
+                    // 用 suppressHydrationWarning 静默掉这个已知 mismatch。
+                    suppressHydrationWarning
                 >📄 下载 PDF</a>
             )}
             {can_edit || isLoggedIn ? <Link href={`/admin/articles?editType=${article.type}&editSlug=${article.slug}`} className="edit-link">✏️ 编辑</Link> : null}</div>
