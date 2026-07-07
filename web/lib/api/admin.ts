@@ -15,6 +15,7 @@ import type {
   UpdateCheckInfo,
   UpdateStatus,
   Theme,
+  SettingDefinition,
 } from "@/lib/types";
 
 export function listUsers(csrf: string) {
@@ -393,4 +394,41 @@ export function activateTheme(csrf: string, name: string) {
     method: "PUT",
     headers: { "X-CSRF-Token": csrf },
   });
+}
+
+// ── Theme settings (P10) ─────────────────────────────────────────────
+//
+// Public read of schema + admin overrides at GET /api/themes/:name/settings.
+// Used by the runtime glass-fx layer to pick up the EFFECTIVE mode
+// without going through localStorage. The admin modal also uses this to
+// initialise the form (so the editor sees the current state, not the
+// schema defaults).
+export interface ThemeSettingsResponse {
+  schema: SettingDefinition[];
+  values: Record<string, string>;
+}
+
+export function getThemeSettings(name: string) {
+  return request<ThemeSettingsResponse>(`/themes/${name}/settings`, {
+    next: { revalidate: 0 },
+  });
+}
+
+// Owner-only write of admin overrides. PUT body is { values: { key: val } }.
+// Server validates every value against the schema (select: must be in
+// options; range: must be int within min/max) and returns 400 with a
+// `rejects` list if anything's off.
+export function updateThemeSettings(
+  csrf: string,
+  name: string,
+  values: Record<string, string>
+) {
+  return request<{ status: string; updated: number }>(
+    `/admin/themes/${name}/settings`,
+    {
+      method: "PUT",
+      headers: { "X-CSRF-Token": csrf },
+      body: JSON.stringify({ values }),
+    }
+  );
 }

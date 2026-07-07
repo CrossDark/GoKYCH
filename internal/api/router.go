@@ -72,6 +72,14 @@ func (s *Server) Setup(r *gin.Engine) {
 		apiG.GET("/home", s.getHome)
 		apiG.GET("/themes", s.listThemes)
 		apiG.GET("/themes/:name", s.getThemeCSS)
+		// Theme-bundled static assets (e.g. glass theme's particles.js).
+		// Restricted to <dataDir>/themes/<name>/static/* — see
+		// themes.ReadAsset for path-traversal guard.
+		apiG.GET("/themes/:name/assets/*filepath", s.getThemeAsset)
+		// Theme settings: schema (from theme.yaml) + admin overrides
+		// (from theme_settings table). Public read so the glass-fx
+		// runtime can pull EFFECTIVE values on page load.
+		apiG.GET("/themes/:name/settings", s.getThemeSettings)
 		apiG.GET("/notifications", s.listNotifications)
 		apiG.GET("/articles", s.listArticles)
 		apiG.GET("/articles/:type/:slug", s.getArticle)
@@ -227,6 +235,9 @@ func (s *Server) Setup(r *gin.Engine) {
 				adminG.POST("/themes/upload", requireOwner, s.adminUploadTheme)
 				adminG.DELETE("/themes/:name", requireOwner, s.adminDeleteTheme)
 				adminG.PUT("/themes/:name/activate", requireOwner, s.adminActivateTheme)
+				// Admin overrides for a theme's settings schema (P10).
+				// Public read lives at GET /api/themes/:name/settings.
+				adminG.PUT("/themes/:name/settings", requireOwner, s.adminUpdateThemeSettings)
 			}
 		}
 	}

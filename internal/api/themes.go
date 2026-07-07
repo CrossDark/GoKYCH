@@ -50,6 +50,120 @@ func (s *Server) getThemeCSS(c *gin.Context) {
 	c.Data(http.StatusOK, "text/css; charset=utf-8", css)
 }
 
+// GET /api/themes/:name/assets/*filepath — serve any file under the theme's
+// static/ subdirectory (currently used by the glass theme for particles.js).
+// Path traversal is blocked in themes.ReadAsset; only whitelisted MIME types
+// are served (other extensions return 400 so an attacker can't repurpose
+// this endpoint to ship arbitrary content types).
+func (s *Server) getThemeAsset(c *gin.Context) {
+	name := c.Param("name")
+	rel := c.Param("filepath")
+	if !themes.ValidateName(name) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的主题名。"})
+		return
+	}
+	b, mime, err := themes.ReadAsset(s.DataDir, name, rel)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if b == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "资源不存在。"})
+		return
+	}
+	c.Header("Cache-Control", "public, max-age=3600, stale-while-revalidate=86400")
+	c.Header("X-Content-Type-Options", "nosniff")
+	c.Data(http.StatusOK, mime, b)
+}
+
+// GET /api/themes/:name/settings — public read of a theme's settings
+// schema (from theme.yaml) merged with the admin's stored overrides
+// (from theme_settings). The frontend uses this to render the admin
+// "Settings" modal and the runtime glass-fx layer reads the EFFECTIVE
+// values to decide which mode to render. Returned shape:
+//
+//	{
+//	  "schema": [ { key, type, label, options, min, max, step, default, hint }, ... ],
+//	  "values": { "effect_mode": "rain", "particle_density": "60", ... }
+//	}
+//
+// `values` contains ONLY keys that have explicit admin overrides;
+// anything missing falls back to the schema default at the call site.
+// We also normalise each value to its string form (range → "60" not 60)
+// so the client can treat them as an opaque string-to-string map.
+func (s *Server) getThemeSettings(c *gin.Context) {
+	name := c.Param("name")
+	if !themes.ValidateName(name) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的主题名。"})
+		return
+	}
+	t, err := themes.Get(s.DataDir, name)
+	if err != nil || t == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "主题不存在。"})
+		return
+	}
+	overrides, err := themes.GetSettingsValues(s.DB, name)
+	if err != nil {
+		slog.Error("getThemeSettings: read overrides", "theme", name, "err", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "读取主题设置失败。"})
+		return
+	}
+	// Always return the schema (even if empty) and a values map; an
+	// empty values map just means "use all defaults".
+	if t.Settings == nil {
+		t.Settings = []themes.SettingDefinition{}
+	}
+	if overrides == nil {
+		overrides = map[string]string{}
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"schema": t.Settings,
+		"values": overrides,
+	})
+}
+
+// PUT /api/admin/themes/:name/settings — owner-only write of admin
+// overrides. Body: { "values": { "effect_mode": "rain", ... } }.
+// Keys not declared in the theme's schema are rejected with 400.
+// Range values are validated against min/max. Missing keys are NOT
+// deleted (admin might just not be touching them).
+func (s *Server) adminUpdateThemeSettings(c *gin.Context) {
+	name := c.Param("name")
+	if !themes.ValidateName(name) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的主题名。"})
+		return
+	}
+	t, err := themes.Get(s.DataDir, name)
+	if err != nil || t == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "主题不存在。"})
+		return
+	}
+	var body struct {
+		Values map[string]string `json:"values"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请求体格式错误。"})
+		return
+	}
+	if body.Values == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "缺少 values 字段。"})
+		return
+	}
+	rejects, err := themes.SetSettingsValues(s.DB, name, t.Settings, body.Values)
+	if err != nil {
+		// Reject list is the user-facing reason; the error string is the
+		// technical cause. Both go back so the admin can see exactly
+		// which keys were bad.
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "设置校验失败。",
+			"rejects": rejects,
+		})
+		return
+	}
+	slog.Info("theme settings updated", "theme", name, "keys", len(body.Values))
+	c.JSON(http.StatusOK, gin.H{"status": "ok", "updated": len(body.Values)})
+}
+
 // ── Admin-only theme management (owner-only) ────────────────────────
 
 // GET /api/admin/themes — list themes with full metadata (admin panel).

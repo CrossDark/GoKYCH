@@ -418,4 +418,20 @@ var allTables = [...]string{
 		FOREIGN KEY (article_id) REFERENCES articles(id) ON DELETE CASCADE,
 		FOREIGN KEY (author_id)   REFERENCES users(id)   ON DELETE SET NULL
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
+	// ═══ 19. theme_settings — per-theme user-overridable values ═══
+	// Pairs with the schema declared in each theme's theme.yaml `settings:`
+	// block. The yaml block is the SCHEMA (key/type/label/options/default);
+	// this table stores the EFFECTIVE value the admin picked (overriding the
+	// schema default). `key` is a MySQL reserved word so it gets backticked
+	// in every statement. No FK to a themes table because themes are
+	// filesystem entities (data/themes/<name>/), not rows — orphan rows
+	// are harmless and just get ignored by Get/Set.
+	`CREATE TABLE IF NOT EXISTS theme_settings (
+		theme_name VARCHAR(64) NOT NULL,
+		` + "`key`" + `     VARCHAR(64) NOT NULL,
+		value      TEXT NOT NULL,
+		updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+		PRIMARY KEY (theme_name, ` + "`key`" + `)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 }
