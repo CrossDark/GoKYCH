@@ -14,6 +14,7 @@ import { apiUrl } from "@/lib/api/client";
 import type { Theme } from "@/lib/types";
 import { useToast } from "@/lib/admin-feedback";
 import { AdminConfirm } from "@/components/admin/AdminConfirm";
+import { ThemeSettingsModal } from "@/components/admin/ThemeSettingsModal";
 
 const THEME_PREVIEW_HTML = `
 <!DOCTYPE html>
@@ -76,6 +77,7 @@ export default function AdminThemes() {
   const [dragOver, setDragOver] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<Theme | null>(null);
   const [cssName, setCssName] = useState("");
+  const [settingsTarget, setSettingsTarget] = useState<Theme | null>(null);
   const toast = useToast();
   const zipRef = useRef<HTMLInputElement | null>(null);
   const cssRef = useRef<HTMLInputElement | null>(null);
@@ -301,6 +303,7 @@ export default function AdminThemes() {
                     theme={t}
                     active={t.name === activeName}
                     onActivate={() => handleActivate(t.name)}
+                    onSettings={() => setSettingsTarget(t)}
                   />
                 ))}
               </div>
@@ -329,6 +332,7 @@ export default function AdminThemes() {
                       active={t.name === activeName}
                       onActivate={() => handleActivate(t.name)}
                       onDelete={() => handleDelete(t)}
+                      onSettings={() => setSettingsTarget(t)}
                     />
                   ))}
                 </div>
@@ -349,6 +353,14 @@ export default function AdminThemes() {
         onConfirm={confirmDelete}
         onCancel={() => setPendingDelete(null)}
       />
+
+      <ThemeSettingsModal
+        open={!!settingsTarget}
+        onClose={() => setSettingsTarget(null)}
+        themeName={settingsTarget?.name || ""}
+        themeLabel={settingsTarget?.description || settingsTarget?.name || ""}
+        csrf={csrf}
+      />
     </div>
   );
 }
@@ -358,14 +370,17 @@ function ThemeCard({
   active,
   onActivate,
   onDelete,
+  onSettings,
 }: {
   theme: Theme;
   active: boolean;
   onActivate: () => void;
   onDelete?: () => void;
+  onSettings: () => void;
 }) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const cssUrl = themePreviewUrl(theme.name, theme.updated_at);
+  const hasSettings = (theme.settings?.length || 0) > 0;
 
   useEffect(() => {
     const iframe = iframeRef.current;
@@ -419,6 +434,15 @@ function ThemeCard({
         ) : (
           <button className="admin-btn admin-btn-primary admin-btn-sm" onClick={onActivate}>
             启用
+          </button>
+        )}
+        {hasSettings && (
+          <button
+            className="admin-btn admin-btn-secondary admin-btn-sm"
+            onClick={onSettings}
+            title="主题详细设置"
+          >
+            ⚙ 设置
           </button>
         )}
         {onDelete && (

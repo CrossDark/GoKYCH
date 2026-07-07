@@ -119,20 +119,68 @@
         _init() {
             if (!this._enabled) {
                 // 仍然监听 backgroundImage 设置, 那一部分零开销
-                this._applyStoredBgImage();
+                this._loadConfig().finally(() => this._applyStoredBgImage());
                 return;
             }
             this._createLayer();
-            this._applyStoredBgImage();
             this._visibilityHandler = () => {
                 if (document.hidden) this._pause();
                 else this._resume();
             };
             document.addEventListener('visibilitychange', this._visibilityHandler);
-            this._mode = localStorage.getItem(STORAGE_KEYS.mode) || 'none';
+            // Config load is async — first we render the fx layer empty
+            // (none mode), then once the server config arrives we switch
+            // to the admin's choice. The two-step avoids a flash of rain
+            // when the saved mode is none.
+            this._loadConfig().then(() => {
+                this._applyStoredBgImage();
+                if (this._mode !== 'none') this.setMode(this._mode);
+            });
+        }
+
+        // _loadConfig fetches the EFFECTIVE settings for glass from
+        // /api/themes/glass/settings (schema from theme.yaml + admin
+        // overrides from theme_settings table). Falls back to
+        // localStorage if the request fails, and to hardcoded sane
+        // defaults if neither is set. Setting backgroundImage does NOT
+        // require this — it has its own localStorage key for the
+        // per-user override and a CSS variable that the admin value
+        // overrides when the user visits admin.
+        async _loadConfig() {
+            try {
+                const r = await fetch('/api/themes/glass/settings', { cache: 'no-store' });
+                if (!r.ok) throw new Error('settings HTTP ' + r.status);
+                const data = await r.json();
+                const schema = (data && data.schema) || [];
+                const values = (data && data.values) || {};
+                const def = (k) => {
+                    const e = schema.find((s) => s.key === k);
+                    return e ? e.default : undefined;
+                };
+                // mode
+                const modeVal = values.effect_mode != null ? values.effect_mode : def('effect_mode');
+                if (modeVal === 'rain' || modeVal === 'sunlight' || modeVal === 'none') {
+                    this._mode = modeVal;
+                }
+                // density
+                const densityVal = values.particle_density != null
+                    ? parseInt(values.particle_density, 10)
+                    : (typeof def('particle_density') === 'number' ? def('particle_density') : NaN);
+                if (!isNaN(densityVal)) this._density = Math.max(0, Math.min(100, densityVal));
+                // background_image — only apply if the ADMIN set it; user
+                // per-visitor override still wins (it goes through
+                // setBackgroundImage which writes its own localStorage
+                // key). We don't touch it here so the user's per-visitor
+                // choice survives an admin update.
+                return;
+            } catch (e) {
+                // network/CORS/etc — fall back to localStorage.
+            }
+            // localStorage fallback
+            const m = localStorage.getItem(STORAGE_KEYS.mode);
+            if (m === 'rain' || m === 'sunlight' || m === 'none') this._mode = m;
             const d = parseInt(localStorage.getItem(STORAGE_KEYS.density) || '', 10);
-            this._density = isNaN(d) ? DEFAULT_DENSITY : Math.max(0, Math.min(100, d));
-            if (this._mode !== 'none') this.setMode(this._mode);
+            if (!isNaN(d)) this._density = Math.max(0, Math.min(100, d));
         }
 
         _createLayer() {

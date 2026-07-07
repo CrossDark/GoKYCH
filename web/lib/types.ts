@@ -207,6 +207,30 @@ export interface Theme {
   /** true for built-in themes shipped with GoKYCH (cannot be deleted). */
   builtin: boolean;
   updated_at?: string;
+  /** P10: per-theme settings schema from theme.yaml `settings:` block.
+   *  Each entry describes one configurable knob; the admin overrides
+   *  live in the theme_settings table and are fetched separately via
+   *  GET /api/themes/:name/settings. Empty / undefined for themes that
+   *  declare no settings. */
+  settings?: SettingDefinition[];
+}
+
+// One configurable knob in a theme's `settings:` schema. The shape is
+// deliberately narrow — only the fields the admin UI needs to render a
+// matching form control. The effective VALUE (admin's pick) is the
+// string in the GET /api/themes/:name/settings `values` map, keyed by
+// `key` here.
+export interface SettingDefinition {
+  key: string;
+  /** select | range | text | image */
+  type: "select" | "range" | "text" | "image";
+  label: string;
+  options?: string[];
+  min?: number;
+  max?: number;
+  step?: number;
+  default?: string | number;
+  hint?: string;
 }
 
 // ── Site config ───────────────────────────────────────────────────────

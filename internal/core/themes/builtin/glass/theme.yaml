@@ -28,7 +28,7 @@ settings:
     default: 60
     hint: "仅在效果模式非 none 时生效"
   - key: background_image
-    type: text
-    label: 背景图 URL
+    type: image
+    label: 背景图
     default: ""
     hint: "留空使用渐变背景。设置后 body 会显示该图, 渐变作为色彩背板"

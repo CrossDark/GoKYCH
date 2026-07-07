@@ -3,8 +3,9 @@
 // A theme is a directory:
 //
 //	themes/<name>/
-//	  theme.yaml          # metadata (name, version, author, description) — required
+//	  theme.yaml          # metadata (name, version, author, description) + settings schema — required
 //	  static/theme.css    # CSS overrides via :root / [data-theme="dark"] vars — required
+//	  static/effects/...  # optional JS / images / fonts bundled with the theme
 //
 // Built-in themes live as plain YAML/CSS files in the builtin/ subdirectory
 // (embedded into the binary via go:embed) and are extracted to data/themes/
@@ -17,6 +18,7 @@ package themes
 import (
 	"archive/zip"
 	"bytes"
+	"database/sql"
 	"embed"
 	"errors"
 	"fmt"
@@ -27,6 +29,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -38,13 +41,36 @@ var builtinFS embed.FS
 
 // Theme is the on-disk representation of a single theme.
 type Theme struct {
-	Name        string     `json:"name"`
-	Version     string     `json:"version,omitempty"`
-	Author      string     `json:"author,omitempty"`
-	Description string     `json:"description,omitempty"`
-	HasCSS      bool       `json:"has_css"`
-	Builtin     bool       `json:"builtin"`
-	UpdatedAt   *time.Time `json:"updated_at,omitempty"`
+	Name        string              `json:"name"`
+	Version     string              `json:"version,omitempty"`
+	Author      string              `json:"author,omitempty"`
+	Description string              `json:"description,omitempty"`
+	HasCSS      bool                `json:"has_css"`
+	Builtin     bool                `json:"builtin"`
+	UpdatedAt   *time.Time          `json:"updated_at,omitempty"`
+	// Settings is the SCHEMA declared in the theme's theme.yaml `settings:`
+	// block. Each entry describes one configurable knob (type / label /
+	// options / default). The schema is read at theme-load time; the EFFECTIVE
+	// values (admin overrides) live in the theme_settings DB table and are
+	// fetched separately by the API. Empty slice means the theme has no
+	// configurable settings.
+	Settings []SettingDefinition `json:"settings,omitempty"`
+}
+
+// SettingDefinition describes one configurable knob declared in a theme's
+// theme.yaml. The `default` value is whatever YAML parses — string for
+// `text`/`image`/`select` keys, int for `range` (we coerce to float64 in
+// the admin UI to handle Step values that don't divide evenly).
+type SettingDefinition struct {
+	Key     string   `json:"key"               yaml:"key"`
+	Type    string   `json:"type"              yaml:"type"` // select | range | text | image
+	Label   string   `json:"label"             yaml:"label"`
+	Options []string `json:"options,omitempty" yaml:"options,omitempty"`
+	Min     *int     `json:"min,omitempty"     yaml:"min,omitempty"`
+	Max     *int     `json:"max,omitempty"     yaml:"max,omitempty"`
+	Step    *int     `json:"step,omitempty"    yaml:"step,omitempty"`
+	Default any      `json:"default,omitempty" yaml:"default,omitempty"`
+	Hint    string   `json:"hint,omitempty"    yaml:"hint,omitempty"`
 }
 
 var themeNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
@@ -293,10 +319,11 @@ func InstallFromZip(dataDir string, zipBytes []byte) (*Theme, error) {
 	}
 
 	var meta struct {
-		Name        string `yaml:"name"`
-		Version     string `yaml:"version"`
-		Author      string `yaml:"author"`
-		Description string `yaml:"description"`
+		Name        string              `yaml:"name"`
+		Version     string              `yaml:"version"`
+		Author      string              `yaml:"author"`
+		Description string              `yaml:"description"`
+		Settings    []SettingDefinition `yaml:"settings"`
 	}
 	if err := yaml.Unmarshal(yamlContent, &meta); err != nil {
 		return nil, fmt.Errorf("parse theme.yaml: %w", err)
@@ -450,10 +477,11 @@ func readTheme(dir string) (Theme, error) {
 		return Theme{}, fmt.Errorf("read theme.yaml: %w", err)
 	}
 	var meta struct {
-		Name        string `yaml:"name"`
-		Version     string `yaml:"version"`
-		Author      string `yaml:"author"`
-		Description string `yaml:"description"`
+		Name        string              `yaml:"name"`
+		Version     string              `yaml:"version"`
+		Author      string              `yaml:"author"`
+		Description string              `yaml:"description"`
+		Settings    []SettingDefinition `yaml:"settings"`
 	}
 	if err := yaml.Unmarshal(raw, &meta); err != nil {
 		return Theme{}, fmt.Errorf("parse theme.yaml: %w", err)
@@ -477,6 +505,7 @@ func readTheme(dir string) (Theme, error) {
 		Author:      meta.Author,
 		Description: meta.Description,
 		HasCSS:      hasCSS,
+		Settings:    meta.Settings,
 		UpdatedAt:   &updatedAt,
 	}, nil
 }
@@ -577,4 +606,142 @@ func EnsureBuiltins(dataDir string) error {
 // Deprecated: Use EnsureBuiltins instead.
 func EnsureDefault(dataDir string) error {
 	return EnsureBuiltins(dataDir)
+}
+
+// ── Per-theme settings store (P10) ────────────────────────────────────
+//
+// A theme's theme.yaml `settings:` block declares a SCHEMA — each entry
+// has a key, type (select | range | text | image), label, options/range
+// bounds, and a default value. The schema is read at theme-load time and
+// shipped to the admin UI so it can render matching form controls.
+//
+// The EFFECTIVE values — what the admin actually picked, overriding the
+// schema default — live in the `theme_settings` table. The admin's choice
+// takes precedence over the schema default; if no row exists the schema
+// default is used.
+//
+// This split lets theme authors evolve the schema (add a new knob, widen
+// a range) without losing existing admin overrides: we just key by
+// (theme_name, key) and keep the stored value as-is across upgrades.
+
+// GetSettingsValues reads all stored (theme_name, key) -> value rows for
+// the given theme. Missing rows are simply absent from the returned map —
+// callers fall back to the schema default. An empty map + nil error
+// means "no overrides set" (totally valid; the admin hasn't customised
+// the theme yet).
+func GetSettingsValues(db *sql.DB, themeName string) (map[string]string, error) {
+	if !ValidateName(themeName) {
+		return nil, fmt.Errorf("invalid theme name: %q", themeName)
+	}
+	rows, err := db.Query(
+		"SELECT `key`, value FROM theme_settings WHERE theme_name = ?",
+		themeName,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("theme_settings select: %w", err)
+	}
+	defer rows.Close()
+	out := make(map[string]string)
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			return nil, fmt.Errorf("theme_settings scan: %w", err)
+		}
+		out[k] = v
+	}
+	return out, rows.Err()
+}
+
+// SetSettingsValues upserts the given values for a theme. Keys absent
+// from the schema are rejected; keys present in the schema but missing
+// from `values` are NOT deleted (the admin might just not have touched
+// them — the row stays, the schema default is irrelevant for that key).
+//
+// Returns the list of keys that were rejected (with a reason) so the API
+// handler can return a useful 400 response.
+func SetSettingsValues(db *sql.DB, themeName string, schema []SettingDefinition, values map[string]string) ([]string, error) {
+	if !ValidateName(themeName) {
+		return nil, fmt.Errorf("invalid theme name: %q", themeName)
+	}
+	// Build a schema lookup for fast validation.
+	type schEnt struct {
+		def SettingDefinition
+	}
+	byKey := make(map[string]schEnt, len(schema))
+	for _, s := range schema {
+		byKey[s.Key] = schEnt{def: s}
+	}
+	// First pass: validate every incoming value against its schema entry.
+	var rejects []string
+	cleaned := make(map[string]string, len(values))
+	for k, v := range values {
+		e, ok := byKey[k]
+		if !ok {
+			rejects = append(rejects, fmt.Sprintf("key %q is not declared in this theme's settings schema", k))
+			continue
+		}
+		if reason := validateSettingValue(e.def, v); reason != "" {
+			rejects = append(rejects, fmt.Sprintf("%s: %s", k, reason))
+			continue
+		}
+		cleaned[k] = v
+	}
+	if len(rejects) > 0 {
+		return rejects, fmt.Errorf("invalid setting values")
+	}
+	if len(cleaned) == 0 {
+		return nil, nil
+	}
+	// Second pass: upsert each cleaned value in its own statement.
+	// (theme_settings is small — at most a handful of rows per theme —
+	// so a single-row per insert is fine; the row count is bounded by
+	// the schema length which is essentially a constant.)
+	for k, v := range cleaned {
+		if _, err := db.Exec(
+			"INSERT INTO theme_settings (theme_name, `key`, value) VALUES (?, ?, ?) "+
+				"ON DUPLICATE KEY UPDATE value = VALUES(value)",
+			themeName, k, v,
+		); err != nil {
+			return rejects, fmt.Errorf("theme_settings upsert %s: %w", k, err)
+		}
+	}
+	return nil, nil
+}
+
+// validateSettingValue returns "" if v is acceptable for the schema entry,
+// or a short reason string if not. Caller is expected to surface the
+// reason in the API response.
+func validateSettingValue(s SettingDefinition, v string) string {
+	switch s.Type {
+	case "select":
+		for _, o := range s.Options {
+			if v == o {
+				return ""
+			}
+		}
+		return fmt.Sprintf("must be one of %v, got %q", s.Options, v)
+	case "range":
+		// Range values are ints (Step-bounded). We accept decimals in the
+		// YAML and round to int at the UI layer; here we parse as int.
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return fmt.Sprintf("must be an integer, got %q", v)
+		}
+		if s.Min != nil && n < *s.Min {
+			return fmt.Sprintf("must be >= %d, got %d", *s.Min, n)
+		}
+		if s.Max != nil && n > *s.Max {
+			return fmt.Sprintf("must be <= %d, got %d", *s.Max, n)
+		}
+		return ""
+	case "text", "image":
+		// Free-form strings. Cap length to keep one bad row from filling
+		// the TEXT column with megabytes of garbage.
+		if len(v) > 4096 {
+			return fmt.Sprintf("too long (%d bytes, max 4096)", len(v))
+		}
+		return ""
+	default:
+		return fmt.Sprintf("unknown setting type %q (theme schema bug)", s.Type)
+	}
 }
