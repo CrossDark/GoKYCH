@@ -332,17 +332,29 @@ button.btn-primary,
     box-shadow: 0 6px 20px rgba(129, 140, 248, 0.55);
 }
 
-/* modals + drawers — z: 1100 高于导航 */
+/* modals + drawers — z: 1100 高于导航
+ * 模态背景用更不透明的实色 (~0.78) 而不是 --bg-card-hover (0.55)。
+ * 原因: 在大片留白页面 (如 passkeys / empty state), 0.55 + 32px blur
+ * 模糊的全是背景色, 模态自身几乎透明, 文字读不清。 阻塞性 UI
+ * 必须保证可读, 0.78 仍然能透出渐变(有色相变化), 不丢失玻璃感。
+ */
 .admin-modal,
 .side-drawer,
 .admin-modal-content,
 .modal-content {
-    background: var(--bg-card-hover);
+    background: rgba(255, 255, 255, 0.78);
     backdrop-filter: blur(32px) saturate(180%);
     -webkit-backdrop-filter: blur(32px) saturate(180%);
     border: 1px solid var(--border);
     box-shadow: var(--shadow-lg);
     z-index: 1100;
+}
+
+[data-theme="dark"] .admin-modal,
+[data-theme="dark"] .side-drawer,
+[data-theme="dark"] .admin-modal-content,
+[data-theme="dark"] .modal-content {
+    background: rgba(20, 18, 50, 0.78);
 }
 
 /* article content — 阅读面板, 不完全玻璃化以保证长文可读 */
