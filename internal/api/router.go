@@ -72,6 +72,10 @@ func (s *Server) Setup(r *gin.Engine) {
 		apiG.GET("/home", s.getHome)
 		apiG.GET("/themes", s.listThemes)
 		apiG.GET("/themes/:name", s.getThemeCSS)
+		// Theme-bundled static assets (e.g. glass theme's particles.js).
+		// Restricted to <dataDir>/themes/<name>/static/* — see
+		// themes.ReadAsset for path-traversal guard.
+		apiG.GET("/themes/:name/assets/*filepath", s.getThemeAsset)
 		apiG.GET("/notifications", s.listNotifications)
 		apiG.GET("/articles", s.listArticles)
 		apiG.GET("/articles/:type/:slug", s.getArticle)

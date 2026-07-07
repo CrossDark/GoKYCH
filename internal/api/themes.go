@@ -50,6 +50,32 @@ func (s *Server) getThemeCSS(c *gin.Context) {
 	c.Data(http.StatusOK, "text/css; charset=utf-8", css)
 }
 
+// GET /api/themes/:name/assets/*filepath — serve any file under the theme's
+// static/ subdirectory (currently used by the glass theme for particles.js).
+// Path traversal is blocked in themes.ReadAsset; only whitelisted MIME types
+// are served (other extensions return 400 so an attacker can't repurpose
+// this endpoint to ship arbitrary content types).
+func (s *Server) getThemeAsset(c *gin.Context) {
+	name := c.Param("name")
+	rel := c.Param("filepath")
+	if !themes.ValidateName(name) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的主题名。"})
+		return
+	}
+	b, mime, err := themes.ReadAsset(s.DataDir, name, rel)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if b == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "资源不存在。"})
+		return
+	}
+	c.Header("Cache-Control", "public, max-age=3600, stale-while-revalidate=86400")
+	c.Header("X-Content-Type-Options", "nosniff")
+	c.Data(http.StatusOK, mime, b)
+}
+
 // ── Admin-only theme management (owner-only) ────────────────────────
 
 // GET /api/admin/themes — list themes with full metadata (admin panel).

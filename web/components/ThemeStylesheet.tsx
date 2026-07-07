@@ -1,11 +1,18 @@
 "use client";
 
+import { Fragment } from "react";
 import { useApp } from "./AppProviders";
 
 /**
  * ThemeStylesheet — loads /api/themes/<style_theme>.css into the document
  * so the active theme's :root variables override the built-in defaults
  * from globals.css.
+ *
+ * Also loads theme-bundled assets (currently only the glass theme ships a
+ * `static/effects/particles.js`; the file is fetched from
+ * /api/themes/<name>/assets/... which is restricted to the theme's
+ * static/ subdir on the backend). Themes that don't ship extra assets
+ * pay no extra cost — the <script> tag is omitted.
  *
  * Previously this fired two client-side fetches (getSite + listThemes) on
  * every mount. It now reads both from the <AppData> SSR context, so the
@@ -32,12 +39,32 @@ export function ThemeStylesheet() {
   if (!name || !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(name)) return null;
 
   const theme = themes.find((t) => t.name === name);
-  let url = `/api/themes/${encodeURIComponent(name)}`;
-  if (theme?.updated_at) {
-    const timestamp = new Date(theme.updated_at).getTime();
-    if (!isNaN(timestamp)) {
-      url += `?v=${timestamp}`;
-    }
+  const cacheBust = theme?.updated_at
+    ? `?v=${new Date(theme.updated_at).getTime()}`
+    : "";
+  const cssUrl = `/api/themes/${encodeURIComponent(name)}${cacheBust}`;
+
+  // Theme-bundled JS assets. Add new entries here as more themes ship
+  // their own scripts. Particles script is `defer` so it runs after CSS
+  // is applied and after the body is parsed — it needs the body element
+  // and the CSS variable to be live.
+  const assets: { src: string; type: string }[] = [];
+  if (name === "glass") {
+    assets.push({ src: `/api/themes/glass/assets/effects/particles.js${cacheBust}`, type: "module-shim" });
   }
-  return <link rel="stylesheet" href={url} data-theme-stylesheet="active" />;
+
+  return (
+    <Fragment>
+      <link rel="stylesheet" href={cssUrl} data-theme-stylesheet="active" />
+      {assets.map((a) => (
+        <script
+          key={a.src}
+          defer
+          src={a.src}
+          data-theme-asset={name}
+        />
+      ))}
+    </Fragment>
+  );
 }
+

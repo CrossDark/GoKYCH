@@ -118,6 +118,91 @@ func ReadCSS(dataDir, name string) ([]byte, error) {
 	return b, nil
 }
 
+// ReadAsset returns the bytes of any file inside the theme's static/
+// subdirectory plus its MIME type (whitelisted by extension). Path
+// traversal is rejected by checking that the cleaned path stays inside
+// the theme's static/ directory. Returns (nil, "", nil) if the file
+// doesn't exist.
+//
+// The route is mounted at /api/themes/<name>/assets/*filepath — gin's
+// *filepath wildcard captures the segment after "assets/" (no leading
+// slash), so we manually prepend "static/" to map it onto the on-disk
+// layout (<theme-dir>/static/<wildcard>).
+//
+// Used by the glass theme's particles.js, and designed to be reusable
+// for any future theme that ships its own JS / images / fonts.
+func ReadAsset(dataDir, name, relPath string) ([]byte, string, error) {
+	if !ValidateName(name) {
+		return nil, "", fmt.Errorf("invalid theme name: %q", name)
+	}
+	cleaned := strings.TrimPrefix(relPath, "/")
+	if cleaned == "" || strings.HasPrefix(cleaned, ".") || strings.Contains(cleaned, "..") {
+		return nil, "", fmt.Errorf("invalid asset path: %q", relPath)
+	}
+	// Treat the wildcard as a path under static/.
+	fsRel := "static/" + cleaned
+	ext := strings.ToLower(filepath.Ext(fsRel))
+	mime := mimeByExt(ext)
+	if mime == "" {
+		return nil, "", fmt.Errorf("unsupported asset type: %s", ext)
+	}
+	// Resolve the final FS path and verify it stays inside the theme dir.
+	themeDir := filepath.Join(themesDir(dataDir), name)
+	absBase, _ := filepath.Abs(themeDir)
+	target := filepath.Join(themeDir, filepath.FromSlash(fsRel))
+	absPath, err := filepath.Abs(target)
+	if err != nil || !strings.HasPrefix(absPath, absBase+string(os.PathSeparator)) {
+		return nil, "", fmt.Errorf("asset path escapes theme dir")
+	}
+	b, err := os.ReadFile(target)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, "", nil
+		}
+		return nil, "", fmt.Errorf("themes.ReadAsset %s: %w", target, err)
+	}
+	return b, mime, nil
+}
+
+// mimeByExt maps file extensions to a small set of whitelisted MIME types
+// for theme-bundled static assets. Returning "" causes ReadAsset to error,
+// which prevents arbitrary file types from being served through the
+// /api/themes/:name/assets/ endpoint.
+func mimeByExt(ext string) string {
+	switch ext {
+	case ".js", ".mjs":
+		return "application/javascript; charset=utf-8"
+	case ".css":
+		return "text/css; charset=utf-8"
+	case ".json":
+		return "application/json; charset=utf-8"
+	case ".svg":
+		return "image/svg+xml; charset=utf-8"
+	case ".png":
+		return "image/png"
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".gif":
+		return "image/gif"
+	case ".webp":
+		return "image/webp"
+	case ".ico":
+		return "image/x-icon"
+	case ".woff":
+		return "font/woff"
+	case ".woff2":
+		return "font/woff2"
+	case ".ttf":
+		return "font/ttf"
+	case ".otf":
+		return "font/otf"
+	case ".txt":
+		return "text/plain; charset=utf-8"
+	default:
+		return ""
+	}
+}
+
 // Delete removes a user-uploaded theme directory. Returns an error if the
 // theme is built-in, doesn't exist, or the name is invalid.
 func Delete(dataDir, name string) error {

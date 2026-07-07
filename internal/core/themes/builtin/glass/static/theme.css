@@ -1,43 +1,34 @@
-/* Glass — built-in glassmorphism theme.
+/* Glass v2 — 透明玻璃主题
+ * ────────────────────────────────────────────────────────────────
+ * 分层(z 从下到上):
  *
- * Unlike the other built-ins (sunset/paper/ocean/midnight/forest) which only
- * swap a handful of colour variables, glass actually re-skins the layout:
- *   - body gets a multi-stop gradient background with floating colour blobs
- *     (the "thing behind the glass" — without this the blur is invisible)
- *   - .bg-card / cards / side-drawer / modal / table rows all get
- *     backdrop-filter + translucent fill + soft coloured shadow
- *   - border-radius bumps up so cards feel "floating", not "stuck on"
- *   - header stays sticky-blur (it already was) but the tint is more
- *     translucent so the gradient bleeds through
+ *   Layer 0  body                z: -1  渐变背景 / 用户背景图
+ *   Layer 1  #glass-fx-layer     z:  0  透明玻璃隔离层 (Canvas 在这)
+ *   Layer 3  .bg-card/.card/...  z:  5  彩色玻璃卡片 — 浮在 fx 上
+ *   Layer 2  header/.site-header z: 20  顶部毛玻璃导航 — 浮在卡片之上
  *
- * Two variants — light (pastel aurora) and dark (cosmic indigo). Same
- * structural rules, different palette.
- *
- * Why extra selectors instead of just variables: variables control single
- * values; glass needs to *layer* background-image on top of background-color
- * and add backdrop-filter to elements that don't currently have it. Doing
- * that purely with var() would require us to invent three new variables
- * (--bg-image / --card-blur / --card-border) and wire them into every
- * selector in globals.css. Adding rules here keeps the theme self-contained
- * — drop it in data/themes/glass/ and it works.
+ * 关键设计:
+ *   - 默认效果 none — Canvas 不实例化, 零开销
+ *   - Canvas 走 transform 动画, 不用 filter: blur (避免重绘炸)
+ *   - 卡片用 backdrop-filter blur 身后的所有东西 (背景 + fx + 卡片自身)
+ *   - 导航 z:20 高于卡片 z:5, 高于 fx z:0
+ *   - prefers-reduced-motion / 低端机 / 移动端: 自动降级
+ *   - 后台 --glass-bg-image CSS 变量提供背景图切换 (P10 后台配置)
  */
 
 :root {
-    /* Light: pastel aurora. 3-stop diagonal so the gradient bleeds
-     * from the warm corner to the cool corner. */
+    /* Light 极光 — 透明基底, 让背景图透出来 */
     --bg: #e0c3fc;
-    --bg-card: rgba(255, 255, 255, 0.45);
-    --bg-card-hover: rgba(255, 255, 255, 0.6);
+    --bg-card: rgba(255, 255, 255, 0.42);
+    --bg-card-hover: rgba(255, 255, 255, 0.55);
     --text: rgba(30, 25, 60, 0.92);
     --text-secondary: rgba(50, 40, 90, 0.78);
     --text-muted: rgba(80, 70, 120, 0.55);
-    --border: rgba(255, 255, 255, 0.55);
-    --border-soft: rgba(255, 255, 255, 0.35);
+    --border: rgba(255, 255, 255, 0.5);
+    --border-soft: rgba(255, 255, 255, 0.3);
     --accent: #6366f1;
     --accent-hover: #4f46e5;
     --code-bg: rgba(255, 255, 255, 0.5);
-    /* Floating shadow with a hint of indigo — plain black would fight
-     * the pastel palette. Larger + softer than sunset's shadow. */
     --shadow: 0 4px 16px rgba(99, 102, 241, 0.10), 0 1px 2px rgba(99, 102, 241, 0.06);
     --shadow-md: 0 12px 40px rgba(99, 102, 241, 0.18), 0 2px 6px rgba(99, 102, 241, 0.08);
     --shadow-lg: 0 24px 60px rgba(99, 102, 241, 0.22), 0 4px 12px rgba(99, 102, 241, 0.10);
@@ -45,21 +36,14 @@
     --radius-sm: 10px;
     --max-width: 720px;
     --header-bg: rgba(255, 255, 255, 0.32);
-    /* Glass surface tints — used by sub-elements that need a slight
-     * colour lift without going full opaque (table stripes, code blocks,
-     * notice panels). Slightly translucent white so the gradient bleeds
-     * through but the content stays readable. */
     --glass-tint: rgba(255, 255, 255, 0.32);
     --glass-tint-strong: rgba(255, 255, 255, 0.6);
-    /* Blur strength — bigger blur reads more "frosted". 24px is the
-     * sweet spot on a mid-DPI laptop; anything past 40 stops feeling
-     * useful and starts costing paint time. */
     --glass-blur: 24px;
-    /* Admin WordPress-style vars (--wp-*) — overridden for glass so the
-     * admin left sidebar stops being a flat dark slab and the admin main
-     * area becomes transparent so the body gradient shows through. Note
-     * that .wp-admin-wrap re-declares these locally in globals.css, so
-     * we override them on the same selector below to actually win. */
+    /* 透明隔离层自身底色 — 留作雨滴/阳光之上的微弱磨砂。透明意味着
+     * 默认状态下 Layer 1 几乎不可见, fx 模式下由 Canvas 提供视觉。 */
+    --glass-isolation: rgba(255, 255, 255, 0.06);
+    /* 用户背景图(URL) — P10 后台配置。本轮不动, 留作接口 */
+    --glass-bg-image: none;
     --admin-primary: #6366f1;
     --admin-primary-hover: #4f46e5;
     --admin-primary-soft: rgba(99, 102, 241, 0.12);
@@ -71,9 +55,6 @@
 }
 
 [data-theme="dark"] {
-    /* Dark: deep cosmic indigo. Radial + linear blended so the top-left
-     * has a hot violet glow that fades into midnight at the bottom-right.
-     * The hot spot draws the eye to where the page title usually is. */
     --bg: #0f0c29;
     --bg-card: rgba(40, 35, 80, 0.42);
     --bg-card-hover: rgba(50, 45, 100, 0.55);
@@ -92,9 +73,8 @@
     --glass-tint: rgba(255, 255, 255, 0.06);
     --glass-tint-strong: rgba(255, 255, 255, 0.12);
     --glass-blur: 24px;
-    /* Admin WordPress-style vars (--wp-*) — overridden for glass so
-     * the admin left sidebar stops being a flat dark slab and the
-     * admin main area gets a frosted layer over the body gradient. */
+    --glass-isolation: rgba(15, 12, 41, 0.18);
+    --glass-bg-image: none;
     --wp-sidebar-bg: rgba(15, 12, 41, 0.55);
     --wp-sidebar-hover: rgba(99, 102, 241, 0.18);
     --wp-sidebar-active: rgba(99, 102, 241, 0.28);
@@ -119,10 +99,8 @@
     --admin-stripe: rgba(255, 255, 255, 0.04);
 }
 
-/* The admin shell (.wp-admin-wrap) re-declares every --wp-* variable
- * with hardcoded values inside its own selector, so :root overrides
- * above lose to that local scope. Override at the same selector so we
- * actually win, in both colour schemes. */
+/* .wp-admin-wrap re-declares --wp-* locally in globals.css, so we
+ * override on the same selector to actually win. */
 .wp-admin-wrap {
     --wp-sidebar-bg: rgba(255, 255, 255, 0.35);
     --wp-sidebar-hover: rgba(99, 102, 241, 0.12);
@@ -157,57 +135,99 @@
     --wp-table-stripe: rgba(255, 255, 255, 0.04);
 }
 
-/* ── Body backdrop — the "thing behind the glass" ─────────────────
- * The CSS variables above set --bg as a single colour for fallback
- * (background-color: var(--bg) on body still works on browsers that
- * ignore the gradient), but we override the background shorthand so
- * we can layer a multi-stop gradient + 3 floating blurred colour blobs.
- * The blobs use a 28s loop so the page never feels static, but the
- * speed is low enough that reading isn't disturbed.
- *
- * prefers-reduced-motion: disable the blob animation so users who've
- * asked for less motion get a still gradient.
+/* ── Layer 0: 背景 (渐变 / 用户背景图) ─────────────────
+ * background-image 多层堆叠: 用户图在最上层(若有), 渐变在最下层。
+ * background-attachment: fixed 让背景不跟 body 滚, 节省 paint。
  */
 body {
-    background:
+    background-color: var(--bg);
+    background-image:
+        var(--glass-bg-image),
         radial-gradient(at 18% 22%, rgba(255, 200, 230, 0.55) 0px, transparent 50%),
         radial-gradient(at 82% 18%, rgba(180, 220, 255, 0.5) 0px, transparent 50%),
         radial-gradient(at 50% 90%, rgba(200, 180, 255, 0.45) 0px, transparent 55%),
         linear-gradient(135deg, #fbc2eb 0%, #a6c1ee 50%, #c2e9fb 100%);
     background-attachment: fixed;
+    background-size: cover;
     min-height: 100vh;
+    position: relative;
 }
 
 [data-theme="dark"] body {
-    background:
+    background-image:
+        var(--glass-bg-image),
         radial-gradient(at 18% 22%, rgba(120, 80, 200, 0.45) 0px, transparent 50%),
         radial-gradient(at 82% 18%, rgba(60, 100, 180, 0.35) 0px, transparent 50%),
         radial-gradient(at 50% 90%, rgba(200, 100, 220, 0.3) 0px, transparent 55%),
         linear-gradient(135deg, #1e1b4b 0%, #302b63 50%, #0f0c29 100%);
-    background-attachment: fixed;
-    min-height: 100vh;
 }
 
 @media (prefers-reduced-motion: reduce) {
     body { animation: none !important; }
 }
 
-/* ── Glass cards ──────────────────────────────────────────────────
- * Replaces the flat "card with solid bg" pattern with frosted glass:
- *   - backdrop-filter blurs whatever the gradient shows behind it
- *   - subtle white border to define the card edge against the bg
- *   - coloured shadow for a "floating" feel (sunset's grey shadows
- *     look dead against pastel)
+/* ── Layer 1: 透明玻璃隔离层 (Canvas 在这里) ─────────────
+ *   - position: fixed 固定到 viewport, 不跟 body 滚
+ *   - 半透实色 (不 blur 自己, 性能 + 清晰度)
+ *   - pointer-events: none, 鼠标穿透
+ *   - z-index: 0 — 卡片(z:5) 和导航(z:20) 都盖在它上面
  *
- * Targeting the common class names + the data-card pattern that
- * globals.css uses. We avoid touching the very-specific .admin-* /
- * .wp-* selectors so admin panels still use their built-in colour
- * variables (admin-primary etc.) and only inherit the glass radius
- * + shadow.
+ * 这个 div 由 particles.js 自动插入, 主题 CSS 提前定义好样式。
  */
+#glass-fx-layer {
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    background: var(--glass-isolation);
+    pointer-events: none;
+    overflow: hidden;
+}
+
+#glass-fx-layer > canvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    display: block;
+}
+
+/* ── Layer 2: 顶部毛玻璃导航 (z:20, 浮在卡片之上) ────────
+ *  - 强制 z-index: 20 覆盖 globals.css 的 400 — 等等, 实际 globals.css
+ *    是 400, 我们这里不强制覆盖全局 z, 只确保 z:20 是"相对值"(卡片
+ *    z:5 在它下面, fx z:0 更下面)。globals.css 的 400 让导航高于
+ *    modal z:1100 — 不对, modal 是 1100 > 400 — 实际 modal 在导航上。
+ *    所以 globals.css 的 400 OK, 我们主题里不需要改。
+ *  - 但玻璃卡片 z:5 必须明确, 否则会被导航 z:400 盖掉 — 这就是上面
+ *    Layer 3 段的作用。
+ */
+header, .site-header {
+    background: var(--header-bg);
+    backdrop-filter: blur(20px) saturate(180%);
+    -webkit-backdrop-filter: blur(20px) saturate(180%);
+    border-bottom: 1px solid var(--border-soft);
+    box-shadow: 0 4px 30px rgba(99, 102, 241, 0.08);
+    position: sticky;
+    top: 0;
+}
+
+[data-theme="dark"] header,
+[data-theme="dark"] .site-header {
+    box-shadow: 0 4px 30px rgba(0, 0, 0, 0.4);
+}
+
+/* ── Layer 3: 彩色玻璃卡片 (z:5, 在导航下面) ─────────────
+ * 关键: position: relative + z-index: 5 创建一个 stacking context,
+ * 让导航(z:400) 浮在它之上, fx 层(z:0) 浮在它之下。
+ * 卡片背景自身就是 backdrop-filter: blur 身后的所有东西 — 背景渐变
+ * + fx Canvas + 隔离层都会被 blur 出毛玻璃质感。
+ */
+.glass-card,
 .bg-card,
 .card,
 [class*="card"] {
+    position: relative;
+    z-index: 5;
     background: var(--bg-card);
     backdrop-filter: blur(var(--glass-blur));
     -webkit-backdrop-filter: blur(var(--glass-blur));
@@ -215,14 +235,17 @@ body {
     box-shadow: var(--shadow-md);
 }
 
+.glass-card:hover,
 .bg-card:hover,
 .card:hover {
     background: var(--bg-card-hover);
     box-shadow: var(--shadow-lg);
 }
 
-/* Tables — frosted rows on a translucent header */
+/* tables — 表头 z:6 (略高于卡片 body) 让 sticky header 浮于行 */
 table thead {
+    position: relative;
+    z-index: 6;
     background: var(--glass-tint-strong);
     backdrop-filter: blur(12px);
     -webkit-backdrop-filter: blur(12px);
@@ -236,8 +259,7 @@ table tbody tr:hover {
     background: var(--glass-tint);
 }
 
-/* Inputs / textareas / selects — frosted so they blend instead of
- * punching a flat white hole through the gradient. */
+/* inputs / textareas / selects */
 input[type="text"],
 input[type="email"],
 input[type="password"],
@@ -267,7 +289,7 @@ select:focus {
     box-shadow: 0 0 0 3px rgba(165, 180, 252, 0.22);
 }
 
-/* Code blocks — translucent dark panel, like ink on glass */
+/* code blocks */
 code, pre, pre code, .code-block {
     background: var(--code-bg);
     backdrop-filter: blur(8px);
@@ -275,26 +297,12 @@ code, pre, pre code, .code-block {
     border: 1px solid var(--border-soft);
 }
 
-/* Header already has backdrop-filter (12px) in globals.css — make the
- * tint more translucent here so the gradient bleeds through. The
- * specificity is fine because :root overrides globals.css and theme
- * CSS is loaded after globals.css.
- */
-header, .site-header {
-    background: var(--header-bg);
-    backdrop-filter: blur(20px) saturate(180%);
-    -webkit-backdrop-filter: blur(20px) saturate(180%);
-    border-bottom: 1px solid var(--border-soft);
-    box-shadow: 0 4px 30px rgba(99, 102, 241, 0.08);
+pre code {
+    background: transparent;
+    border: none;
 }
 
-[data-theme="dark"] header,
-[data-theme="dark"] .site-header {
-    box-shadow: 0 4px 30px rgba(0, 0, 0, 0.4);
-}
-
-/* Buttons — give primary a gradient fill (the only place we lean on
- * gradient for foreground content), secondary keeps the glass look. */
+/* buttons — primary 用渐变, secondary 保留玻璃 */
 .btn-primary,
 button.btn-primary,
 .admin-btn-primary {
@@ -324,9 +332,7 @@ button.btn-primary,
     box-shadow: 0 6px 20px rgba(129, 140, 248, 0.55);
 }
 
-/* Modals + drawers — heavier glass with stronger blur, since these
- * float above other content. The existing .admin-modal / .side-drawer
- * rules in globals.css keep their geometry; we just reskin the fill. */
+/* modals + drawers — z: 1100 高于导航 */
 .admin-modal,
 .side-drawer,
 .admin-modal-content,
@@ -336,12 +342,10 @@ button.btn-primary,
     -webkit-backdrop-filter: blur(32px) saturate(180%);
     border: 1px solid var(--border);
     box-shadow: var(--shadow-lg);
+    z-index: 1100;
 }
 
-/* Article-content — keep reading surface legible. We DON'T fully glass
- * the article body because long-form text on a translucent panel gets
- * tiring; instead, add a subtle frosted frame so it still feels like
- * part of the layout, with a near-opaque centre. */
+/* article content — 阅读面板, 不完全玻璃化以保证长文可读 */
 .article-content,
 .markdown-body,
 .wikidot-body {
@@ -353,44 +357,17 @@ button.btn-primary,
     padding: 1.5rem;
 }
 
-/* Notice / alert panels — keep their semantic colours but translucent */
 .admin-notice {
     backdrop-filter: blur(8px);
     -webkit-backdrop-filter: blur(8px);
 }
 
-/* Side-drawer (revision history etc.) — match the modal pattern */
-.side-drawer {
-    background: var(--bg-card-hover);
-    backdrop-filter: blur(32px) saturate(180%);
-    -webkit-backdrop-filter: blur(32px) saturate(180%);
-}
-
-/* Footer (if present) — keep it on the gradient, no fill */
 footer, .site-footer {
     background: transparent;
     border-top: 1px solid var(--border-soft);
 }
 
-/* Code block inside pre — inherits the dark glass panel */
-pre code {
-    background: transparent;
-    border: none;
-}
-
-/* ── Admin area — left sidebar + main content ───────────────────────
- * The admin shell has its own layout (left rail + content panel).
- * The variables above cover most of the colours; this block covers
- * the geometry that isn't variable-driven:
- *   - sidebar gets backdrop-filter so it feels like a frosted pane
- *     sliding over the gradient
- *   - the main content area is transparent (set via --wp-bg above) so
- *     the body's gradient shows through behind the cards
- *   - .admin-card gets the glass treatment
- *
- * Specificity is fine because these selectors win over the .wp-* /
- * .admin-* rules in globals.css (theme.css is loaded after).
- */
+/* ── Admin area ─────────────────────────────────────────── */
 .wp-admin-sidebar {
     backdrop-filter: blur(28px) saturate(180%);
     -webkit-backdrop-filter: blur(28px) saturate(180%);
@@ -402,14 +379,6 @@ pre code {
     background: transparent;
 }
 
-/* Admin topbar (breadcrumb bar at the top of every /admin/* page) —
- * frosted glass so it floats over the gradient instead of being a
- * solid slab. The brand strip on the sidebar (`.wp-admin-brand`) and
- * sidebar footer keep their solid background (var(--wp-sidebar-card))
- * so the navigation still reads as "anchored controls" rather than
- * floating on the gradient — only the chrome bar around the main
- * content gets the see-through treatment.
- */
 .wp-admin-topbar,
 .admin-topbar {
     background: var(--glass-tint-strong);
@@ -431,14 +400,12 @@ pre code {
     border-bottom: 1px solid var(--border-soft);
 }
 
-/* Admin user-avatar circle — match the gradient brand */
 .admin-user-avatar,
 .site-logo-fallback,
 .wp-admin-brand-icon-fallback {
     background: linear-gradient(135deg, #6366f1, #a78bfa) !important;
 }
 
-/* Table head in admin lists */
 .admin-table thead {
     background: var(--glass-tint-strong);
     backdrop-filter: blur(12px);
@@ -449,10 +416,43 @@ pre code {
     background: var(--glass-tint);
 }
 
-/* Empty-state cards (no articles, no users, etc.) */
 .admin-empty {
     background: var(--bg-card);
     backdrop-filter: blur(var(--glass-blur));
     -webkit-backdrop-filter: blur(var(--glass-blur));
     border-radius: var(--radius);
+}
+
+/* ── 性能与降级 ─────────────────────────────────────
+ * 1. prefers-reduced-motion: 用户主动要少动效 — 直接隐藏 fx 层
+ * 2. 不支持 backdrop-filter 的浏览器: 退化为实色半透
+ */
+@media (prefers-reduced-motion: reduce) {
+    #glass-fx-layer { display: none; }
+}
+
+@supports not (backdrop-filter: blur(1px)) {
+    .bg-card, .card, .admin-card {
+        background: rgba(255, 255, 255, 0.85);
+    }
+    [data-theme="dark"] .bg-card,
+    [data-theme="dark"] .card,
+    [data-theme="dark"] .admin-card {
+        background: rgba(20, 18, 50, 0.85);
+    }
+    header, .site-header {
+        background: rgba(255, 255, 255, 0.95);
+    }
+    [data-theme="dark"] header,
+    [data-theme="dark"] .site-header {
+        background: rgba(15, 12, 41, 0.95);
+    }
+    .article-content, .markdown-body, .wikidot-body {
+        background: rgba(255, 255, 255, 0.92);
+    }
+    [data-theme="dark"] .article-content,
+    [data-theme="dark"] .markdown-body,
+    [data-theme="dark"] .wikidot-body {
+        background: rgba(20, 18, 50, 0.92);
+    }
 }
