@@ -133,7 +133,6 @@
             // to the admin's choice. The two-step avoids a flash of rain
             // when the saved mode is none.
             this._loadConfig().then(() => {
-                this._applyStoredBgImage();
                 if (this._mode !== 'none') this.setMode(this._mode);
             });
         }
@@ -167,14 +166,26 @@
                     ? parseInt(values.particle_density, 10)
                     : (typeof def('particle_density') === 'number' ? def('particle_density') : NaN);
                 if (!isNaN(densityVal)) this._density = Math.max(0, Math.min(100, densityVal));
-                // background_image — only apply if the ADMIN set it; user
-                // per-visitor override still wins (it goes through
-                // setBackgroundImage which writes its own localStorage
-                // key). We don't touch it here so the user's per-visitor
-                // choice survives an admin update.
+                // background_image — server WINS. We write the CSS
+                // variable so body { background-image: var(--glass-bg-image), ... }
+                // picks it up. This is what was missing before: the
+                // admin's background_image value was being persisted to
+                // theme_settings but never applied to --glass-bg-image,
+                // so the admin's upload looked like a no-op.
+                const bgVal = values.background_image != null
+                    ? String(values.background_image)
+                    : (def('background_image') != null ? String(def('background_image')) : '');
+                if (bgVal && bgVal.length > 0) {
+                    this.setBackgroundImage(bgVal);
+                } else {
+                    // admin cleared their background — fall back to any
+                    // per-visitor localStorage pick (offline / dev only)
+                    this._applyStoredBgImage();
+                }
                 return;
             } catch (e) {
-                // network/CORS/etc — fall back to localStorage.
+                // network/CORS/etc — fall back to localStorage entirely
+                this._applyStoredBgImage();
             }
             // localStorage fallback
             const m = localStorage.getItem(STORAGE_KEYS.mode);
@@ -277,26 +288,98 @@
                 y: Math.random() * this._h,
                 speed: 220 + Math.random() * 280,
                 drift: (Math.random() - 0.5) * 35,
+                // slideDrift is the per-particle extra horizontal push
+                // applied once it hits the glass surface — gives the
+                // "droplets race down the window" feel. Signed so half
+                // slide left, half right.
+                slideDrift: 50 + Math.random() * 60,
                 size: 0.55 + Math.random() * 0.8,
                 alpha: 0.25 + Math.random() * 0.55,
+                // 'falling' → vertical raindrop at full alpha.
+                // 'sliding' → once y crosses 70% of canvas height, the
+                // drop "hits" the transparent glass and runs sideways
+                // while alpha fades. When alpha drops below 0.05 the
+                // drop is respawned at the top — no puddling at the
+                // bottom, just droplets streaking off the page.
+                phase: 'falling',
             };
         }
 
         _drawRain(dt) {
             const sprite = this._sprites.rain;
             const sw = sprite.width, sh = sprite.height;
+            // The "glass surface" line — once a drop's y crosses this
+            // it switches to sliding. 0.72 of canvas height (a bit
+            // before the very bottom) gives a visible ~28% strip where
+            // you can watch drops run down and fade.
+            const slideLine = this._h * 0.72;
+            const slideSpan = this._h - slideLine;
             for (let i = 0; i < this._particles.length; i++) {
                 const p = this._particles[i];
-                p.y += p.speed * dt;
-                p.x += p.drift * dt;
-                if (p.y > this._h + sh) {
-                    p.y = -sh;
-                    p.x = Math.random() * this._w;
+                if (p.phase === 'falling') {
+                    p.y += p.speed * dt;
+                    p.x += p.drift * dt;
+                    if (p.y >= slideLine) {
+                        p.phase = 'sliding';
+                        // Pin y to the slide line so the drop settles
+                        // against the glass surface visually.
+                        p.y = slideLine + Math.random() * 4;
+                    }
+                } else {
+                    // sliding: nearly no vertical motion, big
+                    // horizontal drift, alpha fades to 0 over the
+                    // remaining height. Direction of slideDrift is
+                    // baked in at spawn time (positive or zero → slide
+                    // right, negative → left) so adjacent drops streak
+                    // in different directions and the page doesn't
+                    // look like a one-way conveyor.
+                    p.x += p.slideDrift * dt;
+                    p.y += p.speed * 0.04 * dt;
+                    const progress = Math.min(1, Math.max(0, (p.y - slideLine) / Math.max(1, slideSpan)));
+                    p.alpha = Math.max(0, 0.55 * (1 - progress));
                 }
-                if (p.x < -sw) p.x = this._w + sw;
-                if (p.x > this._w + sw) p.x = -sw;
-                this._ctx.globalAlpha = p.alpha;
-                this._ctx.drawImage(sprite, p.x - sw * p.size / 2, p.y - sh * p.size / 2, sw * p.size, sh * p.size);
+                // Wrap horizontally during falling phase so drops
+                // near the edge don't disappear prematurely.
+                if (p.phase === 'falling') {
+                    if (p.x < -sw) p.x = this._w + sw;
+                    if (p.x > this._w + sw) p.x = -sw;
+                }
+                // Respawn when faded out (sliding) or off-screen
+                // (falling). Each drop has its own lifetime — at peak
+                // density the bottom 28% of the page is a continuous
+                // stream of fading streaks, not a static pool.
+                if (p.alpha <= 0.05 || p.y > this._h + sh) {
+                    p.x = Math.random() * this._w;
+                    p.y = -sh;
+                    p.speed = 220 + Math.random() * 280;
+                    p.drift = (Math.random() - 0.5) * 35;
+                    p.slideDrift = 50 + Math.random() * 60;
+                    p.size = 0.55 + Math.random() * 0.8;
+                    p.alpha = 0.25 + Math.random() * 0.55;
+                    p.phase = 'falling';
+                    continue;
+                }
+                // Render. For sliding drops, rotate ~50° so the
+                // vertical sprite reads as a streak running sideways
+                // along the glass. The rotation is local to each
+                // drawImage via save/translate/rotate/restore.
+                if (p.phase === 'sliding') {
+                    this._ctx.save();
+                    this._ctx.translate(p.x, p.y);
+                    this._ctx.rotate(Math.PI * 0.28); // ~50° tilt
+                    this._ctx.globalAlpha = p.alpha;
+                    this._ctx.drawImage(sprite,
+                        -sw * p.size / 2,
+                        -sh * p.size / 2,
+                        sw * p.size, sh * p.size);
+                    this._ctx.restore();
+                } else {
+                    this._ctx.globalAlpha = p.alpha;
+                    this._ctx.drawImage(sprite,
+                        p.x - sw * p.size / 2,
+                        p.y - sh * p.size / 2,
+                        sw * p.size, sh * p.size);
+                }
             }
             this._ctx.globalAlpha = 1;
         }

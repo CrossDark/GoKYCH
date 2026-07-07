@@ -55,7 +55,22 @@ export function ThemeSettingsModal({
   const [server, setServer] = useState<Record<string, string>>({});
   const [defaults, setDefaults] = useState<Record<string, string>>({});
   const fileRef = useRef<HTMLInputElement | null>(null);
-  const [uploadKey, setUploadKey] = useState<string | null>(null);
+  // uploadKeyRef (NOT useState) — we need to know which setting key the
+  // user is uploading FOR when the file input's change event fires. If
+  // we used useState, the handler closure would capture the value from
+  // the render in which the upload button was clicked; but the change
+  // event fires inside the same tick as the setUploadKey + fileRef.click()
+  // sequence, so React hasn't re-rendered yet and the handler sees the
+  // OLD uploadKey (null). A ref sidesteps React's render lifecycle:
+  // setUploadKey writes synchronously, change handler reads the latest
+  // value. The state version is kept only for re-rendering anything
+  // that actually depends on it (currently nothing does).
+  const uploadKeyRef = useRef<string | null>(null);
+  const [uploadKey, setUploadKeyState] = useState<string | null>(null);
+  const setUploadKey = (k: string | null) => {
+    uploadKeyRef.current = k;
+    setUploadKeyState(k);
+  };
 
   const load = useCallback(async () => {
     if (!open) return;
@@ -81,9 +96,21 @@ export function ThemeSettingsModal({
     } finally {
       setLoading(false);
     }
-  }, [open, themeName, toast, onClose]);
+  // We intentionally omit `toast` and `onClose` from deps even though
+  // load() references them: useToast() returns a NEW object every
+  // render (ToastProvider rebuilds its `api` literal inline), so
+  // including `toast` would invalidate `load` on every render, which
+  // in turn re-triggers the useEffect below, which would clobber the
+  // user's in-progress edits (e.g. an image upload) with stale server
+  // values. The toast API methods (success/error) are themselves
+  // stable via useCallback, so the stale `toast` reference still works.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, themeName]);
 
-  useEffect(() => { load(); }, [load]);
+  // Effect deps: only re-fetch when the modal is freshly opened for a
+  // different theme. Deliberately NOT depending on `load` directly —
+  // see the comment above on why `load` would change every render.
+  useEffect(() => { load(); }, [open, themeName]);
 
   const setVal = (k: string, v: string) => setWorking((w) => ({ ...w, [k]: v }));
 
@@ -124,10 +151,12 @@ export function ThemeSettingsModal({
   const handleFilePicked = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];
     if (!f) return;
-    if (!uploadKey) return;
+    // Read from the REF, not the state — see comment on uploadKeyRef.
+    const key = uploadKeyRef.current;
+    if (!key) return;
     try {
       const res = await uploadFile(csrf, f);
-      setVal(uploadKey, res.url);
+      setVal(key, res.url);
       toast.success("图片已上传。");
     } catch (err: any) {
       toast.error(err?.message || "上传失败。");
