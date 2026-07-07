@@ -58,40 +58,99 @@
     }
 
     // ── Sprite 生成 (一次性, 离屏) ─────────────────────
-    // 雨滴: 上尖下圆的椭圆, 浅蓝半透, 垂直渐变
+    // 雨滴: 更细长的椭圆 (height/width ≈ 3, 之前 1.67), 顶尖锐底略圆,
+    // 浅蓝半透, 垂直渐变, 真实雨丝的形状.
     function makeRainSprite(size) {
         const c = document.createElement('canvas');
-        c.width = Math.ceil(size * 0.6);  // 雨滴细长, 节省显存
+        c.width = Math.max(3, Math.ceil(size * 0.32));  // 更细: w/h ≈ 0.32
         c.height = size;
         const ctx = c.getContext('2d');
         const w = c.width, h = c.height;
         const grad = ctx.createLinearGradient(0, 0, 0, h);
-        grad.addColorStop(0, 'rgba(200, 230, 255, 0.0)');
-        grad.addColorStop(0.35, 'rgba(180, 220, 255, 0.55)');
-        grad.addColorStop(1, 'rgba(160, 200, 255, 0.92)');
+        grad.addColorStop(0,    'rgba(200, 230, 255, 0.0)');
+        grad.addColorStop(0.30, 'rgba(180, 220, 255, 0.45)');
+        grad.addColorStop(0.70, 'rgba(160, 205, 255, 0.80)');
+        grad.addColorStop(1,    'rgba(140, 190, 255, 0.92)');
         ctx.fillStyle = grad;
         ctx.beginPath();
+        // 顶部更尖, 底部略宽
         ctx.moveTo(w / 2, 0);
-        ctx.bezierCurveTo(w * 0.95, h * 0.25, w * 0.7, h * 0.85, w / 2, h);
-        ctx.bezierCurveTo(w * 0.3, h * 0.85, w * 0.05, h * 0.25, w / 2, 0);
+        ctx.bezierCurveTo(w * 1.05, h * 0.30, w * 0.85, h * 0.90, w / 2, h);
+        ctx.bezierCurveTo(w * 0.15, h * 0.90, w * -0.05, h * 0.30, w / 2, 0);
         ctx.fill();
         return c;
     }
 
-    // 阳光光斑: 中心明亮, 边缘渐隐, 暖色
+    // 阳光光斑 — lens flare 风格, 模拟阳光打在玻璃上散射.
+    // 分 4 层叠加: 大光晕 + 中等光晕 + 中心亮 core + 横/竖光柱.
+    // 4 层一起渲染出"光散射 + 高光"的双重感, 比单 radial gradient
+    // 真实得多.  sprite 画在 600x600 (size 参数), 0~size/2 半径.
     function makeSunSprite(size) {
         const c = document.createElement('canvas');
         c.width = c.height = size;
         const ctx = c.getContext('2d');
         const cx = size / 2, cy = size / 2;
-        const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, size / 2);
-        grad.addColorStop(0, 'rgba(255, 250, 220, 0.65)');
-        grad.addColorStop(0.25, 'rgba(255, 230, 170, 0.42)');
-        grad.addColorStop(0.55, 'rgba(255, 210, 140, 0.18)');
-        grad.addColorStop(0.85, 'rgba(255, 200, 110, 0.04)');
-        grad.addColorStop(1, 'rgba(255, 200, 110, 0)');
-        ctx.fillStyle = grad;
+
+        // 1. 最外层大光晕 — 暖黄, 几乎透明, 覆盖整个 sprite
+        let g = ctx.createRadialGradient(cx, cy, 0, cx, cy, size / 2);
+        g.addColorStop(0,    'rgba(255, 240, 200, 0.18)');
+        g.addColorStop(0.35, 'rgba(255, 220, 160, 0.10)');
+        g.addColorStop(0.70, 'rgba(255, 200, 120, 0.04)');
+        g.addColorStop(1,    'rgba(255, 200, 120, 0)');
+        ctx.fillStyle = g;
         ctx.fillRect(0, 0, size, size);
+
+        // 2. 中等光晕 — 暖色更深, 半径 size/3
+        g = ctx.createRadialGradient(cx, cy, 0, cx, cy, size / 3);
+        g.addColorStop(0,    'rgba(255, 250, 220, 0.35)');
+        g.addColorStop(0.45, 'rgba(255, 235, 180, 0.20)');
+        g.addColorStop(0.85, 'rgba(255, 215, 140, 0.05)');
+        g.addColorStop(1,    'rgba(255, 215, 140, 0)');
+        ctx.fillStyle = g;
+        ctx.fillRect(0, 0, size, size);
+
+        // 3. 中心亮 core — 接近白色, 半径 size/12, 实际最亮的"光点"
+        g = ctx.createRadialGradient(cx, cy, 0, cx, cy, size / 12);
+        g.addColorStop(0,    'rgba(255, 255, 245, 0.90)');
+        g.addColorStop(0.4,  'rgba(255, 248, 220, 0.55)');
+        g.addColorStop(0.8,  'rgba(255, 230, 170, 0.15)');
+        g.addColorStop(1,    'rgba(255, 220, 150, 0)');
+        ctx.fillStyle = g;
+        ctx.fillRect(0, 0, size, size);
+
+        // 4. 横向 + 纵向光柱 — 玻璃透光散射的标志性效果, 用 'lighter'
+        // 合成让多层叠加时更亮, 模拟镜头的 lens flare.
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        // 横向光柱 (长亮带)
+        let lg = ctx.createLinearGradient(0, cy, size, cy);
+        lg.addColorStop(0,    'rgba(255, 250, 220, 0)');
+        lg.addColorStop(0.4,  'rgba(255, 250, 220, 0.18)');
+        lg.addColorStop(0.5,  'rgba(255, 250, 220, 0.32)');  // 中心最亮
+        lg.addColorStop(0.6,  'rgba(255, 250, 220, 0.18)');
+        lg.addColorStop(1,    'rgba(255, 250, 220, 0)');
+        ctx.fillStyle = lg;
+        ctx.fillRect(0, cy - 3, size, 6);
+        // 纵向光柱
+        lg = ctx.createLinearGradient(cx, 0, cx, size);
+        lg.addColorStop(0,    'rgba(255, 250, 220, 0)');
+        lg.addColorStop(0.4,  'rgba(255, 250, 220, 0.10)');
+        lg.addColorStop(0.5,  'rgba(255, 250, 220, 0.22)');
+        lg.addColorStop(0.6,  'rgba(255, 250, 220, 0.10)');
+        lg.addColorStop(1,    'rgba(255, 250, 220, 0)');
+        ctx.fillStyle = lg;
+        ctx.fillRect(cx - 3, 0, 6, size);
+        // 短斜光柱 (左下到右上) — 真正的镜头眩光, 长度只有 sprite 的 35%
+        ctx.translate(cx, cy);
+        ctx.rotate(-Math.PI / 4);  // -45°
+        lg = ctx.createLinearGradient(-size * 0.15, 0, size * 0.20, 0);
+        lg.addColorStop(0,   'rgba(255, 230, 180, 0)');
+        lg.addColorStop(0.5, 'rgba(255, 245, 210, 0.15)');
+        lg.addColorStop(1,   'rgba(255, 230, 180, 0)');
+        ctx.fillStyle = lg;
+        ctx.fillRect(-size * 0.15, -2, size * 0.35, 4);
+        ctx.restore();
+
         return c;
     }
 
@@ -283,120 +342,176 @@
         }
 
         _makeRainDrop() {
+            // Wind: a small global "breeze" that all drops share. Random
+            // sign and magnitude per session so the page isn't always
+            // blowing the same direction. Combined with each drop's
+            // own random drift, this is what makes the rain look
+            // natural — a coherent wind with individual variation,
+            // not 200 drops all falling on parallel rails.
+            const windX = (Math.random() - 0.5) * 80;
+            // slideY is the per-drop threshold where the drop "hits"
+            // the glass. Picking from 0.62..0.82 of canvas height per
+            // drop means different drops stick to the glass at
+            // different times — some streaks race to the bottom,
+            // others barely get going before fading out. This is
+            // visually much more interesting than a hard single line.
             return {
                 x: Math.random() * this._w,
                 y: Math.random() * this._h,
-                speed: 220 + Math.random() * 280,
-                drift: (Math.random() - 0.5) * 35,
-                // slideDrift is the per-particle extra horizontal push
-                // applied once it hits the glass surface — gives the
-                // "droplets race down the window" feel. Signed so half
-                // slide left, half right.
-                slideDrift: 50 + Math.random() * 60,
-                size: 0.55 + Math.random() * 0.8,
-                alpha: 0.25 + Math.random() * 0.55,
-                // 'falling' → vertical raindrop at full alpha.
-                // 'sliding' → once y crosses 70% of canvas height, the
-                // drop "hits" the transparent glass and runs sideways
-                // while alpha fades. When alpha drops below 0.05 the
-                // drop is respawned at the top — no puddling at the
-                // bottom, just droplets streaking off the page.
+                // Bigger speed range than before (180..560 px/s) — a
+                // mix of fast streaks and slow fat drops reads as
+                // realistic rainfall.
+                speed: 180 + Math.random() * 380,
+                // Per-drop own drift on top of the global wind.
+                drift: (Math.random() - 0.5) * 40,
+                // Each drop's tilt while FALLING — a few degrees off
+                // vertical because of the wind. Picked in radians;
+                // ~0.10..0.30 rad = 5°..17° tilt. Sliding flips it.
+                tilt: 0.10 + Math.random() * 0.20,
+                // Per-drop slide trigger. Some drops stick early
+                // (slideY 0.62), others travel almost the full page
+                // before sticking (slideY 0.82).
+                slideY: 0.62 + Math.random() * 0.20,
+                // Direction & magnitude of the slide phase.
+                slideDrift: 60 + Math.random() * 80,
+                // Per-drop size and base alpha.
+                size: 0.55 + Math.random() * 0.9,
+                alpha: 0.30 + Math.random() * 0.50,
+                // 'falling' → vertical-ish raindrop at full alpha.
+                // 'sliding' → drop has "hit" the transparent glass and
+                // runs sideways while alpha fades. Respawned at top
+                // when alpha drops below 0.05 — no puddling.
                 phase: 'falling',
+                // Per-drop phase progress for sliding tilt transition
+                // (0..1, lerps from drop's natural tilt to ~70°).
+                slideProgress: 0,
+                // Cached rotation (recomputed each frame, kept here so
+                // the render path is one read).
+                rotation: 0,
+                // Store the wind so the respawn path can re-bake with
+                // the same wind (consistency within a drop's life).
+                _wind: windX,
             };
         }
 
         _drawRain(dt) {
             const sprite = this._sprites.rain;
             const sw = sprite.width, sh = sprite.height;
-            // The "glass surface" line — once a drop's y crosses this
-            // it switches to sliding. 0.72 of canvas height (a bit
-            // before the very bottom) gives a visible ~28% strip where
-            // you can watch drops run down and fade.
-            const slideLine = this._h * 0.72;
-            const slideSpan = this._h - slideLine;
+            // Two soft slide lines: drops transition gradually over a
+            // 0.06-tall band centered at their personal slideY, so
+            // there's no "snap to 50°" moment — the tilt and alpha
+            // interpolate over a few frames as the drop reaches the
+            // glass. Per-drop random slideY also staggers the
+            // transition across drops.
             for (let i = 0; i < this._particles.length; i++) {
                 const p = this._particles[i];
                 if (p.phase === 'falling') {
+                    // Slight wind-driven tilt: the drop doesn't fall
+                    // straight down — it leans with the wind. Larger
+                    // wind → more tilt (capped so it never looks
+                    // like horizontal rain).
                     p.y += p.speed * dt;
-                    p.x += p.drift * dt;
-                    if (p.y >= slideLine) {
+                    p.x += (p.drift + p._wind) * dt;
+                    // Tilt during falling = base tilt + a small
+                    // contribution from wind so adjacent drops don't
+                    // fall in perfect parallel.
+                    p.rotation = p.tilt + (p._wind * 0.0015);
+                    // Check if the drop is approaching its personal
+                    // glass surface. We don't snap to sliding — we
+                    // start the slideProgress ramp once y crosses
+                    // slideY - 0.03, so the drop visibly LEANS onto
+                    // the glass over a few frames.
+                    const sy = this._h * p.slideY;
+                    if (p.y >= sy - this._h * 0.03) {
                         p.phase = 'sliding';
-                        // Pin y to the slide line so the drop settles
-                        // against the glass surface visually.
-                        p.y = slideLine + Math.random() * 4;
+                        p.slideProgress = 0;
                     }
                 } else {
-                    // sliding: nearly no vertical motion, big
-                    // horizontal drift, alpha fades to 0 over the
-                    // remaining height. Direction of slideDrift is
-                    // baked in at spawn time (positive or zero → slide
-                    // right, negative → left) so adjacent drops streak
-                    // in different directions and the page doesn't
-                    // look like a one-way conveyor.
+                    // sliding: continue y downward a tiny amount, big
+                    // x drift, alpha fades. Rotation interpolates
+                    // from the drop's natural tilt to ~70° (almost
+                    // horizontal) over a 0.18-tall band, so the
+                    // "sticking to glass" moment is smooth, not a snap.
                     p.x += p.slideDrift * dt;
-                    p.y += p.speed * 0.04 * dt;
-                    const progress = Math.min(1, Math.max(0, (p.y - slideLine) / Math.max(1, slideSpan)));
-                    p.alpha = Math.max(0, 0.55 * (1 - progress));
+                    p.y += p.speed * 0.06 * dt;
+                    p.slideProgress = Math.min(1, p.slideProgress + dt / 0.45);
+                    // rotation easeOutCubic: starts gentle, locks
+                    // into the final tilt at the end of the slide.
+                    const eased = 1 - Math.pow(1 - p.slideProgress, 3);
+                    p.rotation = p.tilt + eased * (Math.PI * 0.40 - p.tilt);
+                    // Alpha fades from 0.55 to 0 over the slide band.
+                    // We cap at 0.55 so a drop still looks like water,
+                    // not a ghostly thread, while moving.
+                    p.alpha = Math.max(0, 0.55 * (1 - p.slideProgress));
                 }
                 // Wrap horizontally during falling phase so drops
-                // near the edge don't disappear prematurely.
+                // near the edge don't disappear prematurely. Sliding
+                // drops do NOT wrap — they streak off the screen,
+                // matching the "drops running down a real window" feel.
                 if (p.phase === 'falling') {
-                    if (p.x < -sw) p.x = this._w + sw;
-                    if (p.x > this._w + sw) p.x = -sw;
+                    if (p.x < -sw * 2) p.x = this._w + sw;
+                    if (p.x > this._w + sw * 2) p.x = -sw;
                 }
-                // Respawn when faded out (sliding) or off-screen
-                // (falling). Each drop has its own lifetime — at peak
-                // density the bottom 28% of the page is a continuous
-                // stream of fading streaks, not a static pool.
-                if (p.alpha <= 0.05 || p.y > this._h + sh) {
+                // Respawn when faded out (sliding) or fell off the
+                // top of the canvas after a wrap, or drifted past the
+                // bottom edge entirely.
+                if (p.alpha <= 0.05 || p.y > this._h + sh || p.x < -sh * 2 || p.x > this._w + sh * 2) {
                     p.x = Math.random() * this._w;
-                    p.y = -sh;
-                    p.speed = 220 + Math.random() * 280;
-                    p.drift = (Math.random() - 0.5) * 35;
-                    p.slideDrift = 50 + Math.random() * 60;
-                    p.size = 0.55 + Math.random() * 0.8;
-                    p.alpha = 0.25 + Math.random() * 0.55;
+                    p.y = -sh - Math.random() * sh;
+                    p.speed = 180 + Math.random() * 380;
+                    p.drift = (Math.random() - 0.5) * 40;
+                    p.tilt = 0.10 + Math.random() * 0.20;
+                    p.slideY = 0.62 + Math.random() * 0.20;
+                    p.slideDrift = 60 + Math.random() * 80;
+                    p.size = 0.55 + Math.random() * 0.9;
+                    p.alpha = 0.30 + Math.random() * 0.50;
                     p.phase = 'falling';
+                    p.slideProgress = 0;
                     continue;
                 }
-                // Render. For sliding drops, rotate ~50° so the
-                // vertical sprite reads as a streak running sideways
-                // along the glass. The rotation is local to each
-                // drawImage via save/translate/rotate/restore.
-                if (p.phase === 'sliding') {
-                    this._ctx.save();
-                    this._ctx.translate(p.x, p.y);
-                    this._ctx.rotate(Math.PI * 0.28); // ~50° tilt
-                    this._ctx.globalAlpha = p.alpha;
-                    this._ctx.drawImage(sprite,
-                        -sw * p.size / 2,
-                        -sh * p.size / 2,
-                        sw * p.size, sh * p.size);
-                    this._ctx.restore();
-                } else {
-                    this._ctx.globalAlpha = p.alpha;
-                    this._ctx.drawImage(sprite,
-                        p.x - sw * p.size / 2,
-                        p.y - sh * p.size / 2,
-                        sw * p.size, sh * p.size);
-                }
+                // Render with per-drop rotation. The vertical sprite
+                // reads naturally as a wind-blown raindrop at the
+                // falling tilt (~5-17°), and as a horizontal streak
+                // (70°) while sliding.
+                this._ctx.save();
+                this._ctx.translate(p.x, p.y);
+                this._ctx.rotate(p.rotation);
+                this._ctx.globalAlpha = p.alpha;
+                this._ctx.drawImage(sprite,
+                    -sw * p.size / 2,
+                    -sh * p.size / 2,
+                    sw * p.size, sh * p.size);
+                this._ctx.restore();
             }
             this._ctx.globalAlpha = 1;
         }
 
-        // ── 阳光光斑 ───────────────────────────────────
+        // ── 阳光光斑 (lens flare 风格) ─────────────────
+        // 4 个光点 (>=50 density) 或 2 个 (<50) — 比之前 2/1 多,
+        // 多个 lens flare 叠加时形成更"有光感"的玻璃表面.
+        // 速度更慢 (0.0001~0.0003 vs 之前 0.0002~0.0005), 让
+        // 用户能盯着光斑看而不是"飞过去".
         _setupSunlight() {
-            const n = this._density > 50 ? 2 : 1;
-            if (!this._sprites.sun) this._sprites.sun = makeSunSprite(420);
+            const n = this._density > 50 ? 4 : 2;
+            // sprite 400 而非 600: 之前 600 太大, alpha 0.30 太淡, 视觉上
+            // 几乎透明. 400 让光柱 + 中心更紧凑, 配更高的 baseAlpha
+            // 让光斑真的"看得见".
+            if (!this._sprites.sun) this._sprites.sun = makeSunSprite(400);
             this._particles = [];
             for (let i = 0; i < n; i++) {
+                // Size 0.55..1.5 范围更大, 大小光斑混合像真实阳光
+                // 透过云缝洒下来的"光团大小不一".
                 this._particles.push({
                     x: Math.random() * this._w,
                     y: Math.random() * this._h,
                     tx: Math.random() * this._w,
                     ty: Math.random() * this._h,
-                    speed: 0.0002 + Math.random() * 0.0003,
-                    size: 0.55 + Math.random() * 0.5,
+                    // 极慢漂移 — 让光斑感觉"挂在玻璃上", 不是飞快移动
+                    speed: 0.0001 + Math.random() * 0.0002,
+                    size: 0.55 + Math.random() * 0.95,
+                    // 基础 alpha 0.50..0.70 — 之前 0.30 太淡. 阳光在玻璃
+                    // 上光晕本身就该"明亮", 但光柱和散光让整体仍柔和.
+                    baseAlpha: 0.50 + Math.random() * 0.20,
                 });
             }
             this._lastTs = 0;
@@ -410,14 +525,16 @@
             for (let i = 0; i < this._particles.length; i++) {
                 const p = this._particles[i];
                 const dx = p.tx - p.x, dy = p.ty - p.y;
-                if (Math.hypot(dx, dy) < 8) {
+                if (Math.hypot(dx, dy) < 12) {
                     p.tx = Math.random() * this._w;
                     p.ty = Math.random() * this._h;
                 } else {
                     p.x += dx * p.speed * dt * 60;
                     p.y += dy * p.speed * dt * 60;
                 }
-                this._ctx.globalAlpha = 0.5;
+                // 用 baseAlpha, 让大小光斑亮度不同 — 大光斑稍亮, 小
+                // 光斑稍暗, 跟 size 相关 (0.5..1.4).
+                this._ctx.globalAlpha = p.baseAlpha * (0.6 + p.size * 0.4);
                 const sz = baseSize * p.size;
                 this._ctx.drawImage(sprite, p.x - sz / 2, p.y - sz / 2, sz, sz);
             }
