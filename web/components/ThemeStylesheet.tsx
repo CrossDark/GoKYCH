@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment } from "react";
+import { useEffect } from "react";
 import { useApp } from "./AppProviders";
 import { apiUrl } from "@/lib/api";
 
@@ -16,67 +16,76 @@ import { apiUrl } from "@/lib/api";
  * pay no extra cost — the <script> tag is omitted.
  *
  * Previously this fired two client-side fetches (getSite + listThemes) on
- * every mount. It now reads both from the <AppData> SSR context, so the
- * <link> is computed synchronously and present in the SSR HTML — no flash,
- * no client fetch, and ISR-friendly (no dynamic API).
+ * every mount. It now reads both from the <AppData> SSR context.
  *
  * The theme's updated_at timestamp is appended as ?v= for cache-busting
  * (same URL while unchanged → CDN/browser cache; new timestamp on edit →
  * cache miss).
  *
- * SSR / hydration note: we route the URLs through `apiUrl()` so the
- * browser hits the backend origin directly (api.kych.net / api.ywda.net)
- * instead of the frontend edge (eo.kych.net / cf.ywda.net). EdgeOne and
- * Cloudflare Workers have no Next.js API route for `/api/themes/*`
- * (`web/app/api/` doesn't exist — these endpoints are served by the Go
- * backend through nginx `/api/*` reverse proxy), so a relative
- * `/api/themes/css` request would hit the edge's default 504/500 fallback
- * and stall the page render for 30+ seconds. Absolute URLs skip the edge
- * entirely. `apiUrl()` returns different values between SSR
- * (http://localhost:8000 in dev) and client (`""` in dev), so we mark the
- * <link>/<script> tags with `suppressHydrationWarning` — same pattern
- * used for the typst PDF download link (see ArticleView.tsx).
+ * ── Why this returns null + imperatively appends to <head> ─────────
+ *
+ * `<link>` / `<script>` for theme CSS and bundled assets are mounted
+ * via direct DOM manipulation in a useEffect rather than rendered as
+ * React elements. Two reasons:
+ *
+ * 1. The frontend edge (eo.kych.net / cf.ywda.net) has no Next.js API
+ *    route for `/api/themes/*` (`web/app/api/` doesn't exist — these
+ *    endpoints are served by the Go backend through nginx `/api/*`
+ *    reverse proxy), and there's no way to add one: next.config.ts's
+ *    dev-only rewrite proxying `/api/*` to localhost:8000 means a
+ *    Next.js API route at the same path is unreachable in dev (the
+ *    rewrite wins). So a browser-side relative path would hit the
+ *    edge's default 504/500 fallback and stall the page render for
+ *    30+ seconds. `apiUrl()` returns an absolute backend URL, which
+ *    bypasses the edge — but the absolute URL differs between SSR
+ *    (`http://localhost:8000` in dev) and client (`""` in dev),
+ *    producing a hydration mismatch on the rendered href.
+ *
+ * 2. Returning null from this component on both SSR and the first
+ *    client render means React has nothing to diff; the `<link>` is
+ *    appended to <head> after hydration completes. Production
+ *    `NEXT_PUBLIC_API_BASE_URL` is identical on both sides, so a
+ *    one-frame FOUC is the only cost — and only in dev (where the
+ *    relative path that would have matched in dev is, by design,
+ *    dropped).
  */
 export function ThemeStylesheet() {
   const { site, themes } = useApp();
   const name = (site?.appearance as { style_theme?: string } | undefined)
     ?.style_theme;
-  if (!name || !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(name)) return null;
 
-  const theme = themes.find((t) => t.name === name);
-  const cacheBust = theme?.updated_at
-    ? `?v=${new Date(theme.updated_at).getTime()}`
-    : "";
-  // Absolute URL on the backend origin — bypass the frontend edge where
-  // there's no API route handler for /api/themes/*.
-  const cssUrl = `${apiUrl(`/api/themes/${encodeURIComponent(name)}`)}${cacheBust}`;
+  useEffect(() => {
+    if (!name || !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(name)) return;
+    if (typeof document === "undefined") return;
 
-  // Theme-bundled JS assets. Add new entries here as more themes ship
-  // their own scripts. Particles script is `defer` so it runs after CSS
-  // is applied and after the body is parsed — it needs the body element
-  // and the CSS variable to be live.
-  const assets: { src: string; type: string }[] = [];
-  if (name === "glass") {
-    assets.push({ src: `${apiUrl(`/api/themes/glass/assets/effects/particles.js`)}${cacheBust}`, type: "module-shim" });
-  }
+    const theme = themes.find((t) => t.name === name);
+    const cacheBust = theme?.updated_at
+      ? `?v=${new Date(theme.updated_at).getTime()}`
+      : "";
+    const cssHref = `${apiUrl(`/api/themes/${encodeURIComponent(name)}`)}${cacheBust}`;
+    const link = document.createElement("link");
+    link.rel = "stylesheet";
+    link.href = cssHref;
+    link.dataset.themeStylesheet = "active";
+    document.head.appendChild(link);
 
-  return (
-    <Fragment>
-      {/* suppressHydrationWarning: apiUrl() differs between SSR and client
-       * in dev mode (localhost:8000 vs ""), producing a known mismatch in
-       * the rendered href. Production bakes NEXT_PUBLIC_API_BASE_URL into
-       * both sides so they agree — the warning only fires in dev. */}
-      <link rel="stylesheet" href={cssUrl} data-theme-stylesheet="active" suppressHydrationWarning />
-      {assets.map((a) => (
-        <script
-          key={a.src}
-          defer
-          src={a.src}
-          data-theme-asset={name}
-          suppressHydrationWarning
-        />
-      ))}
-    </Fragment>
-  );
+    // Glass theme ships a particles effect script. The handler is
+    // intentionally <script type="module-shim"> so the browser defers
+    // execution until after CSS is applied and the body is parsed.
+    let script: HTMLScriptElement | null = null;
+    if (name === "glass") {
+      script = document.createElement("script");
+      script.defer = true;
+      script.src = `${apiUrl(`/api/themes/glass/assets/effects/particles.js`)}${cacheBust}`;
+      script.dataset.themeAsset = name;
+      document.head.appendChild(script);
+    }
+
+    return () => {
+      link.remove();
+      if (script) script.remove();
+    };
+  }, [name, themes]);
+
+  return null;
 }
-
