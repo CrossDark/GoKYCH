@@ -33,6 +33,7 @@ export default async function DetailPage({ params }: Props) {
   const { slug } = await params;
   try {
     const data = await getArticle("bbcode", slug);
+    // eslint-disable-next-line react-hooks/error-boundaries
     return <ArticleView data={data} articleType="bbcode" articleSlug={slug} />;
   } catch (err) {
     return renderArticleDetailError(err, { type: "bbcode", slug });

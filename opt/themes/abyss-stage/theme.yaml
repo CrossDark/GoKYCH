@@ -1,0 +1,42 @@
+name: 深渊的舞台
+version: "1.0"
+author: GoKYCH
+description: 克苏鲁风格深色主题 — 黑色占据主导，配以古老金和荧光绿点缀，营造神秘深渊氛围
+
+settings:
+  - key: noise_intensity
+    type: range
+    label: 噪点强度
+    min: 0
+    max: 100
+    step: 5
+    default: 30
+    hint: "噪点纹理强度 (0=无, 100=最强)。模拟胶片颗粒或古老纸张质感"
+  - key: glow_intensity
+    type: range
+    label: 外发光强度
+    min: 0
+    max: 100
+    step: 5
+    default: 40
+    hint: "卡片和按钮的外发光效果强度 (0=无, 100=最强)"
+  - key: border_glow
+    type: range
+    label: 边框光强度
+    min: 0
+    max: 100
+    step: 5
+    default: 60
+    hint: "元素边缘亮色线条强度 (0=无, 100=最强)"
+  - key: mold_effect
+    type: select
+    label: 霉菌效果
+    options: [none, subtle, moderate]
+    default: subtle
+    hint: "角落流动的绿色纹理效果，暗示有机物侵蚀"
+  - key: accent_mode
+    type: select
+    label: 强调色模式
+    options: [gold, green, dual]
+    default: dual
+    hint: "金色、绿色或双色调强调模式"

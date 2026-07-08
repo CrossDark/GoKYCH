@@ -23,7 +23,7 @@
      * setProperty('--glass-card-alpha')), RGB 是固定色相。hover 在
      * alpha 上自动 +0.13 而不是写死, 这样透明度调高时 hover 不会撞顶。 */
     --bg-card-rgb: 255, 255, 255;
-    --glass-card-alpha: 0.42;
+    --glass-card-alpha: 0.90;
     --bg-card: rgba(var(--bg-card-rgb), var(--glass-card-alpha));
     --bg-card-hover: rgba(var(--bg-card-rgb), calc(var(--glass-card-alpha) + 0.13));
     --text: rgba(30, 25, 60, 0.92);
@@ -43,11 +43,16 @@
     --header-bg: rgba(255, 255, 255, 0.32);
     --glass-tint: rgba(255, 255, 255, 0.32);
     --glass-tint-strong: rgba(255, 255, 255, 0.6);
-    --glass-blur: 24px;
+    --glass-blur: 12px;
     /* ── 三个磨砂强度 (admin 滑条控制, particles.js setProperty 注入) ──
      * 滑条 schema 0-100, 通过 0.4 倍率映射到 0-40px, max 40px 够明显。
-     * 默认值与改前 hardcode 对齐, 不破坏现有视觉: 卡片 24 / 隔离 12 / 侧栏 28 */
-    --glass-card-frost: 24px;
+     * default 重新校准让主页卡片默认清晰可读:
+     *   card-frost 12px (default 滑条 30)  — 卡片磨砂轻, 内容不糊
+     *   isolation-frost 12px (default 滑条 30) — 这就是 user 要的
+     *     "可调磨砂程度的玻璃", 在背景前、卡片后
+     *   sidebar-frost 28px (default 滑条 70)  — 侧栏强磨砂, 抽屉 / 顶导 / admin
+     * 想"全玻璃感"把 card_frost 拖到 60+ 即可, P15 调透明度 30~40 配合。 */
+    --glass-card-frost: 12px;
     --glass-isolation-frost: 12px;
     --glass-sidebar-frost: 28px;
     /* 透明隔离层自身底色 — 留作雨滴/阳光之上的微弱磨砂。透明意味着
@@ -69,7 +74,7 @@
     --bg: #0f0c29;
     --bg-card-rgb: 40, 35, 80;
     /* dark 默认 alpha 同 light — 一致性更好, 深色下调低反而看不清 */
-    --glass-card-alpha: 0.42;
+    --glass-card-alpha: 0.90;
     --bg-card: rgba(var(--bg-card-rgb), var(--glass-card-alpha));
     --bg-card-hover: rgba(var(--bg-card-rgb), calc(var(--glass-card-alpha) + 0.13));
     --text: rgba(240, 240, 255, 0.94);
@@ -86,10 +91,10 @@
     --header-bg: rgba(15, 12, 41, 0.42);
     --glass-tint: rgba(255, 255, 255, 0.06);
     --glass-tint-strong: rgba(255, 255, 255, 0.12);
-    --glass-blur: 24px;
-    /* 三个磨砂强度在 dark 沿用 light 默认值, 视觉上 24/12/28px 在深色
+    --glass-blur: 12px;
+    /* 三个磨砂强度在 dark 沿用 light 默认值, 视觉上 12/12/28px 在深色
      * 背景下同样自然; particles.js 启动时按 admin 设置覆盖即可。 */
-    --glass-card-frost: 24px;
+    --glass-card-frost: 12px;
     --glass-isolation-frost: 12px;
     --glass-sidebar-frost: 28px;
     --glass-isolation: rgba(15, 12, 41, 0.18);
@@ -198,7 +203,7 @@ body {
 #glass-fx-layer {
     position: fixed;
     inset: 0;
-    z-index: 0;
+    z-index: -1;
     background: var(--glass-isolation);
     backdrop-filter: blur(var(--glass-isolation-frost));
     -webkit-backdrop-filter: blur(var(--glass-isolation-frost));
@@ -244,11 +249,21 @@ header, .site-header {
  * 让导航(z:400) 浮在它之上, fx 层(z:0) 浮在它之下。
  * 卡片背景自身就是 backdrop-filter: blur 身后的所有东西 — 背景渐变
  * + fx Canvas + 隔离层都会被 blur 出毛玻璃质感。
+ *
+ * P17: 加 .home-notification / .featured-card / .article-item — globals.css
+ * 里的"主页内容卡片"类, 默认 position: static z-index: auto, 在
+ * #glass-fx-layer (position: fixed z:0) 下面渲染,被磨砂层覆盖看不清。
+ * 强制 relative + z:5 提到 fx-layer 上面, 跟 P15/P16 的玻璃感共存。
+ * 注意: .home-notification.important 的 background 用 globals.css 的
+ * #fffbeb 实色 (不是 --bg-card), 这里不动 — 重要的浅黄背景是 design。
  */
 .glass-card,
 .bg-card,
 .card,
-[class*="card"] {
+[class*="card"],
+.home-notification,
+.featured-card,
+.article-item {
     position: relative;
     z-index: 5;
     background: var(--bg-card);
@@ -263,6 +278,32 @@ header, .site-header {
 .card:hover {
     background: var(--bg-card-hover);
     box-shadow: var(--shadow-lg);
+}
+
+.login-page {
+    position: relative;
+    z-index: 100;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding: 2rem;
+}
+
+.login-form {
+    position: relative;
+    z-index: 101;
+    background: rgba(255, 255, 255, 0.95);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border: 1px solid rgba(255, 255, 255, 0.5);
+    box-shadow: 0 20px 60px rgba(99, 102, 241, 0.2);
+}
+
+[data-theme="dark"] .login-form {
+    background: rgba(20, 18, 45, 0.95);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
 }
 
 /* tables — 表头 z:6 (略高于卡片 body) 让 sticky header 浮于行 */

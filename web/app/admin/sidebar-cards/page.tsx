@@ -72,6 +72,7 @@ export default function AdminSidebarCards() {
   }, []);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (csrf) load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [csrf]);

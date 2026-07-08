@@ -45,7 +45,10 @@ export function UserAvatar({ user, size = 28, className = "", large = false }: U
   // Reset on URL change so an admin who updates their avatar (e.g. setting
   // a new URL in /admin/profile) sees the new image rather than a stale
   // failure flag from a previous attempt.
-  useEffect(() => { setImgFailed(false); }, [avatar]);
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setImgFailed(false);
+  }, [avatar]);
   const showImg = avatar && !imgFailed;
   return (
     <span

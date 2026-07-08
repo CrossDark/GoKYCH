@@ -47,7 +47,7 @@ export function apiFetch(
   if (isSSR) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs || SSR_FETCH_TIMEOUT_MS);
-    let signal: AbortSignal = controller.signal;
+    const signal: AbortSignal = controller.signal;
     if (rest.signal) {
       const userSignal = rest.signal;
       if (userSignal.aborted) {
@@ -57,7 +57,7 @@ export function apiFetch(
       }
     }
 
-    const nextCfg: any = {};
+    const nextCfg: { revalidate?: number; tags?: string[] } = {};
     if (nextOpts?.revalidate !== undefined) {
       nextCfg.revalidate = nextOpts.revalidate;
     } else if (!rest.method || rest.method === "GET") {
@@ -69,7 +69,7 @@ export function apiFetch(
       ...rest,
       signal,
       next: nextCfg,
-    } as any).finally(() => clearTimeout(timer)) as Promise<Response>;
+    }).finally(() => clearTimeout(timer)) as Promise<Response>;
   }
 
   return fetch(input, {

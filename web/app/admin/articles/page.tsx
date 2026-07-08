@@ -79,6 +79,7 @@ function AdminArticlesInner() {
   // Read ?type= from URL (dashboard links)
   useEffect(() => {
     const t = searchParams.get("type");
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (t && TYPES.find(x => x.key === t)) setFilterType(t);
   }, [searchParams]);
 
@@ -102,6 +103,7 @@ function AdminArticlesInner() {
         router.replace("/admin/articles");
       }).catch(() => {});
     }
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setInitialEditLoaded(true);
   }, [csrf, searchParams, initialEditLoaded, router]);
 

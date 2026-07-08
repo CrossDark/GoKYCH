@@ -107,6 +107,7 @@ function AdminLayoutInner({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     // Reset brand-logo failure flag whenever the admin changes the
     // configured logo URL — otherwise a transient 404 would stick.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setBrandLogoFailed(false);
   }, [site?.logo_path]);
 
@@ -123,7 +124,9 @@ function AdminLayoutInner({ children }: { children: React.ReactNode }) {
 
   // Close user menu on route change
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setUserMenuOpen(false);
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setSidebarOpen(false);
   }, [pathname]);
 

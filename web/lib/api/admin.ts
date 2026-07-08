@@ -1,4 +1,5 @@
 import { request } from "./client";
+import JSZip from "jszip";
 import type {
   User,
   Notification,
@@ -304,14 +305,53 @@ export function listMyPasskeys(csrf: string) {
   });
 }
 
+export interface PasskeyCredential {
+  id: string;
+  type: string;
+  rawId: string;
+  response: {
+    clientDataJSON: string;
+    attestationObject: string;
+  };
+}
+
+export interface PasskeyPublicKeyCredentialDescriptor {
+  id: string;
+  type: string;
+  transports?: string[];
+}
+
+export interface PasskeyUserEntity {
+  id: string;
+  name: string;
+  displayName: string;
+}
+
+export interface PasskeyRegistrationOptions {
+  challenge: string;
+  rp: { name: string; id?: string };
+  user: PasskeyUserEntity;
+  pubKeyCredParams: Array<{ type: string; alg: number }>;
+  timeout?: number;
+  excludeCredentials?: PasskeyPublicKeyCredentialDescriptor[];
+  authenticatorSelection?: {
+    authenticatorAttachment?: string;
+    residentKey?: string;
+    requireResidentKey?: boolean;
+    userVerification?: string;
+  };
+  attestation?: string;
+  extensions?: Record<string, unknown>;
+}
+
 export function beginPasskeyRegister(csrf: string) {
-  return request<{ publicKey: any }>("/auth/passkey/register/begin", {
+  return request<{ publicKey: PasskeyRegistrationOptions }>("/auth/passkey/register/begin", {
     method: "POST",
     headers: { "X-CSRF-Token": csrf },
   });
 }
 
-export function finishPasskeyRegister(csrf: string, body: { name: string; credential: any }) {
+export function finishPasskeyRegister(csrf: string, body: { name: string; credential: PasskeyCredential }) {
   return request<{ status: string }>("/auth/passkey/register/finish", {
     method: "POST",
     headers: { "X-CSRF-Token": csrf },
@@ -375,6 +415,44 @@ export function uploadThemeCSS(csrf: string, file: File, displayName?: string) {
   const fd = new FormData();
   fd.append("css", file);
   if (displayName) fd.append("name", displayName);
+  return request<Theme>("/admin/themes/upload", {
+    method: "POST",
+    headers: { "X-CSRF-Token": csrf },
+    body: fd,
+  });
+}
+
+export async function uploadThemeFolder(csrf: string, files: FileList): Promise<Theme> {
+  const zip = new JSZip();
+  let commonPrefix = "";
+  const paths: string[] = [];
+  for (let i = 0; i < files.length; i++) {
+    const file = files.item(i)!;
+    paths.push(file.webkitRelativePath || file.name);
+  }
+  if (paths.length > 0) {
+    const firstPath = paths[0];
+    const firstSlash = firstPath.indexOf("/");
+    if (firstSlash !== -1) {
+      const candidate = firstPath.substring(0, firstSlash + 1);
+      const allMatch = paths.every((p) => p.startsWith(candidate));
+      if (allMatch) {
+        commonPrefix = candidate;
+      }
+    }
+  }
+  for (let i = 0; i < files.length; i++) {
+    const file = files.item(i)!;
+    let path = file.webkitRelativePath || file.name;
+    if (commonPrefix && path.startsWith(commonPrefix)) {
+      path = path.substring(commonPrefix.length);
+    }
+    await zip.file(path, file);
+  }
+  const blob = await zip.generateAsync({ type: "blob", compression: "DEFLATE" });
+  const zipFile = new File([blob], "theme.zip", { type: "application/zip" });
+  const fd = new FormData();
+  fd.append("zip", zipFile);
   return request<Theme>("/admin/themes/upload", {
     method: "POST",
     headers: { "X-CSRF-Token": csrf },

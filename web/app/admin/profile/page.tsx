@@ -48,10 +48,20 @@ export default function AdminProfile() {
   const [registering, setRegistering] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<MyPasskeyInfo | null>(null);
   const [deletingId, setDeletingId] = useState<number | null>(null);
-  const [browserSupports, setBrowserSupports] = useState(false);
+  const [browserSupports] = useState(supportsWebAuthn());
+
+  const loadMyKeys = async (token: string) => {
+    setMyKeysLoading(true);
+    try {
+      const d = await listMyPasskeys(token);
+      setMyKeys(d || []);
+    } catch {
+    } finally {
+      setMyKeysLoading(false);
+    }
+  };
 
   useEffect(() => {
-    setBrowserSupports(supportsWebAuthn());
     getCsrf().then((r) => {
       setCsrf(r.csrf_token);
       getProfile(r.csrf_token).then((u) => {
@@ -72,17 +82,6 @@ export default function AdminProfile() {
   }, []);
 
   useBeforeUnload(isProfileDirty && !submitting);
-
-  const loadMyKeys = async (token: string) => {
-    setMyKeysLoading(true);
-    try {
-      const d = await listMyPasskeys(token);
-      setMyKeys(d || []);
-    } catch {
-    } finally {
-      setMyKeysLoading(false);
-    }
-  };
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();

@@ -15,7 +15,6 @@ import type { NextConfig } from "next";
 //     same host as the backend, so `backend:8000` resolves inside
 //     the docker network)
 const isProd = process.env.NODE_ENV === "production";
-const isDev = process.env.NODE_ENV === "development";
 const isStandalone = process.env.STANDALONE === "1";
 if (isProd && !isStandalone && !process.env.NEXT_PUBLIC_API_BASE_URL) {
   throw new Error(
@@ -156,7 +155,7 @@ export default nextConfig;
 // EdgeOne and Docker standalone deployments ignore this (no-op when the package
 // is not installed or when running in production builds).
 try {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
+   
   const { initOpenNextCloudflareForDev } = require("@opennextjs/cloudflare");
   initOpenNextCloudflareForDev();
 } catch {

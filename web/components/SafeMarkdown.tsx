@@ -46,6 +46,7 @@ export function SafeMarkdown({ html, text, className }: Props) {
   useEffect(() => {
     let cancelled = false;
     if (!html) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setSanitised("");
       return;
     }
@@ -92,7 +93,7 @@ export function SafeMarkdown({ html, text, className }: Props) {
     <div
       ref={ref}
       className={className}
-      // eslint-disable-next-line react/no-danger
+       
       dangerouslySetInnerHTML={{ __html: sanitised }}
     />
   );

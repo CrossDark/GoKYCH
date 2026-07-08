@@ -17,7 +17,7 @@ export function listArticles(
   if (type) q.set("type", type);
   if (authorId) q.set("author_id", String(authorId));
   q.set("page", String(page));
-  const opts: any = { anon: true, next: { tags: ["articles"] } };
+  const opts: { anon: boolean; next: { tags?: string[]; revalidate?: number } } = { anon: true, next: { tags: ["articles"] } };
   if (authorId) {
     opts.anon = false;
     opts.next = { revalidate: 0 };

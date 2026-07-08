@@ -35,10 +35,10 @@ export function UpdateWriteErrorPanel({ info }: { info: UpdateCheckInfo }) {
           <strong>检查 systemd 服务配置</strong>（最常见原因）：运行 <code className="err-chip">systemctl cat {binName}</code>，查看是否有 <code>ProtectSystem=strict</code>、<code>ProtectSystem=full</code>、<code>ReadOnlyPaths=-/opt</code>、<code>ReadOnlyPaths={dir}</code> 等指令。这些会将 <code>/opt</code> 以只读方式挂载到服务命名空间中。修复方法：在服务文件中添加 <code>ReadWritePaths={dir}</code> 然后 <code>systemctl daemon-reload && systemctl restart {binName}</code>。
         </>,
         <>
-          <strong>检查 /etc/fstab</strong>：运行 <code className="err-chip">mount | grep '{dir}'</code> 或 <code>findmnt {dir}</code> 查看挂载选项是否包含 <code>ro</code>。
+          <strong>检查 /etc/fstab</strong>：运行 <code className="err-chip">mount | grep &apos;{dir}&apos;</code> 或 <code>findmnt {dir}</code> 查看挂载选项是否包含 <code>ro</code>。
         </>,
         <>
-          <strong>检查内核日志</strong>：运行 <code className="err-chip">dmesg | tail -30</code>，如果看到 "remounted read-only" 或 EXT4/XFS error，说明磁盘有 I/O 错误导致内核自动保护，先修复磁盘问题。
+          <strong>检查内核日志</strong>：运行 <code className="err-chip">dmesg | tail -30</code>，如果看到 &quot;remounted read-only&quot; 或 EXT4/XFS error，说明磁盘有 I/O 错误导致内核自动保护，先修复磁盘问题。
         </>,
       ];
     }

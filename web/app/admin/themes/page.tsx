@@ -7,6 +7,7 @@ import {
   adminListThemes,
   uploadThemeZip,
   uploadThemeCSS,
+  uploadThemeFolder,
   deleteTheme,
   activateTheme,
 } from "@/lib/api";
@@ -79,8 +80,7 @@ export default function AdminThemes() {
   const [cssName, setCssName] = useState("");
   const [settingsTarget, setSettingsTarget] = useState<Theme | null>(null);
   const toast = useToast();
-  const zipRef = useRef<HTMLInputElement | null>(null);
-  const cssRef = useRef<HTMLInputElement | null>(null);
+  const uploadRef = useRef<HTMLInputElement | null>(null);
 
   const load = () => {
     if (!csrf) return;
@@ -100,38 +100,33 @@ export default function AdminThemes() {
   }, []);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (csrf) load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [csrf]);
 
-  const doUploadZip = async (file: File) => {
-    if (!file) return;
+  const doUpload = async (files: FileList) => {
+    if (!files || files.length === 0) return;
     setUploading(true);
     try {
-      const installed = await uploadThemeZip(csrf, file);
-      toast.success(`主题「${installed.name}」安装成功！`);
+      const firstFile = files.item(0)!;
+      if (files.length === 1 && firstFile.name.endsWith(".zip")) {
+        const installed = await uploadThemeZip(csrf, firstFile);
+        toast.success(`主题「${installed.name}」安装成功！`);
+      } else if (files.length === 1 && firstFile.name.endsWith(".css")) {
+        const installed = await uploadThemeCSS(csrf, firstFile, cssName || undefined);
+        toast.success(`主题「${installed.name}」安装成功！`);
+        setCssName("");
+      } else {
+        const installed = await uploadThemeFolder(csrf, files);
+        toast.success(`主题「${installed.name}」安装成功！`);
+      }
       load();
     } catch (err: any) {
-      toast.error(err.message || "ZIP 主题安装失败。");
+      toast.error(err.message || "主题安装失败。");
     } finally {
       setUploading(false);
-      if (zipRef.current) zipRef.current.value = "";
-    }
-  };
-
-  const doUploadCSS = async (file: File) => {
-    if (!file) return;
-    setUploading(true);
-    try {
-      const installed = await uploadThemeCSS(csrf, file, cssName || undefined);
-      toast.success(`主题「${installed.name}」安装成功！`);
-      setCssName("");
-      load();
-    } catch (err: any) {
-      toast.error(err.message || "CSS 主题安装失败。");
-    } finally {
-      setUploading(false);
-      if (cssRef.current) cssRef.current.value = "";
+      if (uploadRef.current) uploadRef.current.value = "";
     }
   };
 
@@ -161,28 +156,17 @@ export default function AdminThemes() {
     }
   };
 
-  const handleZipSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0];
-    if (f) doUploadZip(f);
-  };
-
-  const handleCSSSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0];
-    if (f) doUploadCSS(f);
+  const handleUploadSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (files) doUpload(files);
   };
 
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setDragOver(false);
-    const f = e.dataTransfer.files?.[0];
-    if (!f) return;
-    if (f.name.endsWith(".zip")) {
-      doUploadZip(f);
-    } else if (f.name.endsWith(".css")) {
-      doUploadCSS(f);
-    } else {
-      toast.error("请上传 .zip 或 .css 文件。");
-    }
+    const files = e.dataTransfer.files;
+    if (!files || files.length === 0) return;
+    doUpload(files);
   };
 
   const builtins = themes.filter((t) => t.builtin);
@@ -221,66 +205,49 @@ export default function AdminThemes() {
               </div>
             ) : (
               <div className="admin-upload-prompt">
-                <p className="admin-upload-title">拖拽 .zip 或 .css 文件到此处，或选择上传方式</p>
+                <p className="admin-upload-title">拖拽主题文件夹、.zip 或 .css 文件到此处，或点击下方按钮选择</p>
                 <p className="admin-upload-hint">
-                  ZIP 包需包含 theme.yaml 和 static/theme.css；CSS 文件可直接上传（自动生成元数据）
+                  文件夹或 ZIP 包需包含 theme.yaml 和 static/theme.css；CSS 文件可直接上传（自动生成元数据）
                 </p>
               </div>
             )}
           </div>
 
-          <div style={{ display: "flex", gap: 12, marginTop: 16, flexWrap: "wrap" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <input
-                ref={zipRef}
-                type="file"
-                accept=".zip"
-                style={{ display: "none" }}
-                onChange={handleZipSelect}
-                disabled={uploading}
-              />
-              <button
-                className="admin-btn admin-btn-primary"
-                onClick={() => zipRef.current?.click()}
-                disabled={uploading}
-              >
-                📦 上传 ZIP 包
-              </button>
-            </div>
+          <div style={{ display: "flex", gap: 12, marginTop: 16, flexWrap: "wrap", alignItems: "center" }}>
+            <input
+              ref={uploadRef}
+              type="file"
+              accept=".zip,.css"
+              style={{ display: "none" }}
+              onChange={handleUploadSelect}
+              disabled={uploading}
+              // @ts-ignore - webkitdirectory is a non-standard WebKit property for folder uploads
+              webkitdirectory="true"
+            />
+            <button
+              className="admin-btn admin-btn-primary"
+              onClick={() => uploadRef.current?.click()}
+              disabled={uploading}
+            >
+              📦 上传主题（文件夹 / ZIP / CSS）
+            </button>
 
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <input
-                type="text"
-                placeholder="主题名称（可选）"
-                value={cssName}
-                onChange={(e) => setCssName(e.target.value)}
-                style={{
-                  padding: "6px 10px",
-                  border: "1px solid var(--border)",
-                  borderRadius: 4,
-                  fontSize: "0.85rem",
-                  width: 140,
-                  background: "var(--bg-input, var(--surface))",
-                  color: "var(--text)",
-                }}
-                disabled={uploading}
-              />
-              <input
-                ref={cssRef}
-                type="file"
-                accept=".css"
-                style={{ display: "none" }}
-                onChange={handleCSSSelect}
-                disabled={uploading}
-              />
-              <button
-                className="admin-btn admin-btn-secondary"
-                onClick={() => cssRef.current?.click()}
-                disabled={uploading}
-              >
-                🎨 上传 CSS 文件
-              </button>
-            </div>
+            <input
+              type="text"
+              placeholder="主题名称（上传 CSS 时使用）"
+              value={cssName}
+              onChange={(e) => setCssName(e.target.value)}
+              style={{
+                padding: "6px 10px",
+                border: "1px solid var(--border)",
+                borderRadius: 4,
+                fontSize: "0.85rem",
+                width: 160,
+                background: "var(--bg-input, var(--surface))",
+                color: "var(--text)",
+              }}
+              disabled={uploading}
+            />
           </div>
         </div>
       </div>

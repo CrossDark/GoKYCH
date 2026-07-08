@@ -38,7 +38,10 @@ export default function AdminFiles() {
   }, []);
 
   useEffect(() => {
-    if (csrf) load();
+    if (csrf) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      load();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [csrf]);
 

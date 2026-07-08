@@ -94,6 +94,7 @@ export default function AdminArticleDetail({ params }: PageProps) {
   // to show the forbidden page.
   useEffect(() => {
     if (!article || me === null) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (!canEdit) setForbidden(true);
   }, [article, me, canEdit]);
 

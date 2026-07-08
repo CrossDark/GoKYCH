@@ -20,6 +20,16 @@ export default function AdminAPIKeys() {
   const [pendingDelete, setPendingDelete] = useState<ApiKey | null>(null);
   const toast = useToast();
 
+  const loadKeys = async (token: string) => {
+    try {
+      const d = await listApiKeys(token);
+      setKeys(d);
+    } catch {
+    } finally {
+      setLoading(false);
+    }
+  };
+
   useEffect(() => {
     getMe().then((r) => {
       if (!r.user || r.user.role !== "owner") {
@@ -32,16 +42,6 @@ export default function AdminAPIKeys() {
       });
     }).catch(() => setLoading(false));
   }, []);
-
-  const loadKeys = async (token: string) => {
-    try {
-      const d = await listApiKeys(token);
-      setKeys(d);
-    } catch {
-    } finally {
-      setLoading(false);
-    }
-  };
 
   const createKey = async () => {
     if (!newName.trim()) {

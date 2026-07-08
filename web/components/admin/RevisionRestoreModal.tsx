@@ -74,8 +74,11 @@ export function RevisionRestoreModal({
   // a different seq would show the previous message + error.
   useEffect(() => {
     if (seq === null) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setMessage("");
+       
       setSubmitting(false);
+       
       setError(null);
       submittedFor.current = null;
     }
@@ -97,9 +100,9 @@ export function RevisionRestoreModal({
       }
       onRestored(res.article);
       onClose();
-    } catch (e: any) {
+    } catch (e: unknown) {
       if (submittedFor.current !== seq) return;
-      setError(e?.message || "回滚失败。");
+      setError((e as Error)?.message || "回滚失败。");
     } finally {
       if (submittedFor.current === seq) {
         setSubmitting(false);

@@ -64,6 +64,7 @@ export {
   adminListThemes,
   uploadThemeZip,
   uploadThemeCSS,
+  uploadThemeFolder,
   deleteTheme,
   activateTheme,
 } from "./admin";

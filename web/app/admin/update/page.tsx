@@ -187,25 +187,28 @@ export default function AdminUpdate() {
     }
   }, []);
 
-  const pollStatus = useCallback(async () => {
-    try {
-      const data = await getUpdateStatus();
-      setUpdStatus(data);
+  const pollStatus = useCallback(() => {
+    const doPoll = async () => {
+      try {
+        const data = await getUpdateStatus();
+        setUpdStatus(data);
 
-      if (data.status === "done") {
-        setApplying(false);
-        toast.success(data.message);
-        setTimeout(() => window.location.reload(), 5000);
-        return;
+        if (data.status === "done") {
+          setApplying(false);
+          toast.success(data.message);
+          setTimeout(() => window.location.reload(), 5000);
+          return;
+        }
+        if (data.status === "error") {
+          setApplying(false);
+          toast.error(data.error || "更新失败");
+          return;
+        }
+      } catch {
       }
-      if (data.status === "error") {
-        setApplying(false);
-        toast.error(data.error || "更新失败");
-        return;
-      }
-    } catch {
-    }
-    pollTimerRef.current = setTimeout(pollStatus, 1000);
+      pollTimerRef.current = setTimeout(doPoll, 1000);
+    };
+    doPoll();
   }, [toast]);
 
   useEffect(() => {
@@ -232,6 +235,7 @@ export default function AdminUpdate() {
   }, [toast]);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (csrf) check();
   }, [csrf, check]);
 

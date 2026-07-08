@@ -75,7 +75,9 @@ export function RevisionDiffModal({
 
   useEffect(() => {
     if (!action) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setViewState({ kind: "idle" });
+       
       setDiffState({ kind: "idle" });
       fetchedFor.current = null;
       return;

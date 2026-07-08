@@ -11,7 +11,7 @@
  */
 export function supportsWebAuthn(): boolean {
   if (typeof window === "undefined") return false;
-  const w = window as any;
+  const w = window as unknown as { PublicKeyCredential?: unknown };
   return !!(w.PublicKeyCredential && typeof w.PublicKeyCredential === "function");
 }
 

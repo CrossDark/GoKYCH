@@ -75,14 +75,18 @@ export function RatingWidget({
       }
     })();
     return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [isLoggedIn, articleType, articleSlug, userScore, submitting]);
 
   // Sync props changes
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setAvg(initialAvg);
+     
     setVoters(initialVoters);
+     
     setUserScore(initialUserScore);
+     
     setSliderVal(initialUserScore ?? 0);
   }, [initialAvg, initialVoters, initialUserScore]);
 

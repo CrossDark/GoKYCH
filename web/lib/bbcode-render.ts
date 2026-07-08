@@ -430,7 +430,7 @@ export function renderBBCode(source: string): string {
   });
 
   // Restore code blocks
-  out = out.replace(/\x00CODE(\d+)\x00/g, (_match, idx) => codePlaceholders[parseInt(idx)] || "");
+  out = out.replace(/\0CODE(\d+)\0/g, (_match, idx) => codePlaceholders[parseInt(idx)] || "");
 
   // Unescape escaped brackets
   out = out.replace(/\\\[/g, "[").replace(/\\\]/g, "]");

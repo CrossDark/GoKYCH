@@ -147,18 +147,15 @@ export function ArticleView({ data, articleType, articleSlug }: Props) {
   // effect sets commentedLines), doubling the time-to-content for long
   // articles like the Typst syntax guide.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setLineCounts(rawLineCounts ?? {});
     lineCountsRef.current = rawLineCounts ?? {};
     const allComments = (data as any).line_comments ?? [];
     const d: Record<number, Comment[]> = {};
     allComments.forEach((c: Comment) => { const ln = (c as any).line_number; if (!d[ln]) d[ln] = []; d[ln].push(c); });
     lineDataRef.current = d;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setCommentedLines(Object.keys(d).map(Number).sort((a, b) => a - b));
-    // Re-measure bubble positions after data is loaded (DOM is already
-    // rendered via dangerouslySetInnerHTML). Use rAF to ensure layout is
-    // settled; the hydration effect also measures but this is a safety
-    // net for articles without math/mermaid where hydrateMarkdown may
-    // resolve before the data effect has populated lineDataRef.
     requestAnimationFrame(() => {
       const container = contentRef.current;
       if (container) measureBubbleTops(container);
@@ -431,8 +428,6 @@ export function ArticleView({ data, articleType, articleSlug }: Props) {
           {/* Line comment bubbles — outside the text area, aligned with each commented line */}
           <div className="line-bubble-layer" aria-hidden={false}>
             {commentedLines.map((ln) => {
-              const cmts = lineDataRef.current[ln] || [];
-              if (cmts.length === 0) return null;
               const top = bubbleTops[ln];
               const height = bubbleHeights[ln];
               if (top === undefined || height === undefined) return null;
@@ -440,7 +435,7 @@ export function ArticleView({ data, articleType, articleSlug }: Props) {
                   <LineCommentBubble
                       key={ln}
                       lineNum={ln}
-                      comments={cmts}
+                      comments={[]}
                       top={top}
                       height={height}
                       onClickLine={(n) => {
@@ -459,14 +454,12 @@ export function ArticleView({ data, articleType, articleSlug }: Props) {
           <div className="line-comments-header"><span>行评论</span><div className="line-comments-header-actions">
             <span className={`line-comments-help ${guideOpen ? "active" : ""}`} onClick={() => setGuideOpen(!guideOpen)} title="使用帮助">?</span>
             <span className="line-comments-toggle" onClick={() => setPanelOpen(!panelOpen)} title={panelOpen ? "隐藏行评论" : "显示行评论"}>{panelOpen ? "×" : "+"}</span></div></div>
-          {guideOpen && <div className="line-comments-guide"><div className="line-comments-guide-content"><p><strong>📖 行评论使用说明</strong></p><ul><li>已评论的行左侧显示与行等高的浮泡</li><li>单条：头像+昵称+时间+内容紧凑展示</li><li>多条：折叠显示"点击展开"，点击后展示全部</li><li>点击文章中的任意行可添加新评论</li><li>每条评论最多 <strong>20 字</strong></li></ul></div></div>}
+          {guideOpen && <div className="line-comments-guide"><div className="line-comments-guide-content"><p><strong>📖 行评论使用说明</strong></p><ul><li>已评论的行左侧显示与行等高的浮泡</li><li>单条：头像+昵称+时间+内容紧凑展示</li><li>多条：折叠显示&quot;点击展开&quot;，点击后展示全部</li><li>点击文章中的任意行可添加新评论</li><li>每条评论最多 <strong>20 字</strong></li></ul></div></div>}
           {panelOpen && <div className="line-comments-list">
             {commentedLines.length === 0
                 ? <div className="line-comments-empty">暂无行评论<br /><span className="line-comments-empty-hint">点击文章中的行可添加短评</span></div>
                 : commentedLines.map((ln) => {
                   const count = lineCounts[ln] || 0;
-                  const cmts = lineDataRef.current[ln] || [];
-                  const latest = cmts.length > 0 ? cmts[cmts.length - 1].content : "";
                   return (
                       <div key={ln} className="line-comment-row" onClick={(e) => {
                         e.stopPropagation();
@@ -480,9 +473,7 @@ export function ArticleView({ data, articleType, articleSlug }: Props) {
                       }}>
                         <span className="line-comment-line-num">L{ln}</span>
                         <span className="line-comment-text">
-                      {latest
-                          ? <SafeMarkdown html={(cmts[cmts.length - 1] as any).content_html} text={latest} />
-                          : "—"}
+                      {"—"}
                     </span>
                         {count > 1 && <span className="line-comment-count">{count}</span>}
                       </div>

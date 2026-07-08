@@ -66,7 +66,7 @@ export function ThemeSettingsModal({
   // value. The state version is kept only for re-rendering anything
   // that actually depends on it (currently nothing does).
   const uploadKeyRef = useRef<string | null>(null);
-  const [uploadKey, setUploadKeyState] = useState<string | null>(null);
+  const [, setUploadKeyState] = useState<string | null>(null);
   const setUploadKey = (k: string | null) => {
     uploadKeyRef.current = k;
     setUploadKeyState(k);
@@ -90,8 +90,8 @@ export function ThemeSettingsModal({
         w[s.key] = (values && values[s.key] != null) ? values[s.key] : d[s.key];
       }
       setWorking(w);
-    } catch (e: any) {
-      toast.error(e?.message || "读取主题设置失败。");
+    } catch (e: unknown) {
+      toast.error((e as Error)?.message || "读取主题设置失败。");
       onClose();
     } finally {
       setLoading(false);
@@ -110,7 +110,10 @@ export function ThemeSettingsModal({
   // Effect deps: only re-fetch when the modal is freshly opened for a
   // different theme. Deliberately NOT depending on `load` directly —
   // see the comment above on why `load` would change every render.
-  useEffect(() => { load(); }, [open, themeName]);
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    load();
+  }, [open, themeName]);
 
   const setVal = (k: string, v: string) => setWorking((w) => ({ ...w, [k]: v }));
 
@@ -136,17 +139,17 @@ export function ThemeSettingsModal({
       // --glass-card-alpha / --glass-*-frost / effect_mode in-place
       // without a page reload. Other themes don't have a runtime
       // effect layer, so this is a glass-specific no-op for them.
-      if (typeof window !== "undefined" && (window as any).GlassFX?.reload) {
-        (window as any).GlassFX.reload();
+      if (typeof window !== "undefined" && (window as unknown as { GlassFX?: { reload: () => void } }).GlassFX?.reload) {
+        (window as unknown as { GlassFX?: { reload: () => void } }).GlassFX!.reload();
       }
       toast.success(`「${themeLabel}」设置已保存。`);
       onClose();
-    } catch (e: any) {
-      const data = e?.data;
-      if (data && Array.isArray(data.rejects) && data.rejects.length > 0) {
-        toast.error(`保存失败：${data.rejects[0]}`);
+    } catch (e: unknown) {
+      const err = e as { data?: { rejects?: string[] }; message?: string };
+      if (err.data && Array.isArray(err.data.rejects) && err.data.rejects.length > 0) {
+        toast.error(`保存失败：${err.data.rejects[0]}`);
       } else {
-        toast.error(e?.message || "保存设置失败。");
+        toast.error(err.message || "保存设置失败。");
       }
     } finally {
       setSaving(false);
@@ -168,8 +171,8 @@ export function ThemeSettingsModal({
       const res = await uploadFile(csrf, f);
       setVal(key, res.url);
       toast.success("图片已上传。");
-    } catch (err: any) {
-      toast.error(err?.message || "上传失败。");
+    } catch (err: unknown) {
+      toast.error((err as Error)?.message || "上传失败。");
     } finally {
       if (fileRef.current) fileRef.current.value = "";
       setUploadKey(null);

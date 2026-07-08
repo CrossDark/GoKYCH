@@ -86,6 +86,7 @@ export function RevisionDrawer({
   // without unmounting the page).
   useEffect(() => {
     if (!open) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void fetchRevisions();
   }, [open, fetchRevisions]);
 

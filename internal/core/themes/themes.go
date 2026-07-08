@@ -73,7 +73,7 @@ type SettingDefinition struct {
 	Hint    string   `json:"hint,omitempty"    yaml:"hint,omitempty"`
 }
 
-var themeNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
+var themeNameRe = regexp.MustCompile(`^[a-z0-9\x{4e00}-\x{9fff}][a-z0-9\x{4e00}-\x{9fff}_-]{0,63}$`)
 
 func themesDir(dataDir string) string { return filepath.Join(dataDir, "themes") }
 
@@ -450,6 +450,8 @@ func slugify(name string) string {
 	for _, r := range name {
 		switch {
 		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r >= '\u4e00' && r <= '\u9fff':
 			b.WriteRune(r)
 		case r == ' ', r == '-', r == '_':
 			b.WriteRune('-')

@@ -39,6 +39,7 @@ export function CommentSection({
   // Pre-fill the comment author name from the logged-in user's profile.
   useEffect(() => {
     if (currentUser) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setName(currentUser.nickname || currentUser.username);
     }
   }, [currentUser]);

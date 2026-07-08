@@ -17,6 +17,16 @@ export default function AdminPasskeys() {
   const [pendingDelete, setPendingDelete] = useState<PasskeyInfo | null>(null);
   const toast = useToast();
 
+  const loadKeys = async (token: string) => {
+    try {
+      const d = await listAllPasskeys(token);
+      setKeys(d || []);
+    } catch {
+    } finally {
+      setLoading(false);
+    }
+  };
+
   useEffect(() => {
     getMe().then((r) => {
       if (!r.user || r.user.role !== "owner") {
@@ -29,16 +39,6 @@ export default function AdminPasskeys() {
       });
     }).catch(() => setLoading(false));
   }, []);
-
-  const loadKeys = async (token: string) => {
-    try {
-      const d = await listAllPasskeys(token);
-      setKeys(d || []);
-    } catch {
-    } finally {
-      setLoading(false);
-    }
-  };
 
   const confirmDelete = async () => {
     if (!pendingDelete) return;

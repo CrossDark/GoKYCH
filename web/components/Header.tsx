@@ -38,9 +38,11 @@ export function Header() {
   // Reset on URL change so editing the setting in /admin/settings kicks in.
   const [logoFailed, setLogoFailed] = useState(false);
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setLogoFailed(false);
     // Keep the visible tag list in sync when SSR context refreshes (e.g.
     // after an on-demand revalidate swaps in newer data on navigation).
+     
     setTags(ctxLabels);
     tagsCacheRef.current = { data: ctxLabels, timestamp: Date.now() };
   }, [ctxLabels, siteSetting?.logo_path]);
@@ -63,6 +65,7 @@ export function Header() {
   }, []);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setMounted(true);
   }, []);
 

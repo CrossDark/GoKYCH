@@ -69,21 +69,29 @@ export function ThemeStylesheet() {
     link.dataset.themeStylesheet = "active";
     document.head.appendChild(link);
 
-    // Glass theme ships a particles effect script. The handler is
-    // intentionally <script type="module-shim"> so the browser defers
-    // execution until after CSS is applied and the body is parsed.
-    let script: HTMLScriptElement | null = null;
+    // Theme-bundled effect scripts — each theme loads its own script if available.
+    // The scripts are deferred so the browser executes them after CSS is applied.
+    const scripts: HTMLScriptElement[] = [];
     if (name === "glass") {
-      script = document.createElement("script");
-      script.defer = true;
-      script.src = `${apiUrl(`/api/themes/glass/assets/effects/particles.js`)}${cacheBust}`;
-      script.dataset.themeAsset = name;
-      document.head.appendChild(script);
+      const s = document.createElement("script");
+      s.defer = true;
+      s.src = `${apiUrl(`/api/themes/glass/assets/effects/particles.js`)}${cacheBust}`;
+      s.dataset.themeAsset = name;
+      document.head.appendChild(s);
+      scripts.push(s);
+    }
+    if (name === "abyss-stage") {
+      const s = document.createElement("script");
+      s.defer = true;
+      s.src = `${apiUrl(`/api/themes/abyss-stage/assets/effects/abyss-fx.js`)}${cacheBust}`;
+      s.dataset.themeAsset = name;
+      document.head.appendChild(s);
+      scripts.push(s);
     }
 
     return () => {
       link.remove();
-      if (script) script.remove();
+      scripts.forEach((s) => s.remove());
     };
   }, [name, themes]);
 

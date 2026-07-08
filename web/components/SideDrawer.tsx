@@ -90,7 +90,9 @@ export function SideDrawer({
     if (!open || loaded) return;
     const cached = readCache();
     if (cached && Date.now() - cached.ts < CACHE_TTL_MS) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setCards(cached.data);
+       
       setLoaded(true);
       return;
     }

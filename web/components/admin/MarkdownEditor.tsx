@@ -126,6 +126,7 @@ export function MarkdownEditor({
       return;
     }
     let cancelled = false;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setRendering(true);
     const handle = setTimeout(async () => {
       try {
@@ -429,7 +430,7 @@ export function MarkdownEditor({
           ) : (
             <div
               className="content-body markdown-editor-preview-content"
-              // eslint-disable-next-line react/no-danger
+               
               dangerouslySetInnerHTML={{ __html: rendered }}
             />
           )}

@@ -113,15 +113,15 @@ function applyInline(text: string): string {
 
   // Now apply inline formatting
   // Bold: **text**
-  out = out.replace(/\*\*([^\*\n]+?)\*\*/g, "<strong>$1</strong>");
+  out = out.replace(/\*\*([^*]+?)\*\*/g, "<strong>$1</strong>");
   // Italic: //text//
-  out = out.replace(/\/\/([^\/\n]+?)\/\//g, "<em>$1</em>");
+  out = out.replace(/\/\/([^\/]+?)\/\//g, "<em>$1</em>");
   // Underline: __text__
-  out = out.replace(/__([^_\n]+?)__/g, "<u>$1</u>");
+  out = out.replace(/__([^_]+?)__/g, "<u>$1</u>");
   // Strikethrough: --text--
-  out = out.replace(/--([^-\n]+?)--/g, "<s>$1</s>");
+  out = out.replace(/--([^-]+?)--/g, "<s>$1</s>");
   // Superscript: ^^text^^
-  out = out.replace(/\^\^([^\^\n]+?)\^\^/g, "<sup>$1</sup>");
+  out = out.replace(/\^\^([^^]+?)\^\^/g, "<sup>$1</sup>");
   // Subscript: ,,text,,
   out = out.replace(/,,([^,\n]+?),,/g, "<sub>$1</sub>");
 
@@ -185,7 +185,7 @@ function applyInline(text: string): string {
   });
 
   // Restore protected blocks
-  out = out.replace(/\x00PROT(\d+)\x00/g, (_m, idx) => protectedBlocks[parseInt(idx)] || "");
+  out = out.replace(/\0PROT(\d+)\0/g, (_m, idx) => protectedBlocks[parseInt(idx)] || "");
 
   return out;
 }
@@ -377,17 +377,17 @@ export function renderWikidot(source: string): string {
   let result = output.join("\n");
 
   // Restore code blocks
-  result = result.replace(/\x00CODE(\d+)\x00/g, (_m, idx) => codeBlocks[parseInt(idx)] || "");
+  result = result.replace(/\0CODE(\d+)\0/g, (_m, idx) => codeBlocks[parseInt(idx)] || "");
   // Restore collapsible blocks
-  result = result.replace(/\x00COLLAPSE(\d+)\x00/g, (_m, idx) => collapsibleBlocks[parseInt(idx)] || "");
+  result = result.replace(/\0COLLAPSE(\d+)\0/g, (_m, idx) => collapsibleBlocks[parseInt(idx)] || "");
   // Restore placeholders
-  result = result.replace(/\x00PLACEHOLDER(\d+)\x00/g, (_m, idx) => placeholderBlocks[parseInt(idx)] || "");
+  result = result.replace(/\0PLACEHOLDER(\d+)\0/g, (_m, idx) => placeholderBlocks[parseInt(idx)] || "");
 
   // Handle [[br]] → <br> (Wikidot explicit line break)
   result = result.replace(/\[\[br\]\]/gi, "<br>");
 
   // Handle inline math $...$ (after HTML escape)
-  result = result.replace(/\$([^\$\n]+?)\$/g, (_m, expr) => {
+  result = result.replace(/\$([^$\n]+?)\$/g, (_m, expr) => {
     return `<span class="math-inline">${escapeHtml(expr)}</span>`;
   });
 

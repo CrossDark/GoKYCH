@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import { getCsrf, getMe, getSettings, updateSettings, listThemes, listAdminFiles } from "@/lib/api";
 import type { Theme, SiteSettings, AdminFile, User } from "@/lib/types";
 import { useToast, useBeforeUnload } from "@/lib/admin-feedback";
@@ -56,14 +56,14 @@ export default function AdminSettings() {
   const [csrf, setCsrf] = useState("");
   const [me, setMe] = useState<User | null>(null);
   const [settings, setSettings] = useState<SiteSettings | null>(null);
-  const initialSettingsRef = useRef<SiteSettings | null>(null);
+  const [initialSettings, setInitialSettings] = useState<SiteSettings | null>(null);
   const [availableThemes, setAvailableThemes] = useState<Theme[]>([]);
   const toast = useToast();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const isDirty = initialSettingsRef.current !== null
+  const isDirty = initialSettings !== null
     && settings !== null
-    && JSON.stringify(settings) !== JSON.stringify(initialSettingsRef.current);
+    && JSON.stringify(settings) !== JSON.stringify(initialSettings);
 
   const [filePickerOpen, setFilePickerOpen] = useState(false);
   const [filePickerTarget, setFilePickerTarget] = useState<string>("");
@@ -74,7 +74,7 @@ export default function AdminSettings() {
       setCsrf(r.csrf_token);
       getSettings(r.csrf_token).then((s) => {
         setSettings(s);
-        initialSettingsRef.current = s;
+        setInitialSettings(s);
         setLoading(false);
       }).catch(() => setLoading(false));
       listAdminFiles(r.csrf_token).then(setUploadedFiles).catch(() => {});
@@ -143,7 +143,7 @@ export default function AdminSettings() {
     setSaving(true);
     try {
       await updateSettings(csrf, settings);
-      initialSettingsRef.current = settings;
+      setInitialSettings(settings);
       toast.success("设置已保存。");
     } catch (err: any) {
       toast.error(err.message || "保存失败。");
