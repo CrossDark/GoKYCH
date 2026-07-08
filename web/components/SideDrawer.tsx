@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { apiUrl } from "@/lib/api";
 
 // SideDrawer — the left-rail navigation drawer.
 //
@@ -18,6 +19,18 @@ import Link from "next/link";
 // page body) and admin edits are visible within seconds via the
 // frontend cache invalidation webhook anyway — there's no real
 // correctness reason to bake it into HTML.
+//
+// Fetch URL goes through `apiUrl()` so the browser hits the backend
+// origin directly (api.kych.net / api.ywda.net) instead of the frontend
+// edge (eo.kych.net / cf.ywda.net). EdgeOne and Cloudflare Workers
+// have no Next.js API route for `/api/sidebar-cards` (`web/app/api/`
+// doesn't exist — this endpoint is served by the Go backend through
+// nginx `/api/*` reverse proxy), so a relative path would hit the
+// edge's default 504/500 fallback and stall the drawer on the
+// "加载中…" placeholder for 30+ seconds. Absolute URLs skip the edge
+// entirely. In dev `apiUrl()` returns "" on the client and
+// "http://localhost:8000" on the server, but this fetch only runs in
+// the browser (useEffect), so the SSR/client split is irrelevant here.
 
 type SidebarCard = {
   id: number;
@@ -81,10 +94,10 @@ export function SideDrawer({
       setLoaded(true);
       return;
     }
-    // Cache miss / stale — fetch fresh. Path is relative so the
-    // dev/prod origin split continues to be handled by next.config
-    // rewrites + CORS, never via absolute URL in the source.
-    fetch("/api/sidebar-cards", { credentials: "include" })
+    // Cache miss / stale — fetch fresh. Absolute URL routed through
+    // apiUrl() so the request bypasses the frontend edge (which has no
+    // /api/* route handler) and hits the backend origin directly.
+    fetch(apiUrl("/api/sidebar-cards"), { credentials: "include" })
       .then(async (r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return (await r.json()) as SidebarCard[];

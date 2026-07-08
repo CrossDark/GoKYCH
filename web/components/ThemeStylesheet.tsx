@@ -2,6 +2,7 @@
 
 import { Fragment } from "react";
 import { useApp } from "./AppProviders";
+import { apiUrl } from "@/lib/api";
 
 /**
  * ThemeStylesheet — loads /api/themes/<style_theme>.css into the document
@@ -23,14 +24,18 @@ import { useApp } from "./AppProviders";
  * (same URL while unchanged → CDN/browser cache; new timestamp on edit →
  * cache miss).
  *
- * SSR / hydration note: we deliberately construct the path RELATIVE
- * (`/api/themes/<name>`) instead of going through `apiUrl()`. `apiUrl()`
- * picks `http://localhost:8000` on the server (no `window`) and `""` on
- * the client, so the rendered href would differ between SSR HTML and the
- * post-hydration React tree. `<link rel="stylesheet">` resolves against
- * the document origin on both sides, so a relative path is identical and
- * is what we want. The dev rewrites in next.config.ts proxy `/api/*` to
- * the backend transparently.
+ * SSR / hydration note: we route the URLs through `apiUrl()` so the
+ * browser hits the backend origin directly (api.kych.net / api.ywda.net)
+ * instead of the frontend edge (eo.kych.net / cf.ywda.net). EdgeOne and
+ * Cloudflare Workers have no Next.js API route for `/api/themes/*`
+ * (`web/app/api/` doesn't exist — these endpoints are served by the Go
+ * backend through nginx `/api/*` reverse proxy), so a relative
+ * `/api/themes/css` request would hit the edge's default 504/500 fallback
+ * and stall the page render for 30+ seconds. Absolute URLs skip the edge
+ * entirely. `apiUrl()` returns different values between SSR
+ * (http://localhost:8000 in dev) and client (`""` in dev), so we mark the
+ * <link>/<script> tags with `suppressHydrationWarning` — same pattern
+ * used for the typst PDF download link (see ArticleView.tsx).
  */
 export function ThemeStylesheet() {
   const { site, themes } = useApp();
@@ -42,7 +47,9 @@ export function ThemeStylesheet() {
   const cacheBust = theme?.updated_at
     ? `?v=${new Date(theme.updated_at).getTime()}`
     : "";
-  const cssUrl = `/api/themes/${encodeURIComponent(name)}${cacheBust}`;
+  // Absolute URL on the backend origin — bypass the frontend edge where
+  // there's no API route handler for /api/themes/*.
+  const cssUrl = `${apiUrl(`/api/themes/${encodeURIComponent(name)}`)}${cacheBust}`;
 
   // Theme-bundled JS assets. Add new entries here as more themes ship
   // their own scripts. Particles script is `defer` so it runs after CSS
@@ -50,18 +57,23 @@ export function ThemeStylesheet() {
   // and the CSS variable to be live.
   const assets: { src: string; type: string }[] = [];
   if (name === "glass") {
-    assets.push({ src: `/api/themes/glass/assets/effects/particles.js${cacheBust}`, type: "module-shim" });
+    assets.push({ src: `${apiUrl(`/api/themes/glass/assets/effects/particles.js`)}${cacheBust}`, type: "module-shim" });
   }
 
   return (
     <Fragment>
-      <link rel="stylesheet" href={cssUrl} data-theme-stylesheet="active" />
+      {/* suppressHydrationWarning: apiUrl() differs between SSR and client
+       * in dev mode (localhost:8000 vs ""), producing a known mismatch in
+       * the rendered href. Production bakes NEXT_PUBLIC_API_BASE_URL into
+       * both sides so they agree — the warning only fires in dev. */}
+      <link rel="stylesheet" href={cssUrl} data-theme-stylesheet="active" suppressHydrationWarning />
       {assets.map((a) => (
         <script
           key={a.src}
           defer
           src={a.src}
           data-theme-asset={name}
+          suppressHydrationWarning
         />
       ))}
     </Fragment>
