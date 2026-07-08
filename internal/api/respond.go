@@ -37,6 +37,9 @@ func respondNotFound(c *gin.Context, msg string) {
 // errInvalidArticleType is the sentinel returned by articleIDFromParams when
 // the {type} path param doesn't match any known article type. Callers should
 // translate this into HTTP 400 (vs the 404 returned for missing articles).
+//
+// This is an INTERNAL sentinel — never surfaced to the client. The handler
+// in requireArticleID wraps it in the Chinese message "无效的文章类型。".
 var errInvalidArticleType = errors.New("invalid article type")
 
 // requireArticleID resolves the article ID from the {type}/{slug} path params

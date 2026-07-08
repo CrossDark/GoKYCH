@@ -397,7 +397,7 @@ type applyUpdateResponse struct {
 func (s *Server) applyUpdateHandler(c *gin.Context) {
 	var req applyUpdateRequest
 	if err := c.ShouldBindJSON(&req); err != nil && err.Error() != "EOF" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请求体格式无效。"})
 		return
 	}
 
@@ -422,7 +422,7 @@ func (s *Server) applyUpdateHandler(c *gin.Context) {
 
 	if ok, reason, _ := canWriteDir(binPath); !ok {
 		updater.setErr(fmt.Sprintf("cannot write to %s: %s", filepath.Dir(binPath), reason))
-		c.JSON(http.StatusForbidden, gin.H{"error": fmt.Sprintf("cannot write to %s: %s (process running as %s)",
+		c.JSON(http.StatusForbidden, gin.H{"error": fmt.Sprintf("无法写入 %s: %s (当前进程以 %s 身份运行)",
 			filepath.Dir(binPath), reason, os.Getenv("USER"))})
 		return
 	}

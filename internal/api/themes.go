@@ -64,6 +64,9 @@ func (s *Server) getThemeAsset(c *gin.Context) {
 	}
 	b, mime, err := themes.ReadAsset(s.DataDir, name, rel)
 	if err != nil {
+		// 透传上游错误:internal/core/themes/themes.go 的 errors.New/Errorf
+		// 是英文,用户可能看到英文错误(如 "invalid theme name: %q")。
+		// 这是已知 trade-off — 改源头会污染 slog 日志,这里仅标记透传。
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -241,6 +244,9 @@ func (s *Server) adminUploadTheme(c *gin.Context) {
 
 	if installErr != nil {
 		slog.Error("adminUploadTheme", "err", installErr)
+		// 透传上游错误:internal/core/themes/themes.go InstallFromZip/CSS 的
+		// errors.New/Errorf 是英文,用户可能看到英文错误(如 "theme.yaml not
+		// found in archive")。已知 trade-off,这里仅标记透传。
 		c.JSON(http.StatusBadRequest, gin.H{"error": installErr.Error()})
 		return
 	}
@@ -260,6 +266,9 @@ func (s *Server) adminDeleteTheme(c *gin.Context) {
 	}
 	if err := themes.Delete(s.DataDir, name); err != nil {
 		slog.Error("adminDeleteTheme", "name", name, "err", err)
+		// 透传上游错误:internal/core/themes/themes.go Delete 的 error 是英文
+		// (如 "cannot delete built-in theme %q" / "theme %q not found")。
+		// 已知 trade-off,这里仅标记透传。
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}

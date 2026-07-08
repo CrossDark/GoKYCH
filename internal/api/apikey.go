@@ -55,6 +55,8 @@ func (s *Server) createAPIKey(c *gin.Context) {
 	ctx := c.Request.Context()
 	key, plaintext, err := apikey.CreateCtx(ctx, s.DB, u.ID, in.Name, ttl)
 	if err != nil {
+		// 透传上游错误:internal/apikey.CreateCtx 返回的 error 可能含英文细节
+		// (如 SQL 约束 / 字段超长)。已知 trade-off,这里仅标记透传。
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
