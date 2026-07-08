@@ -1,0 +1,36 @@
+name: California Coast
+version: "1.0"
+author: GoKYCH
+description: 加州海岸 — macOS Big Sur 启发的极简风，米白/深蓝双模式，玻璃态导航，长文阅读友好
+
+# ── 主题设置 schema ──────────────────────────────────────────────
+# 三个核心调节点:
+#   accent_mode    强调色: 太平洋蓝(默认)/ 沙金/ 日落橙 — 改主色调不动其他变量
+#   corner_radius  圆角半径 — 改全站圆角感
+#   glass_blur     header/侧栏磨砂强度 — 改玻璃感强度
+#
+# 主题的"灵魂"在 CSS,settings 只暴露 3 个最常用的全局控制。
+# 想改更深度的(背景色/字体/特定元素颜色)直接编辑 theme.css。
+settings:
+  - key: accent_mode
+    type: select
+    label: 强调色
+    options: [pacific_blue, sand_gold, sunset_orange]
+    default: pacific_blue
+    hint: "主色调: 太平洋蓝(冷)/ 沙金(暖)/ 日落橙(活力)"
+  - key: corner_radius
+    type: range
+    label: 圆角半径
+    min: 4
+    max: 16
+    step: 1
+    default: 10
+    hint: "卡片/按钮/输入框的圆角 (px)"
+  - key: glass_blur
+    type: range
+    label: 玻璃磨砂
+    min: 0
+    max: 30
+    step: 2
+    default: 12
+    hint: "顶部 header / 侧栏 / 模态框的 backdrop-filter 模糊强度 (0=透明, 30=强磨砂)"

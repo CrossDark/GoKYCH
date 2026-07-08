@@ -1,0 +1,817 @@
+/* California Coast — 加州海岸
+ * ────────────────────────────────────────────────────────────────
+ * 设计灵感:
+ *   - macOS Big Sur 极简风(柔和圆角、宽松留白、半透明玻璃)
+ *   - 加州海岸自然色温(沙金、海蓝、暮色、月光)
+ *   - 长文阅读优先(温暖文字色、宽松行高、低干扰)
+ *
+ * 双模式:
+ *   - 浅色 "Pacific Daylight" — 太平洋日间光(米白/沙金/海蓝)
+ *   - 深色 "Twilight Over Pacific" — 暮色太平洋(深夜海/月光/灯塔蓝)
+ *
+ * 分层(z 从下到上):
+ *   body                纯色/微弱渐变背景
+ *   header/.site-header z:400 毛玻璃导航(浮于内容之上)
+ *   .admin-card/.card   普通内容卡片
+ *   .admin-modal        模态(最高 z:1100)
+ *
+ * Settings(theme.yaml 暴露的 3 个):
+ *   --cc-accent     三种主色(pacific_blue/sand_gold/sunset_orange)
+ *   --cc-radius     圆角
+ *   --cc-glass      磨砂强度
+ *
+ * 注意: 不加粒子、不加噪点、不加边框光 — 保持极简
+ */
+
+/* ════════════════════════════════════════════════════════════════
+ * 浅色模式 — Pacific Daylight(默认)
+ * ════════════════════════════════════════════════════════════════ */
+:root {
+    /* ── 强调色三元组(由 accent_mode 切换,默认 pacific_blue) ── */
+    --cc-pacific: #1E6BA8;
+    --cc-pacific-hover: #0F4A7E;
+    --cc-sand: #B8902E;
+    --cc-sand-hover: #8F6E1F;
+    --cc-sunset: #C8531E;
+    --cc-sunset-hover: #9F3F12;
+    --cc-accent: var(--cc-pacific);
+    --cc-accent-hover: var(--cc-pacific-hover);
+
+    /* ── Settings(被 JS 注入或直接改这里) ── */
+    --cc-radius: 10px;
+    --cc-radius-sm: 8px;
+    --cc-glass: 12px;
+
+    /* ── 基础色板(覆盖 globals.css) ── */
+    --bg: #F4F1EA;             /* 海风米白 */
+    --bg-card: #FBFAF6;       /* 晨雾白 */
+    --bg-card-hover: #FFFFFF;
+    --text: #3A3633;          /* 海边深棕 — 避免纯黑刺眼 */
+    --text-secondary: #6E6A63; /* 浮木灰 */
+    --text-muted: #A39E94;    /* 漂白贝壳 */
+    --border: #E5DFD0;        /* 沙岩 */
+    --border-soft: #EFEAE0;
+    --accent: var(--cc-accent);
+    --accent-hover: var(--cc-accent-hover);
+    --code-bg: #EEEAE0;
+    --code-fg: #3A3633;
+
+    /* ── 阴影 — 暖色微光(加州阳光) ── */
+    --shadow: 0 1px 3px rgba(80, 60, 30, 0.06), 0 1px 2px rgba(80, 60, 30, 0.04);
+    --shadow-md: 0 4px 12px rgba(80, 60, 30, 0.08), 0 2px 4px rgba(80, 60, 30, 0.05);
+
+    /* ── 圆角 ── */
+    --radius: var(--cc-radius);
+    --radius-sm: var(--cc-radius-sm);
+
+    /* ── Header 玻璃 ── */
+    --header-bg: rgba(244, 241, 234, 0.78);
+    --header-border: rgba(229, 223, 208, 0.6);
+
+    /* ── WP / Admin 变量(覆盖 globals.css) ── */
+    --wp-bg: var(--bg);
+    --wp-card-bg: var(--bg-card);
+    --wp-text: var(--text);
+    --wp-text-secondary: var(--text-secondary);
+    --wp-text-muted: var(--text-muted);
+    --wp-border: var(--border);
+    --wp-border-light: var(--border-soft);
+    --wp-sidebar-bg: rgba(251, 250, 246, 0.85);
+    --wp-sidebar-text: var(--text);
+    --wp-sidebar-icon: var(--text-muted);
+    --wp-sidebar-hover: rgba(30, 107, 168, 0.06);
+    --wp-sidebar-active: rgba(30, 107, 168, 0.10);
+    --wp-sidebar-card: var(--bg-card);
+
+    --admin-primary: var(--cc-accent);
+    --admin-primary-hover: var(--cc-accent-hover);
+    --admin-primary-soft: rgba(30, 107, 168, 0.10);
+    --admin-danger-soft: rgba(200, 60, 60, 0.10);
+    --admin-success-soft: rgba(40, 130, 80, 0.10);
+    --admin-warning-soft: rgba(184, 144, 46, 0.12);
+    --admin-info-soft: rgba(30, 107, 168, 0.08);
+    --admin-stripe: rgba(30, 107, 168, 0.04);
+}
+
+/* ════════════════════════════════════════════════════════════════
+ * 深色模式 — Twilight Over Pacific
+ * ════════════════════════════════════════════════════════════════ */
+[data-theme="dark"] {
+    --cc-accent: #5BA8D6;       /* 月下海蓝 — 比浅色版亮一档 */
+    --cc-accent-hover: #7DC0E5;
+
+    --bg: #1B2330;              /* 深夜海 */
+    --bg-card: #252F3E;         /* 海岸岩 */
+    --bg-card-hover: #2C3849;
+    --text: #E6E2D5;            /* 月光米 */
+    --text-secondary: #A8A498;  /* 暮色沙滩 */
+    --text-muted: #6E6A60;      /* 远处礁石 */
+    --border: #384358;          /* 暮色蓝 */
+    --border-soft: #2A3447;
+    --accent: var(--cc-accent);
+    --accent-hover: var(--cc-accent-hover);
+    --code-bg: #1F2735;
+    --code-fg: #E6E2D5;
+
+    /* 阴影 — 蓝色微光(灯塔) */
+    --shadow: 0 1px 3px rgba(0, 0, 0, 0.4), 0 1px 2px rgba(0, 0, 0, 0.3);
+    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.5), 0 2px 4px rgba(0, 0, 0, 0.35);
+
+    --header-bg: rgba(27, 35, 48, 0.78);
+    --header-border: rgba(56, 67, 88, 0.5);
+
+    --wp-sidebar-bg: rgba(37, 47, 62, 0.88);
+    --wp-sidebar-hover: rgba(91, 168, 214, 0.10);
+    --wp-sidebar-active: rgba(91, 168, 214, 0.16);
+    --admin-primary-soft: rgba(91, 168, 214, 0.12);
+    --admin-danger-soft: rgba(220, 100, 100, 0.12);
+    --admin-success-soft: rgba(80, 180, 120, 0.12);
+    --admin-warning-soft: rgba(220, 180, 80, 0.14);
+    --admin-info-soft: rgba(91, 168, 214, 0.10);
+    --admin-stripe: rgba(91, 168, 214, 0.04);
+}
+
+/* ════════════════════════════════════════════════════════════════
+ * 全局基础
+ * ════════════════════════════════════════════════════════════════ */
+body {
+    background-color: var(--bg);
+    /* 极弱径向渐变 — 给背景一点呼吸感,不抢眼 */
+    background-image:
+        radial-gradient(ellipse 80% 60% at 50% 0%, rgba(30, 107, 168, 0.04) 0%, transparent 60%),
+        radial-gradient(ellipse 60% 40% at 100% 100%, rgba(184, 144, 46, 0.03) 0%, transparent 50%);
+    background-attachment: fixed;
+    min-height: 100vh;
+    color: var(--text);
+    /* macOS 风格字体栈 — SF Pro 优先,中文 PingFang,等宽 SF Mono */
+    font-family:
+        -apple-system, BlinkMacSystemFont, "SF Pro Display",
+        "SF Pro Text", "Helvetica Neue",
+        "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei",
+        "Noto Sans SC", sans-serif;
+    font-feature-settings: "kern", "liga", "calt";
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    line-height: 1.8;
+    transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+[data-theme="dark"] body {
+    background-image:
+        radial-gradient(ellipse 80% 60% at 50% 0%, rgba(91, 168, 214, 0.05) 0%, transparent 60%),
+        radial-gradient(ellipse 60% 40% at 100% 100%, rgba(56, 67, 88, 0.08) 0%, transparent 50%);
+}
+
+/* ════════════════════════════════════════════════════════════════
+ * Header — 毛玻璃导航
+ * ════════════════════════════════════════════════════════════════ */
+header,
+.site-header {
+    background: var(--header-bg);
+    backdrop-filter: blur(var(--cc-glass)) saturate(180%);
+    -webkit-backdrop-filter: blur(var(--cc-glass)) saturate(180%);
+    border-bottom: 1px solid var(--header-border);
+    box-shadow: 0 1px 0 rgba(0, 0, 0, 0.02);
+    position: sticky;
+    top: 0;
+    z-index: 400;
+    transition: background 0.3s ease, border-color 0.3s ease;
+}
+
+header .site-logo,
+.site-header .site-logo,
+header .logo,
+.site-header .logo {
+    color: var(--text);
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    text-decoration: none;
+}
+
+header nav a,
+.site-header nav a {
+    color: var(--text-secondary);
+    text-decoration: none;
+    font-weight: 500;
+    padding: 0.4rem 0.8rem;
+    border-radius: var(--radius-sm);
+    transition: color 0.2s ease, background 0.2s ease;
+}
+
+header nav a:hover,
+.site-header nav a:hover {
+    color: var(--accent);
+    background: rgba(30, 107, 168, 0.05);
+}
+
+[data-theme="dark"] header nav a:hover,
+[data-theme="dark"] .site-header nav a:hover {
+    background: rgba(91, 168, 214, 0.10);
+}
+
+/* ════════════════════════════════════════════════════════════════
+ * 卡片 — 干净、有呼吸感
+ * ════════════════════════════════════════════════════════════════ */
+.bg-card,
+.card,
+[class*="card"]:not(.admin-modal):not(.admin-notice) {
+    background: var(--bg-card);
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    transition: all 0.25s ease;
+}
+
+.bg-card:hover,
+.card:hover,
+[class*="card"]:not(.admin-modal):not(.admin-notice):hover {
+    background: var(--bg-card-hover);
+    box-shadow: var(--shadow-md);
+    transform: translateY(-1px);
+}
+
+.home-notification,
+.featured-card,
+.article-item {
+    background: var(--bg-card);
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+}
+
+.home-notification.important {
+    background: rgba(184, 144, 46, 0.06);
+    border-color: rgba(184, 144, 46, 0.20);
+}
+
+[data-theme="dark"] .home-notification.important {
+    background: rgba(220, 180, 80, 0.08);
+    border-color: rgba(220, 180, 80, 0.24);
+}
+
+/* ════════════════════════════════════════════════════════════════
+ * 标题 — 不用深渊那种金边,简洁下划线
+ * ════════════════════════════════════════════════════════════════ */
+h1, h2, h3, h4, h5, h6 {
+    color: var(--text);
+    font-weight: 600;
+    letter-spacing: -0.015em;
+    line-height: 1.35;
+}
+
+h1 {
+    font-size: 2rem;
+    font-weight: 700;
+}
+
+h2 {
+    font-size: 1.5rem;
+    margin-top: 2rem;
+    margin-bottom: 1rem;
+}
+
+h3 {
+    font-size: 1.2rem;
+    margin-top: 1.5rem;
+    margin-bottom: 0.75rem;
+}
+
+/* ════════════════════════════════════════════════════════════════
+ * 链接 — 蓝色(主调),无下划线,hover 时变色
+ * ════════════════════════════════════════════════════════════════ */
+a {
+    color: var(--accent);
+    text-decoration: none;
+    transition: color 0.2s ease, opacity 0.2s ease;
+}
+
+a:hover {
+    color: var(--accent-hover);
+    text-decoration: underline;
+    text-decoration-thickness: 1px;
+    text-underline-offset: 2px;
+}
+
+/* 链接特殊: 标题里的链接、navbar 里的链接 — 不要默认下划线 */
+h1 a, h2 a, h3 a, h4 a, h5 a, h6 a,
+.site-title a, .logo a, header a, .site-header a {
+    text-decoration: none;
+}
+
+/* ════════════════════════════════════════════════════════════════
+ * 代码块
+ * ════════════════════════════════════════════════════════════════ */
+code, pre, pre code, .code-block {
+    font-family:
+        "SF Mono", "JetBrains Mono", "Fira Code", "Menlo", "Monaco",
+        "Cascadia Code", "Consolas", monospace;
+    font-size: 0.9em;
+    background: var(--code-bg);
+    color: var(--code-fg);
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius-sm);
+    padding: 0.15em 0.4em;
+}
+
+pre {
+    padding: 1rem 1.25rem;
+    overflow-x: auto;
+    line-height: 1.6;
+    border-radius: var(--radius);
+}
+
+pre code {
+    background: transparent;
+    border: none;
+    padding: 0;
+    font-size: 0.875rem;
+}
+
+/* ════════════════════════════════════════════════════════════════
+ * 按钮 — 干净,无强装饰
+ * ════════════════════════════════════════════════════════════════ */
+.btn-primary,
+button.btn-primary,
+.admin-btn-primary {
+    background: var(--accent);
+    border: 1px solid transparent;
+    color: #FFFFFF;
+    font-weight: 500;
+    padding: 0.5rem 1.1rem;
+    border-radius: var(--radius-sm);
+    box-shadow: var(--shadow);
+    transition: all 0.2s ease;
+    cursor: pointer;
+}
+
+.btn-primary:hover,
+.admin-btn-primary:hover {
+    background: var(--accent-hover);
+    box-shadow: var(--shadow-md);
+    transform: translateY(-1px);
+}
+
+.btn-secondary,
+button.btn-secondary,
+.admin-btn-secondary {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 0.5rem 1.1rem;
+    border-radius: var(--radius-sm);
+    transition: all 0.2s ease;
+    cursor: pointer;
+}
+
+.btn-secondary:hover,
+.admin-btn-secondary:hover {
+    background: var(--bg-card);
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.admin-btn-danger {
+    background: rgba(200, 60, 60, 0.08);
+    border: 1px solid rgba(200, 60, 60, 0.25);
+    color: #C83C3C;
+    padding: 0.5rem 1.1rem;
+    border-radius: var(--radius-sm);
+    transition: all 0.2s ease;
+    cursor: pointer;
+}
+
+[data-theme="dark"] .admin-btn-danger {
+    color: #E89A9A;
+}
+
+.admin-btn-danger:hover {
+    background: rgba(200, 60, 60, 0.15);
+}
+
+/* ════════════════════════════════════════════════════════════════
+ * 表单元素
+ * ════════════════════════════════════════════════════════════════ */
+input[type="text"],
+input[type="email"],
+input[type="password"],
+input[type="search"],
+input[type="url"],
+input[type="number"],
+textarea,
+select {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text);
+    padding: 0.5rem 0.75rem;
+    font: inherit;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+input:focus,
+textarea:focus,
+select:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--admin-info-soft);
+    outline: none;
+}
+
+input::placeholder,
+textarea::placeholder {
+    color: var(--text-muted);
+}
+
+/* ════════════════════════════════════════════════════════════════
+ * 表格 — 干净,无金边
+ * ════════════════════════════════════════════════════════════════ */
+table {
+    border-collapse: collapse;
+    width: 100%;
+    background: var(--bg-card);
+    border-radius: var(--radius);
+    overflow: hidden;
+    border: 1px solid var(--border-soft);
+}
+
+table thead {
+    background: rgba(30, 107, 168, 0.04);
+    border-bottom: 1px solid var(--border);
+}
+
+[data-theme="dark"] table thead {
+    background: rgba(91, 168, 214, 0.06);
+}
+
+table thead th {
+    color: var(--text);
+    font-weight: 600;
+    padding: 0.75rem 1rem;
+    text-align: left;
+    font-size: 0.875rem;
+    letter-spacing: 0.01em;
+}
+
+table tbody tr {
+    border-bottom: 1px solid var(--border-soft);
+    transition: background 0.15s ease;
+}
+
+table tbody tr:last-child {
+    border-bottom: none;
+}
+
+table tbody tr:hover {
+    background: rgba(30, 107, 168, 0.03);
+}
+
+[data-theme="dark"] table tbody tr:hover {
+    background: rgba(91, 168, 214, 0.05);
+}
+
+table tbody td {
+    color: var(--text);
+    padding: 0.75rem 1rem;
+    font-size: 0.9rem;
+}
+
+/* ════════════════════════════════════════════════════════════════
+ * Sidebar / 抽屉 — 玻璃态
+ * ════════════════════════════════════════════════════════════════ */
+.sidebar,
+.side-drawer,
+.admin-modal,
+.modal-content {
+    background: var(--bg-card);
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-md);
+}
+
+.side-drawer,
+.admin-modal,
+.modal-content {
+    background: var(--bg-card);
+    backdrop-filter: blur(var(--cc-glass));
+    -webkit-backdrop-filter: blur(var(--cc-glass));
+    z-index: 1100;
+}
+
+.modal-backdrop {
+    background: rgba(20, 20, 20, 0.35);
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+}
+
+[data-theme="dark"] .modal-backdrop {
+    background: rgba(0, 0, 0, 0.55);
+}
+
+.sidebar a,
+.sidebar button,
+.side-drawer a,
+.side-drawer button {
+    color: var(--text);
+    text-decoration: none;
+    border-radius: var(--radius-sm);
+    transition: all 0.15s ease;
+}
+
+.sidebar a:hover,
+.sidebar button:hover,
+.side-drawer a:hover,
+.side-drawer button:hover {
+    background: var(--wp-sidebar-hover);
+    color: var(--accent);
+}
+
+.sidebar .active,
+.side-drawer .active {
+    background: var(--wp-sidebar-active);
+    color: var(--accent);
+    font-weight: 500;
+}
+
+/* ════════════════════════════════════════════════════════════════
+ * 文章内容区
+ * ════════════════════════════════════════════════════════════════ */
+.article-content,
+.markdown-body,
+.wikidot-body {
+    background: var(--bg-card);
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius);
+    padding: 2rem 2.25rem;
+    box-shadow: var(--shadow);
+    line-height: 1.85;
+}
+
+.article-content h1,
+.markdown-body h1,
+.wikidot-body h1 {
+    color: var(--text);
+    font-size: 1.85rem;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 0.6rem;
+    margin-bottom: 1.5rem;
+}
+
+.article-content h2,
+.markdown-body h2,
+.wikidot-body h2 {
+    color: var(--text);
+    font-size: 1.4rem;
+    border-bottom: 1px solid var(--border-soft);
+    padding-bottom: 0.4rem;
+    margin-top: 2.25rem;
+}
+
+.article-content h3,
+.markdown-body h3,
+.wikidot-body h3 {
+    color: var(--text);
+    font-size: 1.2rem;
+    margin-top: 1.75rem;
+}
+
+.article-content p,
+.markdown-body p,
+.wikidot-body p {
+    color: var(--text);
+    margin-bottom: 1.1rem;
+    line-height: 1.85;
+}
+
+.article-content blockquote,
+.markdown-body blockquote,
+.wikidot-body blockquote {
+    border-left: 3px solid var(--accent);
+    background: rgba(30, 107, 168, 0.04);
+    color: var(--text-secondary);
+    padding: 0.75rem 1.25rem;
+    margin: 1.25rem 0;
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+
+[data-theme="dark"] .article-content blockquote,
+[data-theme="dark"] .markdown-body blockquote,
+[data-theme="dark"] .wikidot-body blockquote {
+    background: rgba(91, 168, 214, 0.06);
+}
+
+/* ════════════════════════════════════════════════════════════════
+ * 标签 / Badge
+ * ════════════════════════════════════════════════════════════════ */
+.badge,
+.tag {
+    background: rgba(30, 107, 168, 0.08);
+    border: 1px solid rgba(30, 107, 168, 0.20);
+    color: var(--accent);
+    padding: 0.2rem 0.6rem;
+    border-radius: var(--radius-sm);
+    font-size: 0.8rem;
+    font-weight: 500;
+    display: inline-block;
+}
+
+[data-theme="dark"] .badge,
+[data-theme="dark"] .tag {
+    background: rgba(91, 168, 214, 0.10);
+    border-color: rgba(91, 168, 214, 0.25);
+}
+
+.tag-primary {
+    background: rgba(184, 144, 46, 0.10);
+    border-color: rgba(184, 144, 46, 0.25);
+    color: var(--cc-sand);
+}
+
+[data-theme="dark"] .tag-primary {
+    background: rgba(220, 180, 80, 0.12);
+    border-color: rgba(220, 180, 80, 0.30);
+    color: #DCB450;
+}
+
+/* ════════════════════════════════════════════════════════════════
+ * Footer
+ * ════════════════════════════════════════════════════════════════ */
+footer, .site-footer {
+    background: transparent;
+    border-top: 1px solid var(--border-soft);
+    color: var(--text-muted);
+    padding: 2rem 0;
+    margin-top: 4rem;
+}
+
+footer a, .site-footer a {
+    color: var(--text-secondary);
+}
+
+footer a:hover, .site-footer a:hover {
+    color: var(--accent);
+}
+
+/* ════════════════════════════════════════════════════════════════
+ * WP Admin 区域
+ * ════════════════════════════════════════════════════════════════ */
+.wp-admin-wrap {
+    --wp-sidebar-bg: rgba(251, 250, 246, 0.88);
+    --wp-sidebar-hover: rgba(30, 107, 168, 0.06);
+    --wp-sidebar-active: rgba(30, 107, 168, 0.10);
+    --wp-sidebar-text: var(--text);
+    --wp-sidebar-icon: var(--text-muted);
+    --wp-sidebar-card: var(--bg-card);
+    --wp-bg: var(--bg);
+    --wp-card-bg: var(--bg-card);
+    --wp-text: var(--text);
+    --wp-text-secondary: var(--text-secondary);
+    --wp-text-muted: var(--text-muted);
+    --wp-border: var(--border);
+    --wp-border-light: var(--border-soft);
+    --wp-table-stripe: rgba(30, 107, 168, 0.03);
+}
+
+[data-theme="dark"] .wp-admin-wrap {
+    --wp-sidebar-bg: rgba(37, 47, 62, 0.88);
+    --wp-sidebar-hover: rgba(91, 168, 214, 0.10);
+    --wp-sidebar-active: rgba(91, 168, 214, 0.16);
+    --wp-table-stripe: rgba(91, 168, 214, 0.05);
+}
+
+.wp-admin-sidebar {
+    background: var(--wp-sidebar-bg);
+    border-right: 1px solid var(--border-soft);
+    backdrop-filter: blur(var(--cc-glass));
+    -webkit-backdrop-filter: blur(var(--cc-glass));
+}
+
+.wp-admin-content,
+.wp-admin-main {
+    background: transparent;
+}
+
+.wp-admin-topbar,
+.admin-topbar {
+    background: var(--header-bg);
+    border-bottom: 1px solid var(--border-soft);
+    backdrop-filter: blur(var(--cc-glass));
+    -webkit-backdrop-filter: blur(var(--cc-glass));
+}
+
+.admin-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+}
+
+.admin-card-header {
+    border-bottom: 1px solid var(--border-soft);
+    padding: 1rem 1.25rem;
+}
+
+.admin-card-body {
+    padding: 1.25rem;
+}
+
+.admin-user-avatar,
+.site-logo-fallback,
+.wp-admin-brand-icon-fallback {
+    background: linear-gradient(135deg, var(--accent), var(--accent-hover)) !important;
+    color: #FFFFFF;
+}
+
+.admin-table thead {
+    background: rgba(30, 107, 168, 0.04);
+    border-bottom: 1px solid var(--border);
+}
+
+[data-theme="dark"] .admin-table thead {
+    background: rgba(91, 168, 214, 0.06);
+}
+
+.admin-table tbody tr:hover {
+    background: rgba(30, 107, 168, 0.03);
+}
+
+[data-theme="dark"] .admin-table tbody tr:hover {
+    background: rgba(91, 168, 214, 0.05);
+}
+
+.admin-empty {
+    background: var(--bg-card);
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius);
+    color: var(--text-muted);
+}
+
+/* ════════════════════════════════════════════════════════════════
+ * Notice 提示
+ * ════════════════════════════════════════════════════════════════ */
+.admin-notice {
+    background: rgba(30, 107, 168, 0.06);
+    border: 1px solid rgba(30, 107, 168, 0.20);
+    border-radius: var(--radius-sm);
+    color: var(--text);
+}
+
+.admin-notice-success {
+    background: rgba(40, 130, 80, 0.08);
+    border-color: rgba(40, 130, 80, 0.22);
+}
+
+.admin-notice-error {
+    background: rgba(200, 60, 60, 0.08);
+    border-color: rgba(200, 60, 60, 0.22);
+}
+
+.admin-notice-warning {
+    background: rgba(184, 144, 46, 0.10);
+    border-color: rgba(184, 144, 46, 0.26);
+}
+
+.admin-notice-info {
+    background: rgba(30, 107, 168, 0.06);
+    border-color: rgba(30, 107, 168, 0.18);
+}
+
+/* ════════════════════════════════════════════════════════════════
+ * 滚动条 — 干净,不抢眼
+ * ════════════════════════════════════════════════════════════════ */
+::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+}
+
+::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+    background: rgba(110, 106, 99, 0.25);
+    border-radius: 5px;
+    border: 2px solid var(--bg);
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: rgba(110, 106, 99, 0.40);
+}
+
+[data-theme="dark"] ::-webkit-scrollbar-thumb {
+    background: rgba(168, 164, 152, 0.20);
+    border: 2px solid var(--bg);
+}
+
+[data-theme="dark"] ::-webkit-scrollbar-thumb:hover {
+    background: rgba(168, 164, 152, 0.35);
+}
+
+/* ════════════════════════════════════════════════════════════════
+ * 减弱动画
+ * ════════════════════════════════════════════════════════════════ */
+@media (prefers-reduced-motion: reduce) {
+    * {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+    }
+}
