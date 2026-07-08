@@ -304,6 +304,14 @@ func (s *Server) adminActivateTheme(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "保存设置失败。"})
 		return
 	}
+	// Fire-and-forget revalidate so the EdgeOne / Cloudflare edge drops
+	// the cached /api/site response (cache tag "site") and any HTML
+	// that embedded the old style_theme. Without this the 3600s ISR
+	// window wins and a refresh keeps showing the previous theme —
+	// matching updateSettings (admin.go) which fires the same pair on
+	// general settings saves. Pair with the "site" cache tag added in
+	// web/lib/api/site.ts.
+	s.revalidateFrontend([]string{"site", "home"}, []string{"/"})
 	slog.Info("theme activated", "name", name)
 	c.JSON(http.StatusOK, gin.H{"status": "ok", "active": name})
 }
