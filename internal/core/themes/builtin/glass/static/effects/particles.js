@@ -27,7 +27,11 @@
  *   window.GlassFX.getMode()
  *   window.GlassFX.setDensity(0..100)
  *   window.GlassFX.setBackgroundImage(url)  // url 为空字符串清掉
- *   window.GlassFX.setCardAlpha(0..100)     // 透明度,0..100 整数
+ *   window.GlassFX.setCardAlpha(0..100)     // 卡片底色透明度, 0..100 整数
+ *   window.GlassFX.setCardFrost(0..100)     // 悬浮卡片磨砂 (--glass-card-frost)
+ *   window.GlassFX.setIsolationFrost(0..100)// 隔离层磨砂 (--glass-isolation-frost)
+ *   window.GlassFX.setSidebarFrost(0..100)  // 左右侧栏磨砂 (--glass-sidebar-frost)
+ *   window.GlassFX.reload()                 // 重新拉 server settings, admin 保存后调
  */
 (function () {
     'use strict';
@@ -257,6 +261,23 @@
                     const clamped = Math.max(0, Math.min(100, alphaVal));
                     this.setCardAlpha(clamped);
                 }
+                // 三个磨砂强度滑条 — admin 在后台拖, 写进 theme_settings
+                // 表, 这里的 _loadConfig 读出来 setProperty 注入 CSS 变量。
+                // 跟 card_alpha 一样不写 localStorage, 离线退化到 theme.css
+                // 默认值 (24 / 12 / 28px)。三层 fallback: server override →
+                // schema default → 不调 setter, theme.css 默认值生效。
+                const cardFrostVal = values.card_frost != null
+                    ? parseInt(values.card_frost, 10)
+                    : (typeof def('card_frost') === 'number' ? def('card_frost') : NaN);
+                if (!isNaN(cardFrostVal)) this.setCardFrost(cardFrostVal);
+                const isolationFrostVal = values.isolation_frost != null
+                    ? parseInt(values.isolation_frost, 10)
+                    : (typeof def('isolation_frost') === 'number' ? def('isolation_frost') : NaN);
+                if (!isNaN(isolationFrostVal)) this.setIsolationFrost(isolationFrostVal);
+                const sidebarFrostVal = values.sidebar_frost != null
+                    ? parseInt(values.sidebar_frost, 10)
+                    : (typeof def('sidebar_frost') === 'number' ? def('sidebar_frost') : NaN);
+                if (!isNaN(sidebarFrostVal)) this.setSidebarFrost(sidebarFrostVal);
                 return;
             } catch (e) {
                 // network/CORS/etc — fall back to localStorage entirely
@@ -347,6 +368,80 @@
         setCardAlpha(value) {
             const v = Math.max(0, Math.min(100, value | 0));
             document.documentElement.style.setProperty('--glass-card-alpha', String(v / 100));
+        }
+
+        // setCardFrost / setIsolationFrost / setSidebarFrost (value 0..100) —
+        // 三个磨砂强度滑条的控制。schema 0-100 整数, 这里 0.4 倍率映射到
+        // 0-40px 直接套到 --glass-*-frost CSS 变量 (theme.css 引用)。
+        // 0-100 范围设计是为了跟 card_alpha 范围一致 (admin UI 一致性);
+        // 40px 上限对 3 个目标都够 (卡片 default 24, 隔离 default 12, 侧栏
+        // default 28)。同样不写 localStorage: 离线退化到 theme.css 默认值。
+        setCardFrost(value) {
+            const v = Math.max(0, Math.min(100, value | 0));
+            document.documentElement.style.setProperty('--glass-card-frost', (v * 0.4).toFixed(1) + 'px');
+        }
+        setIsolationFrost(value) {
+            const v = Math.max(0, Math.min(100, value | 0));
+            document.documentElement.style.setProperty('--glass-isolation-frost', (v * 0.4).toFixed(1) + 'px');
+        }
+        setSidebarFrost(value) {
+            const v = Math.max(0, Math.min(100, value | 0));
+            document.documentElement.style.setProperty('--glass-sidebar-frost', (v * 0.4).toFixed(1) + 'px');
+        }
+
+        // reload() — 重新拉 server settings, 把 admin 后台最新保存的
+        // card_frost / isolation_frost / sidebar_frost / effect_mode 等
+        // 重新 setProperty 到 CSS 变量。 admin ThemeSettingsModal 保存后
+        // 会调 window.GlassFX?.reload?.() (在客户端, 跟 particles.js 同源)
+        // 让滑条调整立即反映在当前页面。 返回 Promise<boolean> 表示
+        // 是否真的重新拉了 (network 失败 false, 但不抛错)。
+        async reload() {
+            try {
+                const r = await fetch('/api/themes/glass/settings', { cache: 'no-store' });
+                if (!r.ok) return false;
+                const data = await r.json();
+                const schema = (data && data.schema) || [];
+                const values = (data && data.values) || {};
+                const def = (k) => {
+                    const e = schema.find((s) => s.key === k);
+                    return e ? e.default : undefined;
+                };
+                // mode — 跟 _loadConfig 一样, 但要切换实际模式
+                const modeVal = values.effect_mode != null ? values.effect_mode : def('effect_mode');
+                if (modeVal === 'rain' || modeVal === 'sunlight' || modeVal === 'none') {
+                    this._mode = modeVal;
+                    this.setMode(modeVal);
+                }
+                // density
+                const densityVal = values.particle_density != null
+                    ? parseInt(values.particle_density, 10)
+                    : (typeof def('particle_density') === 'number' ? def('particle_density') : NaN);
+                if (!isNaN(densityVal)) this.setDensity(densityVal);
+                // card_alpha
+                const alphaVal = values.card_alpha != null
+                    ? parseInt(values.card_alpha, 10)
+                    : (typeof def('card_alpha') === 'number' ? def('card_alpha') : NaN);
+                if (!isNaN(alphaVal)) this.setCardAlpha(alphaVal);
+                // 三个磨砂强度
+                for (const [key, setter] of [
+                    ['card_frost', (v) => this.setCardFrost(v)],
+                    ['isolation_frost', (v) => this.setIsolationFrost(v)],
+                    ['sidebar_frost', (v) => this.setSidebarFrost(v)],
+                ]) {
+                    const v = values[key] != null
+                        ? parseInt(values[key], 10)
+                        : (typeof def(key) === 'number' ? def(key) : NaN);
+                    if (!isNaN(v)) setter(v);
+                }
+                // background_image
+                const bgVal = values.background_image != null
+                    ? String(values.background_image)
+                    : (def('background_image') != null ? String(def('background_image')) : '');
+                this.setBackgroundImage(bgVal);
+                return true;
+            } catch (e) {
+                return false;
+            }
         }
 
         _applyStoredBgImage() {

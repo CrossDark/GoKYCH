@@ -44,6 +44,12 @@
     --glass-tint: rgba(255, 255, 255, 0.32);
     --glass-tint-strong: rgba(255, 255, 255, 0.6);
     --glass-blur: 24px;
+    /* ── 三个磨砂强度 (admin 滑条控制, particles.js setProperty 注入) ──
+     * 滑条 schema 0-100, 通过 0.4 倍率映射到 0-40px, max 40px 够明显。
+     * 默认值与改前 hardcode 对齐, 不破坏现有视觉: 卡片 24 / 隔离 12 / 侧栏 28 */
+    --glass-card-frost: 24px;
+    --glass-isolation-frost: 12px;
+    --glass-sidebar-frost: 28px;
     /* 透明隔离层自身底色 — 留作雨滴/阳光之上的微弱磨砂。透明意味着
      * 默认状态下 Layer 1 几乎不可见, fx 模式下由 Canvas 提供视觉。 */
     --glass-isolation: rgba(255, 255, 255, 0.06);
@@ -81,6 +87,11 @@
     --glass-tint: rgba(255, 255, 255, 0.06);
     --glass-tint-strong: rgba(255, 255, 255, 0.12);
     --glass-blur: 24px;
+    /* 三个磨砂强度在 dark 沿用 light 默认值, 视觉上 24/12/28px 在深色
+     * 背景下同样自然; particles.js 启动时按 admin 设置覆盖即可。 */
+    --glass-card-frost: 24px;
+    --glass-isolation-frost: 12px;
+    --glass-sidebar-frost: 28px;
     --glass-isolation: rgba(15, 12, 41, 0.18);
     --glass-bg-image: none;
     --wp-sidebar-bg: rgba(15, 12, 41, 0.55);
@@ -176,17 +187,21 @@ body {
 
 /* ── Layer 1: 透明玻璃隔离层 (Canvas 在这里) ─────────────
  *   - position: fixed 固定到 viewport, 不跟 body 滚
- *   - 半透实色 (不 blur 自己, 性能 + 清晰度)
+ *   - 半透实色 + backdrop-filter blur 身后的背景 (admin 滑条控制强度)
  *   - pointer-events: none, 鼠标穿透
  *   - z-index: 0 — 卡片(z:5) 和导航(z:20) 都盖在它上面
  *
  * 这个 div 由 particles.js 自动插入, 主题 CSS 提前定义好样式。
+ * backdrop-filter 强度由 --glass-isolation-frost 控制 (admin 滑条
+ * "隔离层磨砂" — 让背景渐变 / 雨滴 / 阳光透过这层产生更明显的玻璃感)。
  */
 #glass-fx-layer {
     position: fixed;
     inset: 0;
     z-index: 0;
     background: var(--glass-isolation);
+    backdrop-filter: blur(var(--glass-isolation-frost));
+    -webkit-backdrop-filter: blur(var(--glass-isolation-frost));
     pointer-events: none;
     overflow: hidden;
 }
@@ -211,8 +226,8 @@ body {
  */
 header, .site-header {
     background: var(--header-bg);
-    backdrop-filter: blur(20px) saturate(180%);
-    -webkit-backdrop-filter: blur(20px) saturate(180%);
+    backdrop-filter: blur(var(--glass-sidebar-frost)) saturate(180%);
+    -webkit-backdrop-filter: blur(var(--glass-sidebar-frost)) saturate(180%);
     border-bottom: 1px solid var(--border-soft);
     box-shadow: 0 4px 30px rgba(99, 102, 241, 0.08);
     position: sticky;
@@ -237,8 +252,8 @@ header, .site-header {
     position: relative;
     z-index: 5;
     background: var(--bg-card);
-    backdrop-filter: blur(var(--glass-blur));
-    -webkit-backdrop-filter: blur(var(--glass-blur));
+    backdrop-filter: blur(var(--glass-card-frost));
+    -webkit-backdrop-filter: blur(var(--glass-card-frost));
     border: 1px solid var(--border);
     box-shadow: var(--shadow-md);
 }
@@ -345,14 +360,15 @@ button.btn-primary,
  * 原因: 在大片留白页面 (如 passkeys / empty state), 0.55 + 32px blur
  * 模糊的全是背景色, 模态自身几乎透明, 文字读不清。 阻塞性 UI
  * 必须保证可读, 0.78 仍然能透出渐变(有色相变化), 不丢失玻璃感。
+ * blur 强度由 --glass-sidebar-frost 控制 (admin 滑条 "左右侧栏磨砂")。
  */
 .admin-modal,
 .side-drawer,
 .admin-modal-content,
 .modal-content {
     background: rgba(255, 255, 255, 0.78);
-    backdrop-filter: blur(32px) saturate(180%);
-    -webkit-backdrop-filter: blur(32px) saturate(180%);
+    backdrop-filter: blur(var(--glass-sidebar-frost)) saturate(180%);
+    -webkit-backdrop-filter: blur(var(--glass-sidebar-frost)) saturate(180%);
     border: 1px solid var(--border);
     box-shadow: var(--shadow-lg);
     z-index: 1100;
@@ -365,13 +381,20 @@ button.btn-primary,
     background: rgba(20, 18, 50, 0.78);
 }
 
+/* 右抽屉 (Header 🏷️ 标签 sidebar) — globals.css 没设 backdrop-filter,
+ * 玻璃主题这里补上, 让 admin "侧栏磨砂" 滑条也覆盖它。 */
+.sidebar {
+    backdrop-filter: blur(var(--glass-sidebar-frost)) saturate(180%);
+    -webkit-backdrop-filter: blur(var(--glass-sidebar-frost)) saturate(180%);
+}
+
 /* article content — 阅读面板, 不完全玻璃化以保证长文可读 */
 .article-content,
 .markdown-body,
 .wikidot-body {
     background: var(--glass-tint-strong);
-    backdrop-filter: blur(16px);
-    -webkit-backdrop-filter: blur(16px);
+    backdrop-filter: blur(var(--glass-card-frost));
+    -webkit-backdrop-filter: blur(var(--glass-card-frost));
     border: 1px solid var(--border-soft);
     border-radius: var(--radius);
     padding: 1.5rem;
@@ -389,8 +412,8 @@ footer, .site-footer {
 
 /* ── Admin area ─────────────────────────────────────────── */
 .wp-admin-sidebar {
-    backdrop-filter: blur(28px) saturate(180%);
-    -webkit-backdrop-filter: blur(28px) saturate(180%);
+    backdrop-filter: blur(var(--glass-sidebar-frost)) saturate(180%);
+    -webkit-backdrop-filter: blur(var(--glass-sidebar-frost)) saturate(180%);
     border-right: 1px solid var(--border-soft);
 }
 
@@ -402,15 +425,15 @@ footer, .site-footer {
 .wp-admin-topbar,
 .admin-topbar {
     background: var(--glass-tint-strong);
-    backdrop-filter: blur(20px) saturate(180%);
-    -webkit-backdrop-filter: blur(20px) saturate(180%);
+    backdrop-filter: blur(var(--glass-sidebar-frost)) saturate(180%);
+    -webkit-backdrop-filter: blur(var(--glass-sidebar-frost)) saturate(180%);
     border-bottom: 1px solid var(--border-soft);
 }
 
 .admin-card {
     background: var(--bg-card);
-    backdrop-filter: blur(var(--glass-blur));
-    -webkit-backdrop-filter: blur(var(--glass-blur));
+    backdrop-filter: blur(var(--glass-card-frost));
+    -webkit-backdrop-filter: blur(var(--glass-card-frost));
     border: 1px solid var(--border);
     box-shadow: var(--shadow-md);
     border-radius: var(--radius);
@@ -438,8 +461,8 @@ footer, .site-footer {
 
 .admin-empty {
     background: var(--bg-card);
-    backdrop-filter: blur(var(--glass-blur));
-    -webkit-backdrop-filter: blur(var(--glass-blur));
+    backdrop-filter: blur(var(--glass-card-frost));
+    -webkit-backdrop-filter: blur(var(--glass-card-frost));
     border-radius: var(--radius);
 }
 

@@ -129,6 +129,16 @@ export function ThemeSettingsModal({
         toSend[s.key] = working[s.key] ?? "";
       }
       await updateThemeSettings(csrf, themeName, toSend);
+      // Glass theme runs an in-page effect layer (particles.js) that
+      // caches the previous server settings on mount; admin's saved
+      // value won't show up until it re-fetches. Window.GlassFX is the
+      // global handle particles.js exposes — calling reload() refreshes
+      // --glass-card-alpha / --glass-*-frost / effect_mode in-place
+      // without a page reload. Other themes don't have a runtime
+      // effect layer, so this is a glass-specific no-op for them.
+      if (typeof window !== "undefined" && (window as any).GlassFX?.reload) {
+        (window as any).GlassFX.reload();
+      }
       toast.success(`「${themeLabel}」设置已保存。`);
       onClose();
     } catch (e: any) {

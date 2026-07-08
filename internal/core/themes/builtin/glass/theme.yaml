@@ -21,6 +21,30 @@ settings:
     step: 5
     default: 40
     hint: "玻璃卡片的底色透明度 (0=完全透明, 100=完全不透明)。hover 时自动 +13%"
+  - key: card_frost
+    type: range
+    label: 悬浮卡片磨砂
+    min: 0
+    max: 100
+    step: 5
+    default: 60
+    hint: "悬浮卡片的 backdrop-filter blur 强度 (0=无, 100=最强 ≈ 40px)。覆盖文章正文、首页推荐文章、admin 卡片等所有 .bg-card/.card/.glass-card/.admin-card"
+  - key: isolation_frost
+    type: range
+    label: 隔离层磨砂
+    min: 0
+    max: 100
+    step: 5
+    default: 30
+    hint: "背景和卡片之间的玻璃隔离层磨砂 (0=透明, 100=最强 ≈ 40px)。控制 #glass-fx-layer 层的 backdrop-filter, 让背景渐变 / 雨滴 / 阳光透过隔离层产生更明显的玻璃感"
+  - key: sidebar_frost
+    type: range
+    label: 左右侧栏磨砂
+    min: 0
+    max: 100
+    step: 5
+    default: 70
+    hint: "左右两个侧栏(左抽屉 ☰ / 右抽屉 🏷️)和顶部导航、admin 侧栏的 backdrop-filter blur 强度 (0=无, 100=最强 ≈ 40px)"
   - key: effect_mode
     type: select
     label: 效果模式
