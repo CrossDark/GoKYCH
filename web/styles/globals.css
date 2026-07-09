@@ -4861,7 +4861,16 @@ body.admin-modal-open { overflow: hidden; }
 .admin-table .col-id     { width: 60px; color: var(--text-muted); }
 .admin-table .col-title  { font-weight: 500; }
 .admin-table .col-slug   { font-family: "SF Mono", "Fira Code", monospace; font-size: 0.8rem; color: var(--text-muted); }
-.admin-table td.col-actions { display: flex; gap: 0.3rem; justify-content: flex-end; align-items: center; }
+/* Action buttons row — keep them vertically centered in tall rows (title wraps
+ * to N lines or tags stack vertically). The TD itself stretches to row height
+ * as a normal table-cell; flex lives one level deeper in `.admin-table-actions`. */
+.admin-table td.col-actions { vertical-align: middle; text-align: right; white-space: nowrap; }
+.admin-table td.col-actions > .admin-table-actions {
+    display: inline-flex;
+    gap: 0.3rem;
+    align-items: center;
+    vertical-align: middle;
+}
 
 /* ── File manager thumbs: cap the size so a 4000×3000 PNG can't blow the
  *   row out to its native height. The thumb cell itself also gets a fixed

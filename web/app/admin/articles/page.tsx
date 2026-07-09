@@ -374,15 +374,17 @@ function AdminArticlesInner() {
                     </td>
                     <td className="col-date">{fmtDate(a.updated_at)}</td>
                     <td className="col-actions">
-                      <Link href={`/${a.type}/${a.slug}`} target="_blank" className="admin-btn admin-btn-outline admin-btn-sm" title="查看">👁</Link>
-                      <Link
-                        href={`/admin/articles/${a.type}/${a.slug}`}
-                        className="admin-btn admin-btn-secondary admin-btn-sm"
-                        title="编辑"
-                      >
-                        ✏️
-                      </Link>
-                      <button className="admin-btn admin-btn-danger admin-btn-sm" onClick={() => handleDelete(a)} title="删除">🗑</button>
+                      <div className="admin-table-actions">
+                        <Link href={`/${a.type}/${a.slug}`} target="_blank" className="admin-btn admin-btn-outline admin-btn-sm" title="查看">👁</Link>
+                        <Link
+                          href={`/admin/articles/${a.type}/${a.slug}`}
+                          className="admin-btn admin-btn-secondary admin-btn-sm"
+                          title="编辑"
+                        >
+                          ✏️
+                        </Link>
+                        <button className="admin-btn admin-btn-danger admin-btn-sm" onClick={() => handleDelete(a)} title="删除">🗑</button>
+                      </div>
                     </td>
                   </tr>
                 ))}

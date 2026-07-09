@@ -226,19 +226,21 @@ export default function AdminFiles() {
                       <td><span style={{ fontSize: "0.78rem", color: "var(--text-muted)" }}>{f.mime_type || "—"}</span></td>
                       <td className="col-date">{fmtDateTime(f.created_at)}</td>
                       <td className="col-actions">
-                        <button className="admin-btn admin-btn-outline admin-btn-sm" onClick={() => copyUrl(url)} title="复制链接">📋</button>
-                        <a
-                          className="admin-btn admin-btn-secondary admin-btn-sm"
-                          href={url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          title="打开"
-                        >↗</a>
-                        <button
-                          className="admin-btn admin-btn-danger admin-btn-sm"
-                          onClick={() => handleDelete(f)}
-                          title="删除"
-                        >🗑</button>
+                        <div className="admin-table-actions">
+                          <button className="admin-btn admin-btn-outline admin-btn-sm" onClick={() => copyUrl(url)} title="复制链接">📋</button>
+                          <a
+                            className="admin-btn admin-btn-secondary admin-btn-sm"
+                            href={url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            title="打开"
+                          >↗</a>
+                          <button
+                            className="admin-btn admin-btn-danger admin-btn-sm"
+                            onClick={() => handleDelete(f)}
+                            title="删除"
+                          >🗑</button>
+                        </div>
                       </td>
                     </tr>
                   );

@@ -256,13 +256,15 @@ export default function AdminUsers() {
                     </td>
                     <td className="col-date">{fmtDate(u.created_at)}</td>
                     <td className="col-actions">
-                      <button
-                        className="admin-btn admin-btn-danger admin-btn-sm"
-                        onClick={() => handleDelete(u.username)}
-                        title="删除"
-                      >
-                        🗑
-                      </button>
+                      <div className="admin-table-actions">
+                        <button
+                          className="admin-btn admin-btn-danger admin-btn-sm"
+                          onClick={() => handleDelete(u.username)}
+                          title="删除"
+                        >
+                          🗑
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}

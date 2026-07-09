@@ -181,7 +181,9 @@ export default function AdminHome() {
                     <td className="col-url"><a href={l.url} target="_blank" rel="noopener">{l.url.length > 40 ? l.url.slice(0, 40) + "…" : l.url}</a></td>
                     <td className="col-sort">{l.sort_order ?? 0}</td>
                     <td className="col-actions">
-                      <button className="admin-btn admin-btn-danger admin-btn-sm" onClick={() => handleDeleteLink(l.id)} title="删除">🗑</button>
+                      <div className="admin-table-actions">
+                        <button className="admin-btn admin-btn-danger admin-btn-sm" onClick={() => handleDeleteLink(l.id)} title="删除">🗑</button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -273,7 +275,9 @@ export default function AdminHome() {
                     <td className="col-title">{f.title}</td>
                     <td><span className="article-type-badge">{f.type || "—"}</span></td>
                     <td className="col-actions">
-                      <button className="admin-btn admin-btn-danger admin-btn-sm" onClick={() => handleDeleteFeatured(f.id)} title="移除">🗑</button>
+                      <div className="admin-table-actions">
+                        <button className="admin-btn admin-btn-danger admin-btn-sm" onClick={() => handleDeleteFeatured(f.id)} title="移除">🗑</button>
+                      </div>
                     </td>
                   </tr>
                 ))}

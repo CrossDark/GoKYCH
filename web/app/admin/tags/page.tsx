@@ -230,17 +230,19 @@ export default function AdminTags() {
                       </span>
                     </td>
                     <td className="col-actions">
-                      {editingId === t.id ? (
-                        <>
-                          <button className="admin-btn admin-btn-primary admin-btn-sm" onClick={() => commitRename(t.id)}>保存</button>
-                          <button className="admin-btn admin-btn-ghost admin-btn-sm" onClick={cancelRename}>取消</button>
-                        </>
-                      ) : (
-                        <>
-                          <button className="admin-btn admin-btn-secondary admin-btn-sm" onClick={() => startRename(t)}>✏️ 重命名</button>
-                          <button className="admin-btn admin-btn-danger admin-btn-sm" onClick={() => handleDelete(t)}>🗑 删除</button>
-                        </>
-                      )}
+                      <div className="admin-table-actions">
+                        {editingId === t.id ? (
+                          <>
+                            <button className="admin-btn admin-btn-primary admin-btn-sm" onClick={() => commitRename(t.id)}>保存</button>
+                            <button className="admin-btn admin-btn-ghost admin-btn-sm" onClick={cancelRename}>取消</button>
+                          </>
+                        ) : (
+                          <>
+                            <button className="admin-btn admin-btn-secondary admin-btn-sm" onClick={() => startRename(t)}>✏️ 重命名</button>
+                            <button className="admin-btn admin-btn-danger admin-btn-sm" onClick={() => handleDelete(t)}>🗑 删除</button>
+                          </>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))}

@@ -227,15 +227,17 @@ export default function AdminNotifications() {
                       </td>
                       <td className="col-date">{fmtMonthDayTime(n.updated_at)}</td>
                       <td className="col-actions">
-                        <button
-                          className="admin-btn admin-btn-outline admin-btn-sm"
-                          onClick={() => handleToggleActive(n)}
-                          title={isActive ? "关闭" : "启用"}
-                        >
-                          {isActive ? "⏸" : "▶"}
-                        </button>
-                        <button className="admin-btn admin-btn-secondary admin-btn-sm" onClick={() => handleEdit(n)} title="编辑">✏️</button>
-                        <button className="admin-btn admin-btn-danger admin-btn-sm" onClick={() => handleDelete(n.id)} title="删除">🗑</button>
+                        <div className="admin-table-actions">
+                          <button
+                            className="admin-btn admin-btn-outline admin-btn-sm"
+                            onClick={() => handleToggleActive(n)}
+                            title={isActive ? "关闭" : "启用"}
+                          >
+                            {isActive ? "⏸" : "▶"}
+                          </button>
+                          <button className="admin-btn admin-btn-secondary admin-btn-sm" onClick={() => handleEdit(n)} title="编辑">✏️</button>
+                          <button className="admin-btn admin-btn-danger admin-btn-sm" onClick={() => handleDelete(n.id)} title="删除">🗑</button>
+                        </div>
                       </td>
                     </tr>
                   );

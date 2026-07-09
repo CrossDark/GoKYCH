@@ -95,13 +95,15 @@ export default function AdminPasskeys() {
                     <td><code style={{ fontSize: "0.75rem" }}>{k.credential_id.slice(0, 14)}…</code></td>
                     <td className="col-date">{fmtDateTime(k.created_at)}</td>
                     <td className="col-actions">
-                      <button
-                        className="admin-btn admin-btn-danger admin-btn-sm"
-                        onClick={() => setPendingDelete(k)}
-                        disabled={deletingId === k.id}
-                      >
-                        🗑 撤销
-                      </button>
+                      <div className="admin-table-actions">
+                        <button
+                          className="admin-btn admin-btn-danger admin-btn-sm"
+                          onClick={() => setPendingDelete(k)}
+                          disabled={deletingId === k.id}
+                        >
+                          🗑 撤销
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}

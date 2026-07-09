@@ -145,13 +145,15 @@ export default function AdminAPIKeys() {
                     <td className="col-date">{fmtDateTimeShort(k.last_used_at)}</td>
                     <td className="col-date">{fmtDateTimeShort(k.expires_at)}</td>
                     <td className="col-actions">
-                      <button
-                        className="admin-btn admin-btn-danger admin-btn-sm"
-                        onClick={() => setPendingDelete(k)}
-                        disabled={deletingId === k.id}
-                      >
-                        🗑 撤销
-                      </button>
+                      <div className="admin-table-actions">
+                        <button
+                          className="admin-btn admin-btn-danger admin-btn-sm"
+                          onClick={() => setPendingDelete(k)}
+                          disabled={deletingId === k.id}
+                        >
+                          🗑 撤销
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
