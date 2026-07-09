@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import type { ArticleDetail, Comment } from "@/lib/types";
 import { RatingWidget } from "./RatingWidget";
 import { CommentSection } from "./CommentSection";
@@ -88,6 +89,12 @@ export function ArticleView({ data, articleType, articleSlug }: Props) {
   const contentRef = useRef<HTMLDivElement>(null);
   const lineCountsRef = useRef<Record<number, number>>({});
   const lineDataRef = useRef<Record<number, Comment[]>>({});
+  // Router handle for invalidating the server component cache after a mutation.
+  // The backend's revalidation webhook (internal/api/revalidate.go → Next.js
+  // /revalidate) eventually catches other viewers, but for the submitter's own
+  // session router.refresh() makes their next interaction (or browser refresh)
+  // see fresh SSR data without waiting for the fire-and-forget webhook.
+  const router = useRouter();
 
   const [lineCounts, setLineCounts] = useState<Record<number, number>>(rawLineCounts ?? {});
   // Auth (user + csrfToken) comes from the shared <AppProviders> context
@@ -104,6 +111,11 @@ export function ArticleView({ data, articleType, articleSlug }: Props) {
 
   // Commented lines (for panel + bubble layer)
   const [commentedLines, setCommentedLines] = useState<number[]>([]);
+  // Per-line comment data for render. lineDataRef holds the same shape and
+  // exists for stale-closure-prone callbacks (measureBubbleTops /
+  // openPopupForLine, see comment ~line 119); we mirror it here so render
+  // can read fresh data without tripping react-hooks/refs.
+  const [lineComments, setLineComments] = useState<Record<number, Comment[]>>({});
 
   // Bubble vertical positions (line number → top in px relative to content-body)
   const [bubbleTops, setBubbleTops] = useState<Record<number, number>>({});
@@ -129,7 +141,12 @@ export function ArticleView({ data, articleType, articleSlug }: Props) {
       const el = container.querySelector(`[data-line="${ln}"]`) as HTMLElement | null;
       if (el) {
         tops[ln] = el.offsetTop;
-        heights[ln] = el.offsetHeight;
+        // Cap at ~3 line-heights — [data-line] can be any block element
+        // (TOC, image, table, code block…), not just a text line, and an
+        // uncapped block makes the bubble a giant empty card with its
+        // content lost in vertical whitespace (the line-bubble-name +
+        // .line-bubble-content are vertically centred via flex align-items).
+        heights[ln] = Math.min(el.offsetHeight, 64);
       }
     });
     bubbleMeasureKeyRef.current += 1;
@@ -154,6 +171,8 @@ export function ArticleView({ data, articleType, articleSlug }: Props) {
     const d: Record<number, Comment[]> = {};
     allComments.forEach((c: Comment) => { const ln = (c as any).line_number; if (!d[ln]) d[ln] = []; d[ln].push(c); });
     lineDataRef.current = d;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setLineComments(d);
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setCommentedLines(Object.keys(d).map(Number).sort((a, b) => a - b));
     requestAnimationFrame(() => {
@@ -340,6 +359,7 @@ export function ArticleView({ data, articleType, articleSlug }: Props) {
       if (!u[popup.lineNum]) u[popup.lineNum] = [];
       u[popup.lineNum] = [...u[popup.lineNum], newComment];
       lineDataRef.current = u;
+      setLineComments(u);
       lineCountsRef.current = { ...lineCountsRef.current, [popup.lineNum]: (lineCountsRef.current[popup.lineNum] || 0) + 1 };
       setLineCounts({ ...lineCountsRef.current });
       setPopupComments((prev) => [...prev, newComment]);
@@ -354,6 +374,12 @@ export function ArticleView({ data, articleType, articleSlug }: Props) {
         const container = contentRef.current;
         if (container) measureBubbleTops(container);
       });
+      // Bust the server-component cache so the submitter's own subsequent
+      // refresh / navigation sees fresh SSR data. The backend's revalidation
+      // webhook handles other viewers; this is for "I just posted, refresh
+      // works immediately" UX in dev / cold-cache scenarios. router.refresh()
+      // re-runs server components without a full reload.
+      router.refresh();
     } catch (err: any) { alert(err.message || "添加行评论失败"); }
     finally { setSubmitting(false); }
   };
@@ -435,7 +461,7 @@ export function ArticleView({ data, articleType, articleSlug }: Props) {
                   <LineCommentBubble
                       key={ln}
                       lineNum={ln}
-                      comments={[]}
+                      comments={lineComments[ln] ?? []}
                       top={top}
                       height={height}
                       onClickLine={(n) => {
@@ -460,6 +486,16 @@ export function ArticleView({ data, articleType, articleSlug }: Props) {
                 ? <div className="line-comments-empty">暂无行评论<br /><span className="line-comments-empty-hint">点击文章中的行可添加短评</span></div>
                 : commentedLines.map((ln) => {
                   const count = lineCounts[ln] || 0;
+                  // Preview the first comment's content in the right-side panel
+                  // (the left-side bubble shows the same data plus avatar/time).
+                  // lineComments[ln] is sorted by created_at in measureBubbleTops's
+                  // effect (the .sort runs once on data load); for the panel we
+                  // re-sort here so the preview always matches the bubble order
+                  // even when the user submits a new comment mid-session.
+                  const commentsForLine = (lineComments[ln] ?? []).slice().sort(
+                    (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+                  );
+                  const preview = commentsForLine[0]?.content ?? "—";
                   return (
                       <div key={ln} className="line-comment-row" onClick={(e) => {
                         e.stopPropagation();
@@ -472,9 +508,7 @@ export function ArticleView({ data, articleType, articleSlug }: Props) {
                         }
                       }}>
                         <span className="line-comment-line-num">L{ln}</span>
-                        <span className="line-comment-text">
-                      {"—"}
-                    </span>
+                        <span className="line-comment-text" title={preview}>{preview}</span>
                         {count > 1 && <span className="line-comment-count">{count}</span>}
                       </div>
                   );
@@ -490,7 +524,7 @@ export function ArticleView({ data, articleType, articleSlug }: Props) {
             <span className="line-comment-popup-count">{popupComments.length} 条评论</span>
             <button className="line-comment-popup-close" onClick={closePopup}>×</button>
           </div>
-          <div className="line-comment-popup-comments">{popupComments.length === 0 ? <div className="line-comment-popup-empty">暂无评论，来说两句吧</div> :
+          <div className="line-comment-popup-comments">{popupComments.length === 0 ? <div className="line-comment-popup-empty">还没有行评论</div> :
               popupComments.map((c) => <div key={c.id} className="line-comment-popup-item"><CommentAvatar c={c} size={28} /><div className="line-comment-popup-body"><div className="line-comment-popup-author">{commentDisplayName(c)} · {new Date(c.created_at).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</div><div className="line-comment-popup-content"><SafeMarkdown html={c.content_html} text={c.content} /></div></div></div>)}</div>
           {isLoggedIn ? <div className="line-comment-popup-form"><div className="line-comment-input-wrap"><input type="text" className="line-comment-input" maxLength={20} placeholder="输入短评（最多20字）..." value={popupInput} onChange={(e) => setPopupInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !submitting) handleLineCommentSubmit(); if (e.key === "Escape") closePopup(); }} disabled={submitting} /><span className={`line-comment-counter ${popupInput.length >= 20 ? "overlimit" : ""}`}>{popupInput.length}/20</span></div><button className="line-comment-submit" onClick={handleLineCommentSubmit} disabled={submitting || !popupInput.trim()}>{submitting ? "…" : "发送"}</button></div>
               : <div className="line-comment-popup-form"><div className="line-comment-login-hint"><Link href={`/auth/login?next=/${articleType}/${articleSlug}`}>登录</Link>后添加行评论</div></div>}

@@ -27,6 +27,12 @@ export function LineCommentBubble({
     (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
   );
 
+  // Defence in depth: callers must only mount this for commented lines,
+  // but if they ever pass an empty array (or the per-line data isn't wired
+  // up yet), bail out cleanly instead of crashing the whole article page
+  // on `c.author_nickname` — the previous regression did exactly that.
+  if (sorted.length === 0) return null;
+
   if (sorted.length > 1) {
     if (!expanded) {
       return (
