@@ -28,11 +28,13 @@
 #
 # 上传目标（--upload）：
 #   - GitHub:  使用 gh CLI（必须已登录）
-#   - GitCode: 使用 curl 调用 v5 API
-#     - GITCODE_TOKEN（必填）: 私人令牌
-#       在 https://gitcode.com/setting/provate-tokens 创建（需 projects 权限）
+#   - GitCode: 使用 curl 调用 v5 API（GitLab 风格 `private-token` header）
+#     - GITCODE_TOKEN（必填）: 任意一种 gitcode 身份凭据都行,实测以下都可用:
+#         * macOS keychain 里的 git push 密码
+#           （`security find-internet-password -s gitcode.com -w` 取出来）
+#         * https://gitcode.com/setting/provate-tokens 创建的 PAT（需 projects 权限）
 #       整个 release-upload 流程（创建 release / 取签名 URL / PATCH 关联）
-#       统一用这一个 token 即可，不再需要 GITCODE_COOKIE。
+#       统一用这一个 token + 同一套 private-token header,不再需要 GITCODE_COOKIE。
 #     同时自动推送 tag 到 GitCode remote（如果配置了的话）
 #
 # 前置：
@@ -268,6 +270,14 @@ GC_REPO="GoKych"
 GC_API_V5="https://gitcode.com/api/v5"
 GC_REMOTE="GitCode"
 GC_UA="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36"
+# gitcode v5 API 是 GitLab-fork,认证用 GitLab 风格 `private-token` header
+# (不是 GitHub 风格的 `Authorization: token …`)。GitLab 也接受
+# `?private_token=…` query — 两种都验过能用。
+# 早期脚本写错 header,所有请求被服务端当作"无 token" → HTTP 401
+# "401, token not found"。直接拿你 git push 用的 personal password
+# (macOS keychain 里 `gitcode.com` 那条) 当 GITCODE_TOKEN 就够了,
+# 不需要单独去 https://gitcode.com/setting/provate-tokens 建 token。
+GC_AUTH=(-H "private-token: ${GITCODE_TOKEN}")
 
 # ── 6. 上传到 GitHub / GitCode Release（可选） ──
 if [[ "$UPLOAD" -eq 1 ]]; then
@@ -320,19 +330,14 @@ if [[ "$UPLOAD" -eq 1 ]]; then
   #   Step 3:  PATCH ${V5}/repos/${OWNER}/${REPO}/releases/${TAG}
   #            → 把上传好的 asset 关联回 release
   #
-  # 整条链路只用 GITCODE_TOKEN 一项认证(GITCODE_TOKEN 走
-  # "access_token=..." query 或 "Authorization: token ..." header);
-  # 既不需要浏览器 cookie,也不再切两套 API。Session-cookie /
-  # v2 三阶段 那条路已废弃,因为官方文档已经升到 v5。
+  # 整条链路只用 GITCODE_TOKEN 一项认证(走 `private-token` header,
+  # 见上面 GC_AUTH 定义);既不需要浏览器 cookie,也不再切两套 API。
+  # Session-cookie / v2 三阶段 那条路已废弃,因为官方文档已经升到 v5。
   #
   # 不设 GITCODE_TOKEN 时跳过 GitCode 整条 — 不创建 release 也不上传;
   # 这样跟 GitHub 分支互不耦合,各自独立 fail-soft。
   if [[ -n "${GITCODE_TOKEN:-}" ]]; then
     log "上传到 GitCode (v5 API)…"
-
-    # 认证统一用 Bearer header,不再把 access_token 同时塞 query 和 body ——
-    # 之前那次混用导致 server 端认证解析行为不确定。
-    GC_AUTH=(-H "Authorization: token ${GITCODE_TOKEN}")
 
     # Step 0: 先确保 release 存在(用 v5 GET /releases/tags/<tag> 检查,
     # 没有就 POST /releases 创建)
@@ -425,6 +430,13 @@ except Exception:
         # skeleton)。这里用通用 http-URL 发现器 — 找到第一个 http(s)
         # 字符串作 signed_url,然后把"剩余字符串字段"也打出来给运维
         # 排错用。
+        #
+        # 重要:OBS 签名 URL 把 method+所有规定的 header 都签进去了。
+        # PUT 时如果 header 不匹配(server 期望 x-obs-acl: private,你送
+        # public-read;或 server 期望 Content-Type: application/octet-stream,
+        # 你送 text/plain),signature 验证失败 → 401。
+        # 修法:从签名响应的 `headers` 字段拿全套 header 直接用,**不要**按
+        # 文件后缀或硬编码覆盖任何 header。
         SIGNED_PARSE=$(printf '%s' "$SIGNED_RESP" | python3 -c '
 import json, sys
 try:
@@ -451,14 +463,23 @@ def find_url(o):
 url = find_url(j)
 if url:
     print("URL=" + url)
-# 额外的 header: 找出 x-obs-* 的字段名(有些服务器把它们放在第一层)
+# 从顶层或 headers 子 dict 里提取所有 string header;包含 Content-Type /
+# x-obs-* 等所有需要 signature 校验的字段。命名空间用 "HEADER:" 前缀,
+# header key + ": " + value 的格式 — curl 的 -H 必须用 ": " 分隔
+# ("=" 形式 curl 会默默丢弃)。Header name 一定不含 ": ",value 可能
+# 含 (base64 callback),所以用第一个 ": " 分隔。
+hdrs = j.get("headers") if isinstance(j.get("headers"), dict) else {}
+for k, v in hdrs.items():
+    if isinstance(v, str):
+        # HEADER:Key: Value(bash 用 ${hline#HEADER:} 拿 "Key: Value",
+        # 直接喂给 curl -H)
+        print("HEADER:" + k + ": " + v)
+# 兜底:有些实现把 header 平铺到顶层
 for k, v in j.items():
-    if isinstance(v, str) and k.lower().startswith("x-obs-"):
-        print("HEADER:" + k + "=" + v)
-    if isinstance(v, dict):
-        for kk, vv in v.items():
-            if isinstance(vv, str) and kk.lower().startswith("x-obs-"):
-                print("HEADER:" + k + ":" + kk + "=" + vv)
+    if k == "headers" or k == "url":
+        continue
+    if isinstance(v, str) and (k.lower().startswith("x-obs-") or k.lower() == "content-type"):
+        print("HEADER:" + k + ": " + v)
 ' 2>/dev/null) || true
 
         SIGNED_URL=$(printf '%s' "$SIGNED_PARSE" | grep '^URL=' | head -1 | sed 's/^URL=//')
@@ -468,8 +489,12 @@ for k, v in j.items():
           continue
         fi
 
-        # Step 2: PUT 文件到 OBS 签名 URL(OBS 通常需要 x-obs-acl + Content-Type)
-        OBS_EXTRA=(-H "x-obs-acl: public-read")
+        # Step 2: PUT 文件到 OBS 签名 URL。
+        # header 必须严格匹配 signature(server 在签 URL 时把 method +
+        # Content-Type + x-obs-* 全签了)。我们只透传签名响应里 headers
+        # 字段给的那些,**不**自己加 Content-Type / x-obs-acl(早期版本
+        # 这俩是写死的 public-read + 按后缀的 text/plain,导致 401)。
+        OBS_EXTRA=()
         PATCH_RESP_HEADERS=$(printf '%s' "$SIGNED_PARSE" | grep '^HEADER:')
         if [[ -n "$PATCH_RESP_HEADERS" ]]; then
           while IFS= read -r hline; do
@@ -479,9 +504,8 @@ for k, v in j.items():
 
         PUT_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
           -H "User-Agent: $GC_UA" \
-          -H "Content-Type: ${ftype}" \
           "${OBS_EXTRA[@]}" \
-          --data-binary "@${f}" \
+          -T "${f}" \
           "$SIGNED_URL" 2>/dev/null) || true
 
         if [[ "$PUT_CODE" -ge 200 && "$PUT_CODE" -lt 300 ]]; then
@@ -513,10 +537,13 @@ open(f, "w").write(json.dumps(arr))
       if [[ "$GC_ATTACH_ASSETS" != "[]" ]]; then
         log "Step3 关联附件 → PATCH /releases/${TAG} (v5 API)…"
 
-        # PATCH body 字段名 — 从 v5 GET 真实响应(v0.1.0 release)看,assets
-        # 数组里每个对象是 {name, browser_download_url, type:"attach"|"source"};
-        # PATCH 时把现有 assets 数组整体替换,新上传的就用同样 shape。
+        # PATCH body 字段名 — 从 v5 GET 真实响应看,assets 数组里每个对象
+        # 是 {name, browser_download_url, type:"attach"|"source"};PATCH 时
+        # 把现有 assets 数组整体替换,新上传的就用同样 shape。
         # (不传 attachment_id,因为 v5 GET 响应里就没这字段。)
+        #
+        # 重要:release body 字段是 `body`,**不是** `description`(GitHub 习惯)。
+        # 用错字段会被 v5 当成 PATCH 没设必填 → 400 "must not be blank"。
         GC_PUT_BODY=$(TAG="$TAG" RELEASE_NOTES="$RELEASE_NOTES" GC_ATTACH_ASSETS="$GC_ATTACH_ASSETS" python3 -c '
 import os, json
 desc = open(os.environ["RELEASE_NOTES"]).read()
@@ -524,7 +551,7 @@ new_assets = json.loads(os.environ["GC_ATTACH_ASSETS"])
 body = {
     "tag_name": os.environ["TAG"],
     "name": "gokych " + os.environ["TAG"],
-    "description": desc,
+    "body": desc,
     "assets": new_assets,
 }
 print(json.dumps(body))
