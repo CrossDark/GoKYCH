@@ -1,8 +1,8 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import { getCsrf, getUpdateStatus, checkUpdate, applyUpdate } from "@/lib/api";
-import type { UpdateCheckInfo, UpdateStatus } from "@/lib/types";
+import { getCsrf, getUpdateStatus, checkUpdate, applyUpdate, setUpdateSource } from "@/lib/api";
+import type { UpdateCheckInfo, UpdateSource, UpdateStatus } from "@/lib/types";
 import { useToast } from "@/lib/admin-feedback";
 import { fmtDateTime } from "@/lib/format";
 import { UpdateWriteErrorPanel } from "@/components/admin/UpdateWriteErrorPanel";
@@ -77,6 +77,49 @@ function ReleaseNotesHtml({ markdown }: { markdown: string }) {
       }}
       dangerouslySetInnerHTML={{ __html: html }}
     />
+  );
+}
+
+// SourceButton — pill-style toggle for selecting the update source.
+// Highlights the active source and shows a spinner while the switch
+// request is in flight.
+function SourceButton({
+  source,
+  label,
+  current,
+  switching,
+  disabled,
+  onClick,
+}: {
+  source: UpdateSource;
+  label: string;
+  current?: UpdateSource;
+  switching: UpdateSource | null;
+  disabled: boolean;
+  onClick: (s: UpdateSource) => void;
+}) {
+  const isActive = current === source;
+  const isSwitching = switching === source;
+  return (
+    <button
+      type="button"
+      onClick={() => onClick(source)}
+      disabled={disabled || isActive || isSwitching}
+      style={{
+        padding: "0.35rem 0.85rem",
+        fontSize: "0.85rem",
+        borderRadius: 999,
+        border: "1px solid",
+        borderColor: isActive ? "var(--accent)" : "var(--border)",
+        background: isActive ? "var(--accent)" : "transparent",
+        color: isActive ? "#fff" : "var(--text)",
+        cursor: isActive ? "default" : "pointer",
+        opacity: disabled ? 0.5 : 1,
+        transition: "all 0.15s",
+      }}
+    >
+      {isSwitching ? "切换中…" : label}
+    </button>
   );
 }
 
@@ -178,6 +221,7 @@ export default function AdminUpdate() {
   const [checking, setChecking] = useState(false);
   const [applying, setApplying] = useState(false);
   const [updStatus, setUpdStatus] = useState<UpdateStatus | null>(null);
+  const [switchingSource, setSwitchingSource] = useState<UpdateSource | null>(null);
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const stopPolling = useCallback(() => {
@@ -281,13 +325,40 @@ export default function AdminUpdate() {
     }
   }, [info, csrf, pollStatus, toast]);
 
+  // Switch update source (github ↔ gitcode). Persisted server-side via
+  // /admin/update/source. After a successful switch we re-check
+  // immediately so the user sees the new source's release info without
+  // a separate click.
+  const handleSwitchSource = useCallback(async (next: UpdateSource) => {
+    if (!csrf) return;
+    if (info?.source === next) return;
+    setSwitchingSource(next);
+    try {
+      const r = await setUpdateSource(csrf, next);
+      toast.success(r.message || `已切换到 ${next}`);
+      // Trigger a fresh check against the new source.
+      setChecking(true);
+      const data = await checkUpdate();
+      setInfo(data);
+      if (data.error) {
+        toast.error("检查完成但有警告: " + data.error);
+      }
+      setChecking(false);
+    } catch (e: any) {
+      toast.error("切换更新源失败: " + e.message);
+      setChecking(false);
+    } finally {
+      setSwitchingSource(null);
+    }
+  }, [csrf, info?.source, toast]);
+
   const isInProgress = applying && updStatus && updStatus.status !== "done" && updStatus.status !== "error";
 
   return (
     <div className="admin-page">
       <h1 className="admin-page-title">系统更新</h1>
       <p className="admin-page-desc">
-        从 GitHub Release 自动检测最新版本，下载匹配当前平台的二进制并热重启服务。仅站点所有者可执行。
+        从 Release 源自动检测最新版本（默认 GitHub，可切到 GitCode 国内镜像），下载匹配当前平台的二进制并热重启服务。仅站点所有者可执行。
       </p>
 
       <div className="admin-card" style={{ maxWidth: 720 }}>
@@ -342,6 +413,35 @@ export default function AdminUpdate() {
                   </span>
                 </>
               ) : "检测中…"}
+            </div>
+
+            {/* Update source selector — github (default) or gitcode mirror.
+                Persisted server-side via /admin/update/source. Disabled
+                during a download / apply to avoid swapping underneath an
+                in-flight job. */}
+            <div style={{ color: "var(--text-muted)" }}>更新源</div>
+            <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", alignItems: "center" }}>
+              <SourceButton
+                source="github"
+                label="GitHub"
+                current={info?.source}
+                switching={switchingSource}
+                disabled={!!checking || !!applying}
+                onClick={handleSwitchSource}
+              />
+              <SourceButton
+                source="gitcode"
+                label="GitCode (国内镜像)"
+                current={info?.source}
+                switching={switchingSource}
+                disabled={!!checking || !!applying}
+                onClick={handleSwitchSource}
+              />
+              {info?.source && (
+                <span style={{ color: "var(--text-muted)", fontSize: "0.78rem" }}>
+                  当前: <code style={{ background: "var(--surface-2)", padding: "0.05rem 0.3rem", borderRadius: 3 }}>{info.source}</code>
+                </span>
+              )}
             </div>
 
             <div style={{ color: "var(--text-muted)" }}>二进制路径</div>
@@ -401,7 +501,7 @@ export default function AdminUpdate() {
               {info.release_url && (
                 <a href={info.release_url} target="_blank" rel="noopener noreferrer"
                    style={{ fontSize: "0.8rem", color: "var(--accent)" }}>
-                  在 GitHub 查看 →
+                  {info.source === "gitcode" ? "在 GitCode 查看 →" : "在 GitHub 查看 →"}
                 </a>
               )}
             </div>
@@ -436,7 +536,7 @@ export default function AdminUpdate() {
           <p style={{ margin: "0 0 0.5rem", fontWeight: 600, color: "var(--text)" }}>工作原理</p>
           <ol style={{ margin: 0, paddingLeft: "1.2rem" }}>
             <li>检测当前可执行文件路径（<code>os.Executable()</code>）和运行平台（<code>GOOS/GOARCH</code>）</li>
-            <li>调用 GitHub API 获取 <code>CrossDark/GoKYCH</code> 的 latest Release</li>
+            <li>调用所选源的 API(GitHub <code>api.github.com/repos/CrossDark/GoKYCH</code> 或 GitCode <code>api/v5/repos/CrossDark/GoKych</code>)获取 latest Release</li>
             <li>后台异步下载对应平台二进制（显示进度），不会阻塞浏览器</li>
             <li>用 Release 中的 <code>SHA256SUMS</code> 校验文件完整性</li>
             <li>备份当前二进制为 <code>.prev</code>，原子替换为新版本</li>

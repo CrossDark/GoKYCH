@@ -41,6 +41,12 @@ func Default() map[string]interface{} {
 			"posts_per_page":      10,
 			"allow_all_edit":      false,
 		},
+		// Self-update source. "github" = api.github.com (CrossDark/GoKYCH);
+		// "gitcode" = api.gitcode.com (CrossDark/GoKych, China-friendly mirror).
+		// Persisted in settings.yml; admin UI on /admin/update can switch.
+		"update": map[string]interface{}{
+			"source": "github",
+		},
 		// NOTE: there used to be a top-level "social" section here
 		// (email/github/twitter). It was moved to per-user fields on the
 		// users table (social_email / social_github / social_qq) so each

@@ -61,6 +61,7 @@ export {
   getUpdateStatus,
   checkUpdate,
   applyUpdate,
+  setUpdateSource,
   adminListThemes,
   uploadThemeZip,
   uploadThemeCSS,
@@ -68,4 +69,4 @@ export {
   deleteTheme,
   activateTheme,
 } from "./admin";
-export type { ApplyUpdateResult } from "./admin";
+export type { ApplyUpdateResult, SetUpdateSourceResult } from "./admin";

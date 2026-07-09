@@ -16,34 +16,63 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"gokych/internal/core/settings"
 )
 
-// ── GitHub release constants ─────────────────────────────────────────
+// ── Release source constants ────────────────────────────────────────
+// The updater supports two mirror sources, selectable from the admin UI
+// (/admin/update). Both ship the same artifact layout (gokych-{GOOS}-{GOARCH}
+// + SHA256SUMS), so the rest of the pipeline (download / verify / replace)
+// is source-agnostic.
 const (
-	githubRepo      = "CrossDark/GoKYCH"
-	githubAPIURL    = "https://api.github.com/repos/" + githubRepo + "/releases/latest"
-	defaultBinPath  = "/opt/gokych/bin/gokych"
-	assetPrefix     = "gokych-"
-	assetSumsName   = "SHA256SUMS"
-	partFileSuffix  = ".part"
+	githubRepo         = "CrossDark/GoKYCH"
+	githubLatestFmt    = "https://api.github.com/repos/%s/releases/latest"
+	githubTagFmt       = "https://api.github.com/repos/%s/releases/tags/v%s"
+
+	gitcodeOwner = "CrossDark"
+	gitcodeRepo  = "GoKych" // gitcode repo name is "GoKych" (capital K), NOT "GoKYCH"
+	// gitcode v5 API — same path layout as gitea/forgejo.
+	gitcodeLatestFmt = "https://gitcode.com/api/v5/repos/%s/%s/releases/latest"
+	gitcodeTagFmt    = "https://gitcode.com/api/v5/repos/%s/%s/releases/tags/v%s"
+
+	defaultBinPath     = "/opt/gokych/bin/gokych"
+	assetPrefix        = "gokych-"
+	assetSumsName      = "SHA256SUMS"
+	partFileSuffix     = ".part"
 	maxDownloadRetries = 5
 )
 
+// Allowed source values (validated on the API boundary).
+const (
+	updateSourceGithub  = "github"
+	updateSourceGitcode = "gitcode"
+)
+
 var (
-	releaseCacheMu  sync.RWMutex
-	releaseCache    *ghRelease
-	releaseCacheAt  time.Time
+	// Per-source release cache. Switching sources in the admin UI must not
+	// serve a stale GitHub release as a GitCode response (or vice versa).
+	releaseCacheMu sync.RWMutex
+	releaseCache   = map[string]cachedRelease{
+		updateSourceGithub:  {},
+		updateSourceGitcode: {},
+	}
 	releaseCacheTTL = 5 * time.Minute
 )
+
+type cachedRelease struct {
+	rel *ghRelease
+	at  time.Time
+}
 
 type ghRelease struct {
 	TagName     string    `json:"tag_name"`
 	Name        string    `json:"name"`
 	Body        string    `json:"body"`
-	Draft       bool      `json:"draft"`
+	Draft       bool      `json:"draft"`        // github-only
 	Prerelease  bool      `json:"prerelease"`
-	PublishedAt time.Time `json:"published_at"`
-	HTMLURL     string    `json:"html_url"`
+	PublishedAt time.Time `json:"published_at"` // github: published_at; gitcode falls back to created_at
+	CreatedAt   time.Time `json:"created_at"`   // gitcode-only
+	HTMLURL     string    `json:"html_url"`     // github-only
 	Assets      []ghAsset `json:"assets"`
 }
 
@@ -51,6 +80,65 @@ type ghAsset struct {
 	Name               string `json:"name"`
 	BrowserDownloadURL string `json:"browser_download_url"`
 	Size               int64  `json:"size"`
+}
+
+// gcRelease is gitcode.com's v5 response shape — different field names
+// than GitHub. We parse into this then convert to the unified ghRelease
+// so downstream code (platformAsset / download / verify) stays source-
+// agnostic.
+//
+// Notable differences from GitHub:
+//   - no `draft`, `published_at`, `html_url`
+//   - `created_at` instead of `published_at`
+//   - asset has no `size` (HEAD gitcode API doesn't populate it)
+//   - auto-generated source archives (.zip / .tar.gz etc) live in the
+//     same `assets[]` array as user uploads, distinguished by
+//     `type:"source"` vs `type:"attach"`. We drop the source ones
+//     because the SHA256SUMS file ships binary-only entries.
+type gcRelease struct {
+	TagName    string    `json:"tag_name"`
+	Name       string    `json:"name"`
+	Body       string    `json:"body"`
+	Prerelease bool      `json:"prerelease"`
+	CreatedAt  time.Time `json:"created_at"`
+	HTMLURL    string    `json:"html_url"` // gitcode actually does include this
+	Author     struct {
+		Login string `json:"login"`
+	} `json:"author"`
+	Assets []gcAsset `json:"assets"`
+}
+
+type gcAsset struct {
+	Name               string `json:"name"`
+	BrowserDownloadURL string `json:"browser_download_url"`
+	Type               string `json:"type"` // "attach" (user upload) | "source" (auto archive)
+	Size               int64  `json:"size"`
+}
+
+// toGhRelease converts a parsed gitcode response into the unified shape.
+// Filters out type:"source" archives (auto-generated zip/tar.gz) — only
+// type:"attach" entries are user-uploaded binaries / checksums.
+func (g *gcRelease) toGhRelease() *ghRelease {
+	out := &ghRelease{
+		TagName:     g.TagName,
+		Name:        g.Name,
+		Body:        g.Body,
+		Prerelease:  g.Prerelease,
+		CreatedAt:   g.CreatedAt,
+		PublishedAt: g.CreatedAt, // surfaced as "发布时间" in admin UI; for gitcode it's the release creation time
+		HTMLURL:     g.HTMLURL,
+	}
+	for _, a := range g.Assets {
+		if a.Type == "source" {
+			continue // skip auto-generated .zip / .tar.gz / .tar.bz2 / .tar
+		}
+		out.Assets = append(out.Assets, ghAsset{
+			Name:               a.Name,
+			BrowserDownloadURL: a.BrowserDownloadURL,
+			Size:               a.Size,
+		})
+	}
+	return out
 }
 
 func (r *ghRelease) platformAsset(goos, goarch string) (binURL, sumsURL string) {
@@ -66,16 +154,69 @@ func (r *ghRelease) platformAsset(goos, goarch string) (binURL, sumsURL string) 
 	return binURL, sumsURL
 }
 
-func fetchLatestRelease(client *http.Client) (*ghRelease, error) {
+// getUpdateSource reads the persisted "update.source" setting, falling
+// back to "github" if missing or invalid. Reads via settings.Load so the
+// admin can flip it via the /admin/settings endpoint or the dedicated
+// /admin/update/source endpoint (both write the same file).
+func (s *Server) getUpdateSource() string {
+	cfg, err := settings.Load(s.DataDir)
+	if err != nil {
+		slog.Warn("updater: settings.Load failed, falling back to github", "err", err)
+		return updateSourceGithub
+	}
+	upd, _ := cfg["update"].(map[string]interface{})
+	src, _ := upd["source"].(string)
+	switch src {
+	case updateSourceGitcode:
+		return updateSourceGitcode
+	default:
+		return updateSourceGithub
+	}
+}
+
+func (s *Server) setUpdateSource(source string) error {
+	cfg, err := settings.Load(s.DataDir)
+	if err != nil {
+		return fmt.Errorf("load settings: %w", err)
+	}
+	upd, _ := cfg["update"].(map[string]interface{})
+	if upd == nil {
+		upd = map[string]interface{}{}
+	}
+	upd["source"] = source
+	cfg["update"] = upd
+	if err := settings.Save(s.DataDir, cfg); err != nil {
+		return fmt.Errorf("save settings: %w", err)
+	}
+	// Bust the per-source cache so the next /update/check refetches.
+	releaseCacheMu.Lock()
+	delete(releaseCache, source)
+	releaseCacheMu.Unlock()
+	return nil
+}
+
+// fetchLatestRelease queries the configured source's "latest" endpoint.
+func fetchLatestRelease(client *http.Client, source string) (*ghRelease, error) {
 	releaseCacheMu.RLock()
-	if releaseCache != nil && time.Since(releaseCacheAt) < releaseCacheTTL {
-		cached := *releaseCache
+	cached := releaseCache[source]
+	if cached.rel != nil && time.Since(cached.at) < releaseCacheTTL {
+		cpy := *cached.rel
 		releaseCacheMu.RUnlock()
-		return &cached, nil
+		return &cpy, nil
 	}
 	releaseCacheMu.RUnlock()
 
-	req, err := http.NewRequest("GET", githubAPIURL, nil)
+	switch source {
+	case updateSourceGitcode:
+		return fetchLatestReleaseGitCode(client, source)
+	default:
+		return fetchLatestReleaseGitHub(client, source)
+	}
+}
+
+func fetchLatestReleaseGitHub(client *http.Client, source string) (*ghRelease, error) {
+	url := fmt.Sprintf(githubLatestFmt, githubRepo)
+	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -101,10 +242,43 @@ func fetchLatestRelease(client *http.Client) (*ghRelease, error) {
 	}
 
 	releaseCacheMu.Lock()
-	releaseCache = &rel
-	releaseCacheAt = time.Now()
+	releaseCache[source] = cachedRelease{rel: &rel, at: time.Now()}
 	releaseCacheMu.Unlock()
 	return &rel, nil
+}
+
+func fetchLatestReleaseGitCode(client *http.Client, source string) (*ghRelease, error) {
+	url := fmt.Sprintf(gitcodeLatestFmt, gitcodeOwner, gitcodeRepo)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "GoKYCH-SelfUpdater")
+	// Anonymous read works for public releases; no token needed.
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("gitcode api: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return nil, fmt.Errorf("gitcode api returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var rel gcRelease
+	if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil {
+		return nil, fmt.Errorf("gitcode api decode: %w", err)
+	}
+	if rel.Prerelease {
+		return nil, fmt.Errorf("latest release %q is prerelease=true; only stable releases are eligible for auto-update",
+			rel.TagName)
+	}
+	gh := rel.toGhRelease()
+
+	releaseCacheMu.Lock()
+	releaseCache[source] = cachedRelease{rel: gh, at: time.Now()}
+	releaseCacheMu.Unlock()
+	return gh, nil
 }
 
 func detectBinPath() string {
@@ -314,6 +488,7 @@ type updateCheckResponse struct {
 	DirPermissions   string `json:"dir_permissions,omitempty"`
 	InContainer      bool   `json:"in_container"`
 	MountOptions     string `json:"mount_options,omitempty"`
+	Source           string `json:"source"` // "github" | "gitcode" — drives the admin UI toggle
 	PublishedAt      string `json:"published_at,omitempty"`
 	ReleaseURL       string `json:"release_url,omitempty"`
 	ReleaseNotes     string `json:"release_notes,omitempty"`
@@ -324,6 +499,7 @@ type updateCheckResponse struct {
 func (s *Server) checkUpdateHandler(c *gin.Context) {
 	goos, goarch := runtime.GOOS, runtime.GOARCH
 	binPath := detectBinPath()
+	source := s.getUpdateSource()
 
 	canW, canWErr, errCategory := canWriteDir(binPath)
 
@@ -354,10 +530,11 @@ func (s *Server) checkUpdateHandler(c *gin.Context) {
 		DirPermissions:   dirPerms,
 		InContainer:      inContainer(),
 		MountOptions:     mountOptionsForPath(binPath),
+		Source:           source,
 	}
 
 	client := &http.Client{Timeout: 10 * time.Second}
-	rel, err := fetchLatestRelease(client)
+	rel, err := fetchLatestRelease(client, source)
 	if err != nil {
 		resp.Error = err.Error()
 		c.JSON(http.StatusOK, resp)
@@ -419,6 +596,7 @@ func (s *Server) applyUpdateHandler(c *gin.Context) {
 
 	goos, goarch := runtime.GOOS, runtime.GOARCH
 	binPath := detectBinPath()
+	source := s.getUpdateSource()
 
 	if ok, reason, _ := canWriteDir(binPath); !ok {
 		updater.setErr(fmt.Sprintf("cannot write to %s: %s", filepath.Dir(binPath), reason))
@@ -433,7 +611,7 @@ func (s *Server) applyUpdateHandler(c *gin.Context) {
 	updater.startAt = time.Now()
 	updater.mu.Unlock()
 
-	go s.runUpdate(goos, goarch, binPath, req.Version)
+	go s.runUpdate(goos, goarch, binPath, req.Version, source)
 
 	c.JSON(http.StatusOK, applyUpdateResponse{
 		Success: true,
@@ -441,10 +619,45 @@ func (s *Server) applyUpdateHandler(c *gin.Context) {
 	})
 }
 
+// setUpdateSourceHandler switches the persisted "update.source" setting
+// between "github" and "gitcode". Admin/owner only.
+//
+// We invalidate the per-source cache so the next /update/check refetches
+// instead of returning a stale release from the previous source.
+type setUpdateSourceRequest struct {
+	Source string `json:"source"`
+}
+
+func (s *Server) setUpdateSourceHandler(c *gin.Context) {
+	var req setUpdateSourceRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请求体格式无效。"})
+		return
+	}
+	switch req.Source {
+	case updateSourceGithub, updateSourceGitcode:
+		// ok
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": "不支持的更新源，仅支持 github / gitcode。"})
+		return
+	}
+	if err := s.setUpdateSource(req.Source); err != nil {
+		slog.Error("setUpdateSource: save failed", "err", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "保存更新源设置失败。"})
+		return
+	}
+	slog.Info("update: source switched", "source", req.Source)
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "ok",
+		"source":  req.Source,
+		"message": fmt.Sprintf("更新源已切换为 %s,缓存已清除。", req.Source),
+	})
+}
+
 // runUpdate performs the actual download+verify+replace+restart in a
 // background goroutine. It updates the global updater state as it
 // progresses so the frontend can poll /update/status.
-func (s *Server) runUpdate(goos, goarch, binPath, targetVersion string) {
+func (s *Server) runUpdate(goos, goarch, binPath, targetVersion, source string) {
 	// Use a long timeout: GitHub releases can be slow to download from
 	// China; the binary is ~15-20 MB, so give it 5 minutes.
 	client := &http.Client{Timeout: 5 * time.Minute}
@@ -454,12 +667,9 @@ func (s *Server) runUpdate(goos, goarch, binPath, targetVersion string) {
 
 	updater.set(updateDownloading, "正在获取 Release 元数据...")
 	if targetVersion != "" {
-		tag := strings.TrimPrefix(targetVersion, "v")
-		url := fmt.Sprintf("https://api.github.com/repos/%s/releases/tags/v%s", githubRepo, tag)
-		r, e := fetchReleaseByTag(client, url)
-		rel, err = r, e
+		rel, err = fetchReleaseByTag(client, source, targetVersion)
 	} else {
-		rel, err = fetchLatestRelease(client)
+		rel, err = fetchLatestRelease(client, source)
 	}
 	if err != nil {
 		updater.setErr(fmt.Sprintf("获取 Release 信息失败: %v", err))
@@ -625,27 +835,53 @@ func (s *Server) updateStatusHandler(c *gin.Context) {
 
 // ── HTTP helpers ──────────────────────────────────────────────────────
 
-func fetchReleaseByTag(client *http.Client, url string) (*ghRelease, error) {
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return nil, err
+func fetchReleaseByTag(client *http.Client, source, version string) (*ghRelease, error) {
+	tag := strings.TrimPrefix(version, "v")
+	switch source {
+	case updateSourceGitcode:
+		url := fmt.Sprintf(gitcodeTagFmt, gitcodeOwner, gitcodeRepo, tag)
+		req, err := http.NewRequest("GET", url, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("User-Agent", "GoKYCH-SelfUpdater")
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("gitcode api: %w", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+			return nil, fmt.Errorf("gitcode api returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		}
+		var rel gcRelease
+		if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil {
+			return nil, fmt.Errorf("gitcode api decode: %w", err)
+		}
+		return rel.toGhRelease(), nil
+	default:
+		url := fmt.Sprintf(githubTagFmt, githubRepo, tag)
+		req, err := http.NewRequest("GET", url, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Accept", "application/vnd.github+json")
+		req.Header.Set("User-Agent", "GoKYCH-SelfUpdater")
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+			return nil, fmt.Errorf("github api returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		}
+		var rel ghRelease
+		if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil {
+			return nil, fmt.Errorf("github api decode: %w", err)
+		}
+		return &rel, nil
 	}
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("User-Agent", "GoKYCH-SelfUpdater")
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return nil, fmt.Errorf("github api returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
-	}
-	var rel ghRelease
-	if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil {
-		return nil, err
-	}
-	return &rel, nil
 }
 
 // cleanupStaleParts removes .part files from previous (different) versions

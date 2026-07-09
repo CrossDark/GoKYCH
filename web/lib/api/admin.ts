@@ -392,6 +392,23 @@ export function applyUpdate(csrf: string) {
   });
 }
 
+export interface SetUpdateSourceResult {
+  status: string;
+  source: "github" | "gitcode";
+  message: string;
+}
+
+// Switch the persisted update.source setting ("github" ↔ "gitcode").
+// Next /update/check will use the new source. Cache on the server is
+// invalidated as part of the request.
+export function setUpdateSource(csrf: string, source: "github" | "gitcode") {
+  return request<SetUpdateSourceResult>("/admin/update/source", {
+    method: "POST",
+    headers: { "X-CSRF-Token": csrf },
+    body: JSON.stringify({ source }),
+  });
+}
+
 // ── Theme management (owner-only) ────────────────────────────────────
 
 export function adminListThemes(csrf: string) {

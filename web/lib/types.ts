@@ -370,6 +370,8 @@ export interface MyPasskeyInfo {
 }
 
 // ── Admin: System Update ──────────────────────────────────────────────
+export type UpdateSource = "github" | "gitcode";
+
 export interface UpdateCheckInfo {
   current_version: string;
   latest_version: string;
@@ -385,6 +387,7 @@ export interface UpdateCheckInfo {
   dir_permissions?: string;
   in_container?: boolean;
   mount_options?: string;
+  source: UpdateSource;
   published_at?: string;
   release_url?: string;
   release_notes?: string;

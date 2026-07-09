@@ -224,11 +224,13 @@ func (s *Server) Setup(r *gin.Engine) {
 				adminG.GET("/passkeys", requireOwner, s.listAllPasskeys)
 				adminG.DELETE("/passkeys/:id", requireOwner, s.deleteAnyPasskey)
 
-				// Self-update: check for new GitHub release and apply it.
+				// Self-update: check for new release and apply it. Source is
+				// configurable (github or gitcode) via /update/source.
 				// Owner-only because this replaces the running binary.
 				adminG.GET("/update/check", requireOwner, s.checkUpdateHandler)
 				adminG.POST("/update/apply", requireOwner, s.applyUpdateHandler)
 				adminG.GET("/update/status", requireOwner, s.updateStatusHandler)
+				adminG.POST("/update/source", requireOwner, s.setUpdateSourceHandler)
 
 				// Theme management — owner-only (upload/delete/activate).
 				adminG.GET("/themes", requireOwner, s.adminListThemes)
