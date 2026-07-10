@@ -2,6 +2,8 @@
 
 import { useState, useEffect, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import katex from "katex";
+import "katex/dist/katex.min.css";
 import { getCsrf, login, apiUrl, apiFetch } from "@/lib/api";
 import { supportsWebAuthn, arrayBufferToBase64Url, base64UrlToArrayBuffer } from "@/lib/webauthn";
 
@@ -70,36 +72,70 @@ function parseMatrixQuestion(q: string): { A: number[][]; B: number[][] } | null
   };
 }
 
-// MatrixSide renders one 2×2 matrix with bracket characters and tabular
-// alignment. Used by both the question (with real values) and the answer
-// cell layout. `body` is a render-prop so the question can pass <span>s and
-// the input form can pass <input>s in the same shape. `variant` toggles
-// "matrix-display" (read-only, for the question) vs "matrix-input" (with
-// input cells) — they share bracket/body styles but differ in the cell
-// styling block.
-function MatrixSide({
-  body,
-  ariaLabel,
-  variant = "display",
+// renderMatrixLatex returns a KaTeX-rendered HTML string for the captcha
+// question. Uses LaTeX's bmatrix environment so the brackets, alignment,
+// and spacing match the typography of a textbook — \left[ \right] scaling,
+// proper row spacing, operator spacing for ×. throwOnError:false so a
+// malformed question degrades gracefully rather than 500ing the page.
+function renderMatrixLatex(A: number[][], B: number[][]): string {
+  const fmt = (m: number[][]) =>
+    `\\begin{bmatrix} ${m[0][0]} & ${m[0][1]} \\\\ ${m[1][0]} & ${m[1][1]} \\end{bmatrix}`;
+  const latex = `${fmt(A)} \\times ${fmt(B)} = \\ ?`;
+  return katex.renderToString(latex, {
+    throwOnError: false,
+    displayMode: false,
+    strict: "ignore",
+  });
+}
+
+// MatrixInput is the 2×2 answer input. The structure is explicit (rows +
+// row-separator), not implicit-grid, so a reader sees two rows of two
+// cells rather than a single block. CSS-drawn vertical bars on the sides
+// mimic LaTeX's \left[ \right] without depending on a font's bracket
+// glyphs — they scale to whatever the input height turns out to be.
+function MatrixInput({
+  cells,
+  invalid,
+  refs,
+  onChange,
+  onKeyDown,
 }: {
-  body: (row: number, col: number) => React.ReactNode;
-  ariaLabel: string;
-  variant?: "display" | "input";
+  cells: string[][];
+  invalid: (v: string) => boolean;
+  refs: React.MutableRefObject<(HTMLInputElement | null)[][]>;
+  onChange: (r: number, c: number, v: string) => void;
+  onKeyDown: (r: number, c: number, e: React.KeyboardEvent<HTMLInputElement>) => void;
 }) {
-  const cls = variant === "input" ? "matrix-side matrix-input" : "matrix-side matrix-display";
   return (
-    <span className={cls} aria-label={ariaLabel} role="group">
-      <span className="bracket-col" aria-hidden="true">
-        <span>⎡</span>
-        <span>⎣</span>
+    <span className="matrix-input" role="group" aria-label="答案矩阵输入">
+      <span className="matrix-bracket matrix-bracket-left" aria-hidden="true" />
+      <span className="cells">
+        {[0, 1].map((r) => (
+          <span className="row" key={`row-${r}`}>
+            {[0, 1].map((c) => (
+              <input
+                key={`cell-${r}-${c}`}
+                ref={(el) => { refs.current[r][c] = el; }}
+                type="text"
+                inputMode="numeric"
+                className={`cell${invalid(cells[r][c]) ? " invalid" : ""}`}
+                value={cells[r][c]}
+                onChange={(e) => onChange(r, c, e.target.value)}
+                onKeyDown={(e) => onKeyDown(r, c, e)}
+                aria-label={`第${r + 1}行第${c + 1}列`}
+                autoComplete="off"
+                spellCheck={false}
+                maxLength={4}
+              />
+            ))}
+          </span>
+        ))}
+        {/* Horizontal separator between row 1 and row 2 — explicit so the
+            shape of the matrix is unmistakable in the rendered UI, the
+            same way \\ in LaTeX makes the second row clearly distinct. */}
+        <span className="row-sep" aria-hidden="true" />
       </span>
-      <span className="body">
-        {body(0, 0)}{body(0, 1)}{body(1, 0)}{body(1, 1)}
-      </span>
-      <span className="bracket-col" aria-hidden="true">
-        <span>⎤</span>
-        <span>⎦</span>
-      </span>
+      <span className="matrix-bracket matrix-bracket-right" aria-hidden="true" />
     </span>
   );
 }
@@ -149,6 +185,7 @@ export default function LoginForm() {
   }, []);
 
   const matrixQ = captchaMode === "matrix" ? parseMatrixQuestion(captchaQuestion) : null;
+  const matrixLatexHtml = matrixQ ? renderMatrixLatex(matrixQ.A, matrixQ.B) : "";
 
   // serializeMatrixAnswer converts the 2×2 grid into the JSON shape the
   // server's verifyMatrixAnswer expects: "[[a,b],[c,d]]". Empty or invalid
@@ -318,46 +355,26 @@ export default function LoginForm() {
               // already on the wire in the /auth/csrf response, so we're
               // not gaining security by hiding it; we're just not shipping
               // a debug aid to real users.
-              data-question={process.env.NODE_ENV !== "production" ? captchaQuestion : undefined}>
-              <MatrixSide
-                variant="display"
-                ariaLabel="矩阵 A"
-                body={(r, c) => <span key={`a-${r}-${c}`}>{matrixQ.A[r][c]}</span>}
-              />
-              <span className="matrix-op" aria-hidden="true">×</span>
-              <MatrixSide
-                variant="display"
-                ariaLabel="矩阵 B"
-                body={(r, c) => <span key={`b-${r}-${c}`}>{matrixQ.B[r][c]}</span>}
-              />
-              <span className="equals" aria-hidden="true">=</span>
-              <span className="qmark" aria-hidden="true">?</span>
-            </div>
+              data-question={process.env.NODE_ENV !== "production" ? captchaQuestion : undefined}
+              // KaTeX-rendered HTML for the LaTeX matrix equation. Using
+              // dangerouslySetInnerHTML is safe here because the input is
+              // two integer arrays we generate ourselves and feed through
+              // katex.renderToString — no user-controlled text reaches the
+              // LaTeX parser.
+              dangerouslySetInnerHTML={{ __html: matrixLatexHtml }}
+            />
           ) : (
             <span className="captcha-question">{captchaQuestion}</span>
           )}
 
           {captchaMode === "matrix" ? (
             <>
-              <MatrixSide
-                variant="input"
-                ariaLabel="答案矩阵输入"
-                body={(r, c) => (
-                  <input
-                    key={`cell-${r}-${c}`}
-                    ref={(el) => { cellRefs.current[r][c] = el; }}
-                    type="text"
-                    inputMode="numeric"
-                    className={`cell${!isCellValid(captchaCells[r][c]) ? " invalid" : ""}`}
-                    value={captchaCells[r][c]}
-                    onChange={(e) => handleCellChange(r, c, e.target.value)}
-                    onKeyDown={(e) => handleCellKeyDown(r, c, e)}
-                    aria-label={`第${r + 1}行第${c + 1}列`}
-                    autoComplete="off"
-                    spellCheck={false}
-                    maxLength={4}
-                  />
-                )}
+              <MatrixInput
+                cells={captchaCells}
+                invalid={(v) => !isCellValid(v)}
+                refs={cellRefs}
+                onChange={handleCellChange}
+                onKeyDown={handleCellKeyDown}
               />
               <div className="captcha-hint">
                 请计算 A × B，将 2×2 结果矩阵填入上方格子。支持负数，使用 Tab / 方向键移动焦点。

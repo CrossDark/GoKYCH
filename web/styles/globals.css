@@ -2075,109 +2075,100 @@ hr {
     margin-bottom: 0.25rem;
 }
 
-/* ===== Matrix captcha (math typesetting + 2x2 input grid) ===== */
+/* ===== Matrix captcha (KaTeX question + 2×2 answer input) ===== */
 /*
-   The captcha-question for matrix mode is two 2×2 integer matrices being
-   multiplied: A × B = ?. We typeset it the way textbooks do — bracket
-   characters `⎡⎤⎣⎦` flanking a 2-column grid of monospace digits, an `×`
-   between the matrices, and an `= ?` after. For the answer we replace the
-   single text field with a 2×2 grid of <input>s that bracket-flanks the
-   same way, so the visual shape matches the question. Backend is unchanged
-   — we still POST the cells serialised as JSON [[a,b],[c,d]].
+   The captcha question in matrix mode is "A × B = ?" where A and B are
+   2×2 integer matrices. We render it as actual LaTeX via KaTeX — the
+   `\begin{bmatrix}` environment gives proper bracket scaling, operator
+   spacing, and row alignment that match textbook typography. The answer
+   field is a CSS-drawn 2×2 grid: explicit rows with a horizontal
+   separator between them, plus vertical bars on the sides mimicking
+   `\left[ \right]`. Backend is unchanged — we still POST the cells
+   serialised as JSON [[a,b],[c,d]].
 */
 .matrix-eq {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    flex-wrap: wrap;
-    gap: 0.65rem;
-    margin: 0.35rem 0 0.6rem;
-    font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, Consolas, monospace);
-    font-size: 1.1rem;
-    line-height: 1;
-    color: var(--text);
-}
-
-.matrix-side {
-    display: inline-flex;
-    align-items: stretch;
-    gap: 0.35rem;
-}
-
-.matrix-side .bracket-col {
-    display: flex;
-    flex-direction: column;
-    justify-content: space-around;
-    font-weight: 300;
-    color: var(--text-secondary);
-    font-size: 1.55rem;
-    line-height: 1;
-}
-
-.matrix-side .body {
-    display: grid;
-    grid-template-columns: auto auto;
-    column-gap: 0.9rem;
-    row-gap: 0.45rem;
-    align-items: center;
-    justify-items: center;
-    font-variant-numeric: tabular-nums;
-    font-weight: 500;
-    padding: 0.05rem 0.1rem;
-    min-width: 2.4rem;
-}
-
-.matrix-op {
-    color: var(--text-secondary);
-    font-size: 1.25rem;
-    font-weight: 400;
-    padding: 0 0.1rem;
-}
-
-.matrix-eq .equals {
-    color: var(--text-secondary);
-    font-size: 1.15rem;
-}
-
-.matrix-eq .qmark {
-    color: var(--accent);
-    font-weight: 700;
-    min-width: 1.2rem;
+    margin: 0.5rem 0 0.85rem;
+    padding: 0.6rem 0.4rem;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
     text-align: center;
+    overflow-x: auto;
 }
 
-/* 2×2 answer input — mirrors the display brackets so the typing field
-   reads as "the matrix on the right side of the =". Inputs are narrow and
-   monospace; cells are big enough for two-character numbers (−9..9) plus
-   focus ring. */
+.matrix-eq .katex {
+    font-size: 1.15em;
+}
+
+.matrix-eq .katex .mord + .mord,
+.matrix-eq .katex .mbin,
+.matrix-eq .katex .mrel {
+    /* tighten KaTeX's natural spacing inside our captcha so the equation
+       doesn't wrap awkwardly on narrow screens */
+    margin-left: 0.05em;
+}
+
+/* ─── 2×2 answer input ─────────────────────────────────────────────── */
+
 .matrix-input {
     display: inline-flex;
     align-items: stretch;
-    gap: 0.35rem;
-    margin-top: 0.25rem;
+    font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, Consolas, monospace);
+    color: var(--text);
+    padding: 0.45rem 0.5rem;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    /* Make room for the bracket bars on either side. */
+    position: relative;
+    margin-top: 0.1rem;
 }
 
-.matrix-input .bracket-col {
-    display: flex;
-    flex-direction: column;
-    justify-content: space-around;
-    font-weight: 300;
-    color: var(--text-secondary);
-    font-size: 1.55rem;
-    line-height: 1;
-    pointer-events: none;
+/* CSS-drawn brackets — vertical bars on left and right that visually
+   look like LaTeX's \left[ \right]. They scale with the input height. */
+.matrix-input .matrix-bracket {
+    position: relative;
+    width: 0.55rem;
+    flex: none;
+}
+.matrix-input .matrix-bracket-left::before,
+.matrix-input .matrix-bracket-right::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    border: 0 solid var(--text-secondary);
+}
+.matrix-input .matrix-bracket-left::before {
+    left: 0;
+    border-left-width: 2px;
+}
+.matrix-input .matrix-bracket-right::before {
+    right: 0;
+    border-right-width: 2px;
 }
 
 .matrix-input .cells {
-    display: grid;
-    grid-template-rows: 1fr 1fr;
-    gap: 0.4rem;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding: 0 0.4rem;
 }
 
-.matrix-input .cells .row {
+.matrix-input .row {
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: 0.4rem;
+    gap: 0.45rem;
+}
+
+/* Horizontal separator between row 1 and row 2 — explicit so the matrix
+   shape reads as "two rows" rather than "four cells in a block". This is
+   the same role `\\` plays in LaTeX's bmatrix. */
+.matrix-input .row-sep {
+    display: block;
+    height: 0;
+    margin: 0.45rem 0;
+    border-top: 1px solid var(--border);
 }
 
 .matrix-input .cell {
@@ -2217,7 +2208,7 @@ hr {
 .captcha-hint {
     font-size: 0.78rem;
     color: var(--text-muted);
-    margin-top: 0.35rem;
+    margin-top: 0.4rem;
 }
 
 /* ===== Back Link ===== */
