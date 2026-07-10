@@ -311,7 +311,14 @@ export default function LoginForm() {
         <div className="form-label">
           <span>验证码</span>
           {captchaMode === "matrix" && matrixQ ? (
-            <div className="matrix-eq" data-testid="matrix-question" data-question={captchaQuestion}>
+            <div className="matrix-eq" data-testid="matrix-question"
+              // Expose the original JSON question in dev/test for Playwright
+              // and ad-hoc DOM inspection. Production builds drop it
+              // (React omits undefined attributes) — the same string is
+              // already on the wire in the /auth/csrf response, so we're
+              // not gaining security by hiding it; we're just not shipping
+              // a debug aid to real users.
+              data-question={process.env.NODE_ENV !== "production" ? captchaQuestion : undefined}>
               <MatrixSide
                 variant="display"
                 ariaLabel="矩阵 A"
