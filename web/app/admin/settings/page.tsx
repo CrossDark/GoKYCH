@@ -31,6 +31,7 @@ const FIELD_LABELS: Record<string, string> = {
   enable_tags_sidebar: "启用标签侧栏",
   posts_per_page: "每页文章数",
   allow_all_edit: "允许所有用户编辑所有文章（站长专属）",
+  captcha_mode: "登录验证码模式（站长专属）",
 };
 
 const SECTION_ORDER = ["site", "appearance", "features"];
@@ -49,6 +50,10 @@ const SELECT_FIELDS: Record<string, { value: string; label: string }[]> = {
   timezone: [
     { value: "Asia/Shanghai", label: "Asia/Shanghai" },
     { value: "UTC", label: "UTC" },
+  ],
+  captcha_mode: [
+    { value: "math", label: "基础（十进制算术）" },
+    { value: "matrix", label: "高难度（2×2 矩阵乘法，答案以 JSON 矩阵形式输入）" },
   ],
 };
 
@@ -180,17 +185,28 @@ export default function AdminSettings() {
     }
 
     if (SELECT_FIELDS[key]) {
+      const isOwnerOnly = key === "captcha_mode";
+      const isOwner = me?.role === "owner";
+      if (isOwnerOnly && !isOwner) {
+        return null;
+      }
       return (
         <label key={key} className="admin-setting-field">
           <span className="admin-setting-key">{label}</span>
           <select
             value={String(value ?? "")}
+            disabled={isOwnerOnly && !isOwner}
             onChange={(e) => handleChange(section, key, e.target.value)}
           >
             {SELECT_FIELDS[key].map((opt) => (
               <option key={opt.value} value={opt.value}>{opt.label}</option>
             ))}
           </select>
+          {isOwnerOnly && (
+            <span className="admin-setting-hint">
+              切换为「高难度」后登录页面会出现 2×2 整数矩阵乘法题（如 <code>[[1,2],[3,4]] × [[5,6],[7,8]] = ?</code>），答案需要以 JSON 矩阵形式输入（<code>[[a,b],[c,d]]</code>）。仅站长（owner）可修改此项。
+            </span>
+          )}
         </label>
       );
     }

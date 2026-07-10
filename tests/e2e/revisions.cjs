@@ -48,20 +48,50 @@ const ADMIN_USER = "admin";
 const ADMIN_PASS = "admin123";
 const TYPE = "md";
 
-// Captcha parser: matches the form the login page renders
-// (e.g. "4 - 2 = ?", "7 × 3 = ?", "9 ÷ 2 = ?").
+// Captcha parser: dispatches on question shape.
+//   - matrix mode (default for owners who toggled high-difficulty on):
+//       [[a,b],[c,d]] × [[e,f],[g,h]] = ?
+//     → reply with [[r1,r2],[r3,r4]] (compact JSON, no spaces inside).
+//   - math mode (legacy default):
+//       a + b / a - b / a × b / a ÷ b
+//     → reply with the decimal result.
+//
+// The matrix regex is anchored on the literal "[[" prefix and "×" operator
+// so it won't accidentally match numeric operands inside the brackets.
 function solveCaptcha(question) {
+  // matrix mode: 2×2 matrix multiplication
+  const mm = question.match(
+    /\[\[(-?\d+),(-?\d+)\],\[(-?\d+),(-?\d+)\]\]\s*×\s*\[\[(-?\d+),(-?\d+)\],\[(-?\d+),(-?\d+)\]\]/,
+  );
+  if (mm) {
+    const A = [[+mm[1], +mm[2]], [+mm[3], +mm[4]]];
+    const B = [[+mm[5], +mm[6]], [+mm[7], +mm[8]]];
+    const R = [
+      [
+        A[0][0] * B[0][0] + A[0][1] * B[1][0],
+        A[0][0] * B[0][1] + A[0][1] * B[1][1],
+      ],
+      [
+        A[1][0] * B[0][0] + A[1][1] * B[1][0],
+        A[1][0] * B[0][1] + A[1][1] * B[1][1],
+      ],
+    ];
+    return `[[${R[0][0]},${R[0][1]}],[${R[1][0]},${R[1][1]}]]`;
+  }
+  // legacy math mode
   const m = question.match(/(\d+)\s*([+\-×x*÷/])\s*(\d+)/);
   if (!m) throw new Error(`unrecognised captcha: ${question}`);
   const [, a, op, b] = m;
-  const x = Number(a), y = Number(b);
+  const x = parseInt(a, 10), y = parseInt(b, 10);
+  let result;
   switch (op) {
-    case "+": return String(x + y);
-    case "-": return String(x - y);
-    case "x": case "×": case "*": return String(x * y);
-    case "÷": case "/": return String(x / y);
+    case "+": result = x + y; break;
+    case "-": result = x - y; break;
+    case "x": case "×": case "*": result = x * y; break;
+    case "÷": case "/": result = x / y; break;
     default: throw new Error(`unknown op: ${op}`);
   }
+  return String(result);
 }
 
 let browser;

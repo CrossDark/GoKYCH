@@ -2075,6 +2075,151 @@ hr {
     margin-bottom: 0.25rem;
 }
 
+/* ===== Matrix captcha (math typesetting + 2x2 input grid) ===== */
+/*
+   The captcha-question for matrix mode is two 2×2 integer matrices being
+   multiplied: A × B = ?. We typeset it the way textbooks do — bracket
+   characters `⎡⎤⎣⎦` flanking a 2-column grid of monospace digits, an `×`
+   between the matrices, and an `= ?` after. For the answer we replace the
+   single text field with a 2×2 grid of <input>s that bracket-flanks the
+   same way, so the visual shape matches the question. Backend is unchanged
+   — we still POST the cells serialised as JSON [[a,b],[c,d]].
+*/
+.matrix-eq {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 0.65rem;
+    margin: 0.35rem 0 0.6rem;
+    font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, Consolas, monospace);
+    font-size: 1.1rem;
+    line-height: 1;
+    color: var(--text);
+}
+
+.matrix-side {
+    display: inline-flex;
+    align-items: stretch;
+    gap: 0.35rem;
+}
+
+.matrix-side .bracket-col {
+    display: flex;
+    flex-direction: column;
+    justify-content: space-around;
+    font-weight: 300;
+    color: var(--text-secondary);
+    font-size: 1.55rem;
+    line-height: 1;
+}
+
+.matrix-side .body {
+    display: grid;
+    grid-template-columns: auto auto;
+    column-gap: 0.9rem;
+    row-gap: 0.45rem;
+    align-items: center;
+    justify-items: center;
+    font-variant-numeric: tabular-nums;
+    font-weight: 500;
+    padding: 0.05rem 0.1rem;
+    min-width: 2.4rem;
+}
+
+.matrix-op {
+    color: var(--text-secondary);
+    font-size: 1.25rem;
+    font-weight: 400;
+    padding: 0 0.1rem;
+}
+
+.matrix-eq .equals {
+    color: var(--text-secondary);
+    font-size: 1.15rem;
+}
+
+.matrix-eq .qmark {
+    color: var(--accent);
+    font-weight: 700;
+    min-width: 1.2rem;
+    text-align: center;
+}
+
+/* 2×2 answer input — mirrors the display brackets so the typing field
+   reads as "the matrix on the right side of the =". Inputs are narrow and
+   monospace; cells are big enough for two-character numbers (−9..9) plus
+   focus ring. */
+.matrix-input {
+    display: inline-flex;
+    align-items: stretch;
+    gap: 0.35rem;
+    margin-top: 0.25rem;
+}
+
+.matrix-input .bracket-col {
+    display: flex;
+    flex-direction: column;
+    justify-content: space-around;
+    font-weight: 300;
+    color: var(--text-secondary);
+    font-size: 1.55rem;
+    line-height: 1;
+    pointer-events: none;
+}
+
+.matrix-input .cells {
+    display: grid;
+    grid-template-rows: 1fr 1fr;
+    gap: 0.4rem;
+}
+
+.matrix-input .cells .row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.4rem;
+}
+
+.matrix-input .cell {
+    width: 3.2rem;
+    height: 2.3rem;
+    padding: 0.3rem 0.4rem;
+    text-align: center;
+    font-family: inherit;
+    font-variant-numeric: tabular-nums;
+    font-weight: 500;
+    font-size: 1.05rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg);
+    color: var(--text);
+    outline: none;
+    transition: border-color 0.2s, box-shadow 0.2s;
+    -moz-appearance: textfield;
+}
+
+.matrix-input .cell::-webkit-outer-spin-button,
+.matrix-input .cell::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+}
+
+.matrix-input .cell:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.12);
+}
+
+.matrix-input .cell.invalid {
+    border-color: #f87171;
+    box-shadow: 0 0 0 3px rgba(248, 113, 113, 0.18);
+}
+
+.captcha-hint {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    margin-top: 0.35rem;
+}
+
 /* ===== Back Link ===== */
 .back-link {
     display: inline-flex;

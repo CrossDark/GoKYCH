@@ -15,10 +15,25 @@ def check(name, cond, detail=""):
     else: FAIL += 1; print(f"  \u2717 {name}  {detail}")
 
 def solve(q):
+    # matrix mode: [[a,b],[c,d]] × [[e,f],[g,h]] = ?
+    m = re.match(
+        r"\[\[(-?\d+),(-?\d+)\],\[(-?\d+),(-?\d+)\]\]\s*×\s*"
+        r"\[\[(-?\d+),(-?\d+)\],\[(-?\d+),(-?\d+)\]\]", q)
+    if m:
+        A = [[int(m.group(1)), int(m.group(2))],
+             [int(m.group(3)), int(m.group(4))]]
+        B = [[int(m.group(5)), int(m.group(6))],
+             [int(m.group(7)), int(m.group(8))]]
+        R = [[A[0][0]*B[0][0] + A[0][1]*B[1][0],
+              A[0][0]*B[0][1] + A[0][1]*B[1][1]],
+             [A[1][0]*B[0][0] + A[1][1]*B[1][0],
+              A[1][0]*B[0][1] + A[1][1]*B[1][1]]]
+        return f"[[{R[0][0]},{R[0][1]}],[{R[1][0]},{R[1][1]}]]"
+    # legacy math mode
     m = re.match(r"(\d+)\s*([+\-×])\s*(\d+)", q)
     if not m: return ""
-    a,op,b = int(m.group(1)), m.group(2), int(m.group(3))
-    return str(a+b if op=="+" else (a-b if op=="-" else a*b))
+    a, op, b = int(m.group(1)), m.group(2), int(m.group(3))
+    return str({"+": a+b, "-": a-b, "×": a*b}[op])
 
 class Sess:
     """One logged-in session with its own cookie jar + live csrf token."""

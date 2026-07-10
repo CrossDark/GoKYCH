@@ -40,6 +40,13 @@ func Default() map[string]interface{} {
 			"enable_tags_sidebar": true,
 			"posts_per_page":      10,
 			"allow_all_edit":      false,
+			// Captcha difficulty for /auth/login. "math" = decimal arithmetic
+			// (the legacy default — easy for humans and bots). "matrix" = 2×2
+			// integer matrix multiplication; user answers as a JSON matrix
+			// [[a,b],[c,d]]. Higher friction for scripted solvers. Owner-only
+			// via the admin settings page. Touched by auth.generateCaptcha /
+			// auth.verifyCaptcha.
+			"captcha_mode": "math",
 		},
 		// Self-update source. "github" = api.github.com (CrossDark/GoKYCH);
 		// "gitcode" = api.gitcode.com (CrossDark/GoKych, China-friendly mirror).

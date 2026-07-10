@@ -25,7 +25,13 @@ export interface LoginResponse {
 
 export interface CaptchaResponse {
   csrf_token: string;
-  captcha: { question: string };
+  captcha: {
+    /** Active captcha mode for this question: "math" (default, decimal) or
+     *  "matrix" (high-difficulty, hex operands + hex answer). Newer servers
+     *  always populate this; older clients ignore it and assume "math". */
+    mode?: "math" | "matrix";
+    question: string;
+  };
 }
 
 // ── Articles ─────────────────────────────────────────────────────────
@@ -261,6 +267,9 @@ export interface SiteConfig {
     enable_tags_sidebar: boolean;
     posts_per_page: number;
     allow_all_edit: boolean;
+    /** Login captcha mode: "math" (decimal, default) or "matrix" (hex,
+     *  higher difficulty). Toggled by the site owner in admin settings. */
+    captcha_mode: "math" | "matrix";
   };
   // NOTE: site-level `social` was removed — per-user social links now
   // live on `User.social_email / social_github / social_qq` and are
@@ -327,6 +336,9 @@ export interface SiteSettings {
     enable_tags_sidebar: boolean;
     posts_per_page: number;
     allow_all_edit: boolean;
+    /** Login captcha mode: "math" (decimal, default) or "matrix" (hex,
+     *  higher difficulty). Toggled by the site owner in admin settings. */
+    captcha_mode: "math" | "matrix";
   };
   subsite_links: SubsiteLink[];
 }
