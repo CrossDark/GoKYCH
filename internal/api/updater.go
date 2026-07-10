@@ -25,9 +25,9 @@ import (
 // + SHA256SUMS), so the rest of the pipeline (download / verify / replace)
 // is source-agnostic.
 const (
-	githubRepo         = "CrossDark/GoKYCH"
-	githubLatestFmt    = "https://api.github.com/repos/%s/releases/latest"
-	githubTagFmt       = "https://api.github.com/repos/%s/releases/tags/v%s"
+	githubRepo      = "CrossDark/GoKYCH"
+	githubLatestFmt = "https://api.github.com/repos/%s/releases/latest"
+	githubTagFmt    = "https://api.github.com/repos/%s/releases/tags/v%s"
 
 	gitcodeOwner = "CrossDark"
 	gitcodeRepo  = "GoKych" // gitcode repo name is "GoKych" (capital K), NOT "GoKYCH"
@@ -68,7 +68,7 @@ type ghRelease struct {
 	TagName     string    `json:"tag_name"`
 	Name        string    `json:"name"`
 	Body        string    `json:"body"`
-	Draft       bool      `json:"draft"`        // github-only
+	Draft       bool      `json:"draft"` // github-only
 	Prerelease  bool      `json:"prerelease"`
 	PublishedAt time.Time `json:"published_at"` // github: published_at; gitcode falls back to created_at
 	CreatedAt   time.Time `json:"created_at"`   // gitcode-only
@@ -115,6 +115,18 @@ type gcAsset struct {
 	Size               int64  `json:"size"`
 }
 
+// normalizeGitCodeDownloadURL fixes GitCode's v5 release asset response:
+// browser_download_url currently points at https://api.gitcode.com/... which
+// returns openresty 404 for anonymous GETs. The same path on gitcode.com
+// redirects to file-cdn.gitcode.com with a signed URL and downloads correctly.
+func normalizeGitCodeDownloadURL(raw string) string {
+	const badPrefix = "https://api.gitcode.com/"
+	if strings.HasPrefix(raw, badPrefix) {
+		return "https://gitcode.com/" + strings.TrimPrefix(raw, badPrefix)
+	}
+	return raw
+}
+
 // toGhRelease converts a parsed gitcode response into the unified shape.
 // Filters out type:"source" archives (auto-generated zip/tar.gz) — only
 // type:"attach" entries are user-uploaded binaries / checksums.
@@ -134,7 +146,7 @@ func (g *gcRelease) toGhRelease() *ghRelease {
 		}
 		out.Assets = append(out.Assets, ghAsset{
 			Name:               a.Name,
-			BrowserDownloadURL: a.BrowserDownloadURL,
+			BrowserDownloadURL: normalizeGitCodeDownloadURL(a.BrowserDownloadURL),
 			Size:               a.Size,
 		})
 	}
@@ -1116,6 +1128,7 @@ func fetchExpectedHash(client *http.Client, sumsURL, assetName string) (string, 
 		if len(parts) == 2 {
 			hash := parts[0]
 			name := strings.TrimPrefix(parts[1], "*")
+			name = strings.TrimPrefix(name, "./")
 			if name == assetName {
 				return hash, nil
 			}
