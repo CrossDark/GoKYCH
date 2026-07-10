@@ -58,8 +58,8 @@ func TestValidateUsername(t *testing.T) {
 	}{
 		{name: "empty rejected", input: "", wantOK: false, wantInMsg: "不能为空"},
 		{name: "trimmed empty rejected", input: "   ", wantOK: false, wantInMsg: "不能为空"},
-		{name: "too short rejected", input: "ab", wantOK: false, wantInMsg: "3"},
-		{name: "too long rejected", input: strings.Repeat("字", 65), wantOK: false, wantInMsg: "64"},
+		{name: "single char ok", input: "李", wantOK: true},
+		{name: "very long ok", input: strings.Repeat("字", 160), wantOK: true},
 		{name: "whitespace inside rejected", input: "ab cd", wantOK: false, wantInMsg: "字母"},
 		{name: "special char rejected", input: "user@test", wantOK: false, wantInMsg: "字母"},
 		{name: "path separator rejected", input: "a/b", wantOK: false, wantInMsg: "字母"},
@@ -70,7 +70,8 @@ func TestValidateUsername(t *testing.T) {
 		{name: "ok unicode + digits", input: "用户1", wantOK: true},
 		{name: "ok Cyrillic", input: "Иван_2024", wantOK: true},
 		{name: "ok accented Latin", input: "Jérôme.OB", wantOK: true},
-		{name: "ok exactly 64 runes", input: strings.Repeat("字", 64), wantOK: true},
+		{name: "ok formerly too short", input: "ab", wantOK: true},
+		{name: "ok formerly too long", input: strings.Repeat("字", 80), wantOK: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -88,6 +89,34 @@ func TestValidateUsername(t *testing.T) {
 				t.Fatalf("error %q does not contain %q", got, tc.wantInMsg)
 			}
 		})
+	}
+}
+
+func TestGenerateRandom(t *testing.T) {
+	for i := 0; i < 20; i++ {
+		plain, err := GenerateRandom()
+		if err != nil {
+			t.Fatalf("GenerateRandom: %v", err)
+		}
+		if len([]rune(plain)) != generatedPasswordLength {
+			t.Fatalf("generated password length = %d runes, want %d: %q", len([]rune(plain)), generatedPasswordLength, plain)
+		}
+		if len([]byte(plain)) > 72 {
+			t.Fatalf("generated password is too long for bcrypt: %d bytes", len([]byte(plain)))
+		}
+		if ValidateStrength(plain) != "" {
+			t.Fatalf("generated password should satisfy legacy strength validator: %q", plain)
+		}
+		if !strings.ContainsFunc(plain, func(r rune) bool { return r > 127 }) {
+			t.Fatalf("generated password should include non-ASCII Unicode: %q", plain)
+		}
+		hash, err := Hash(plain)
+		if err != nil {
+			t.Fatalf("Hash generated password: %v", err)
+		}
+		if !Verify(hash, plain) {
+			t.Fatalf("Verify should accept generated password")
+		}
 	}
 }
 

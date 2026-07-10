@@ -34,12 +34,13 @@ func Default() map[string]interface{} {
 			"theme":         "auto",
 		},
 		"features": map[string]interface{}{
-			"enable_comments":     true,
-			"enable_dark_mode":    true,
-			"enable_search":       true,
-			"enable_tags_sidebar": true,
-			"posts_per_page":      10,
-			"allow_all_edit":      false,
+			"enable_comments":            true,
+			"enable_dark_mode":           true,
+			"enable_search":              true,
+			"enable_tags_sidebar":        true,
+			"posts_per_page":             10,
+			"allow_all_edit":             false,
+			"allow_user_file_management": false,
 			// Captcha difficulty for /auth/login. "math" = decimal arithmetic
 			// (the legacy default — easy for humans and bots). "matrix" = 2×2
 			// integer matrix multiplication; user answers as a JSON matrix

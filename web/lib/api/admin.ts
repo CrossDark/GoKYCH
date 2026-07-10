@@ -26,8 +26,20 @@ export function listUsers(csrf: string) {
   });
 }
 
-export function createUser(csrf: string, body: { username: string; password: string; nickname?: string; role?: string }) {
-  return request<User>("/admin/users", {
+export interface CreateUserResult {
+  user: User;
+  password: string;
+  message?: string;
+}
+
+export interface GeneratedPasswordResult {
+  status: string;
+  password: string;
+  message?: string;
+}
+
+export function createUser(csrf: string, body: { username: string; nickname?: string; role?: string }) {
+  return request<CreateUserResult>("/admin/users", {
     method: "POST",
     headers: { "X-CSRF-Token": csrf },
     body: JSON.stringify(body),
@@ -35,7 +47,7 @@ export function createUser(csrf: string, body: { username: string; password: str
 }
 
 export function updateUserRole(csrf: string, username: string, role: string) {
-  return request<{ status: string }>(`/admin/users/${username}/role`, {
+  return request<{ status: string }>(`/admin/users/${encodeURIComponent(username)}/role`, {
     method: "PUT",
     headers: { "X-CSRF-Token": csrf },
     body: JSON.stringify({ role }),
@@ -43,7 +55,7 @@ export function updateUserRole(csrf: string, username: string, role: string) {
 }
 
 export function deleteUser(csrf: string, username: string) {
-  return request<{ status: string }>(`/admin/users/${username}`, {
+  return request<{ status: string }>(`/admin/users/${encodeURIComponent(username)}`, {
     method: "DELETE",
     headers: { "X-CSRF-Token": csrf },
   });
@@ -156,8 +168,8 @@ export function updateProfile(csrf: string, body: {
   });
 }
 
-export function changeMyPassword(csrf: string, body: { old_password: string; new_password: string }) {
-  return request<{ status: string; message?: string }>("/admin/profile/password", {
+export function changeMyPassword(csrf: string, body: { old_password: string }) {
+  return request<GeneratedPasswordResult>("/admin/profile/password", {
     method: "PUT",
     headers: { "X-CSRF-Token": csrf },
     body: JSON.stringify(body),

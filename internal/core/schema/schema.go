@@ -88,6 +88,37 @@ func runMigrations(db *sql.DB) error {
 			slog.Warn("migration alter failed", "alter", m.alter, "err", err)
 		}
 	}
+
+	// Widen user-facing identity fields that were originally constrained for the
+	// first admin UI. The application no longer enforces a 3–64 username length;
+	// VARCHAR(512) keeps MySQL unique indexes under the utf8mb4/InnoDB key limit
+	// while removing the old product-level cap.
+	widenColumns := []struct {
+		table  string
+		column string
+		minLen int
+		alter  string
+	}{
+		{"users", "username", 512, "ALTER TABLE users MODIFY username VARCHAR(512) NOT NULL"},
+		{"users", "nickname", 512, "ALTER TABLE users MODIFY nickname VARCHAR(512) NOT NULL DEFAULT ''"},
+	}
+	for _, m := range widenColumns {
+		var maxLen sql.NullInt64
+		err := db.QueryRow(
+			`SELECT CHARACTER_MAXIMUM_LENGTH FROM information_schema.COLUMNS
+			 WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?`,
+			m.table, m.column).Scan(&maxLen)
+		if err != nil {
+			slog.Warn("width migration check failed", "table", m.table, "column", m.column, "err", err)
+			continue
+		}
+		if maxLen.Valid && maxLen.Int64 >= int64(m.minLen) {
+			continue
+		}
+		if _, err := db.Exec(m.alter); err != nil {
+			slog.Warn("width migration alter failed", "alter", m.alter, "err", err)
+		}
+	}
 	// Index migrations can't be expressed in the table above because
 	// information_schema.COLUMNS only knows about columns — for indexes
 	// we'd need STATISTICS. The two indexes we add (idx_comment_user,
@@ -162,9 +193,9 @@ var allTables = [...]string{
 	// ═══ 1. users ═══
 	`CREATE TABLE IF NOT EXISTS users (
 		id            INT AUTO_INCREMENT PRIMARY KEY,
-		username      VARCHAR(64)  UNIQUE NOT NULL,
+		username      VARCHAR(512) UNIQUE NOT NULL,
 		password_hash VARCHAR(255) NOT NULL,
-		nickname      VARCHAR(128) NOT NULL DEFAULT '',
+		nickname      VARCHAR(512) NOT NULL DEFAULT '',
 		role          ENUM('user','admin','owner') NOT NULL DEFAULT 'user',
 		avatar        VARCHAR(255) DEFAULT NULL,
 		bio           VARCHAR(500) DEFAULT '',

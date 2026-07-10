@@ -31,6 +31,7 @@ const FIELD_LABELS: Record<string, string> = {
   enable_tags_sidebar: "启用标签侧栏",
   posts_per_page: "每页文章数",
   allow_all_edit: "允许所有用户编辑所有文章（站长专属）",
+  allow_user_file_management: "允许所有用户上传和删除自己的文件（站长专属）",
   captcha_mode: "登录验证码模式（站长专属）",
 };
 
@@ -263,7 +264,7 @@ export default function AdminSettings() {
     }
 
     if (typeof value === "boolean") {
-      const isOwnerOnly = key === "allow_all_edit";
+      const isOwnerOnly = key === "allow_all_edit" || key === "allow_user_file_management";
       const isOwner = me?.role === "owner";
       if (isOwnerOnly && !isOwner) {
         return null;
@@ -279,7 +280,9 @@ export default function AdminSettings() {
           />
           {isOwnerOnly && (
             <span className="admin-setting-hint">
-              开启后所有已登录用户都可以编辑、删除任意文章（包括管理员创建的文章），请谨慎操作。仅站长（owner）可修改此设置。
+              {key === "allow_user_file_management"
+                ? "开启后普通用户会在后台看到「我的文件」，可上传文件并删除自己上传的文件；管理员和站长仍可管理全站文件。仅站长（owner）可修改此设置。"
+                : "开启后所有已登录用户都可以编辑、删除任意文章（包括管理员创建的文章），请谨慎操作。仅站长（owner）可修改此设置。"}
             </span>
           )}
         </label>

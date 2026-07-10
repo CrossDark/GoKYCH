@@ -1,6 +1,7 @@
 package api
 
 import (
+	"database/sql"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -50,7 +51,6 @@ func (s *Server) listUsers(c *gin.Context) {
 
 type createUserInput struct {
 	Username string `json:"username"`
-	Password string `json:"password"`
 	Nickname string `json:"nickname"`
 	Role     string `json:"role"`
 }
@@ -61,11 +61,9 @@ func (s *Server) createUser(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "请求格式错误。"})
 		return
 	}
+	in.Username = user.NormalizeUsername(in.Username)
+	in.Nickname = strings.TrimSpace(in.Nickname)
 	if msg := password.ValidateUsername(in.Username); msg != "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": msg})
-		return
-	}
-	if msg := password.ValidateStrength(in.Password); msg != "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": msg})
 		return
 	}
@@ -77,7 +75,12 @@ func (s *Server) createUser(c *gin.Context) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "不能创建 owner 账户。"})
 		return
 	}
-	hash, err := password.Hash(in.Password)
+	plainPassword, err := password.GenerateRandom()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "生成随机密码失败。"})
+		return
+	}
+	hash, err := password.Hash(plainPassword)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "密码加密失败。"})
 		return
@@ -93,7 +96,11 @@ func (s *Server) createUser(c *gin.Context) {
 		return
 	}
 	u, _ := user.GetByIDCtx(ctx, s.DB, int(id))
-	c.JSON(http.StatusCreated, u)
+	c.JSON(http.StatusCreated, gin.H{
+		"user":     u,
+		"password": plainPassword,
+		"message":  "用户已创建。请立即保存系统生成的随机密码。",
+	})
 }
 
 type updateRoleInput struct {
@@ -694,18 +701,33 @@ func (s *Server) deleteFeatured(c *gin.Context) {
 
 func (s *Server) listFiles(c *gin.Context) {
 	type fileInfo struct {
-		ID           int       `json:"id"`
-		Filename     string    `json:"filename"`
-		OriginalName string    `json:"original_name"`
-		FileSize     int64     `json:"file_size"`
-		MimeType     string    `json:"mime_type"`
-		CreatedAt    time.Time `json:"created_at"`
-		URL          string    `json:"url"`
+		ID               int       `json:"id"`
+		Filename         string    `json:"filename"`
+		OriginalName     string    `json:"original_name"`
+		FileSize         int64     `json:"file_size"`
+		MimeType         string    `json:"mime_type"`
+		UploadedBy       *int      `json:"uploaded_by,omitempty"`
+		UploaderName     string    `json:"uploader_name,omitempty"`
+		UploaderNickname string    `json:"uploader_nickname,omitempty"`
+		CreatedAt        time.Time `json:"created_at"`
+		URL              string    `json:"url"`
+	}
+	u, canManageAll, ok := s.resolveFileAccess(c)
+	if !ok {
+		return
 	}
 	ctx := c.Request.Context()
-	rows, err := s.DB.QueryContext(ctx,
-		`SELECT id, filename, original_name, file_size, mime_type, created_at
-		 FROM static_files ORDER BY created_at DESC`)
+	query := `SELECT sf.id, sf.filename, sf.original_name, sf.file_size, sf.mime_type, sf.uploaded_by,
+		       u.username, u.nickname, sf.created_at
+		 FROM static_files sf
+		 LEFT JOIN users u ON sf.uploaded_by = u.id`
+	args := []interface{}{}
+	if !canManageAll {
+		query += ` WHERE sf.uploaded_by = ?`
+		args = append(args, u.ID)
+	}
+	query += ` ORDER BY sf.created_at DESC`
+	rows, err := s.DB.QueryContext(ctx, query, args...)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载文件列表失败。"})
 		return
@@ -714,8 +736,20 @@ func (s *Server) listFiles(c *gin.Context) {
 	var out = make([]fileInfo, 0)
 	for rows.Next() {
 		var f fileInfo
-		if err := rows.Scan(&f.ID, &f.Filename, &f.OriginalName, &f.FileSize, &f.MimeType, &f.CreatedAt); err != nil {
+		var uploadedBy sql.NullInt64
+		var uploaderName, uploaderNickname sql.NullString
+		if err := rows.Scan(&f.ID, &f.Filename, &f.OriginalName, &f.FileSize, &f.MimeType, &uploadedBy, &uploaderName, &uploaderNickname, &f.CreatedAt); err != nil {
 			continue
+		}
+		if uploadedBy.Valid {
+			id := int(uploadedBy.Int64)
+			f.UploadedBy = &id
+		}
+		if uploaderName.Valid {
+			f.UploaderName = uploaderName.String
+		}
+		if uploaderNickname.Valid {
+			f.UploaderNickname = uploaderNickname.String
 		}
 		f.URL = s.publicAssetURL("/uploads/" + f.Filename)
 		out = append(out, f)
@@ -772,7 +806,6 @@ func (s *Server) updateProfile(c *gin.Context) {
 
 type changePasswordInput struct {
 	OldPassword string `json:"old_password"`
-	NewPassword string `json:"new_password"`
 }
 
 func (s *Server) changeMyPassword(c *gin.Context) {
@@ -787,17 +820,8 @@ func (s *Server) changeMyPassword(c *gin.Context) {
 		return
 	}
 	in.OldPassword = strings.TrimSpace(in.OldPassword)
-	in.NewPassword = strings.TrimSpace(in.NewPassword)
-	if in.OldPassword == "" || in.NewPassword == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "旧密码和新密码不能为空。"})
-		return
-	}
-	if msg := password.ValidateStrength(in.NewPassword); msg != "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": msg})
-		return
-	}
-	if in.OldPassword == in.NewPassword {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "新密码不能与旧密码相同。"})
+	if in.OldPassword == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "旧密码不能为空。"})
 		return
 	}
 	ctx := c.Request.Context()
@@ -810,7 +834,12 @@ func (s *Server) changeMyPassword(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "旧密码错误。"})
 		return
 	}
-	hash, err := password.Hash(in.NewPassword)
+	plainPassword, err := password.GenerateRandom()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "生成随机密码失败。"})
+		return
+	}
+	hash, err := password.Hash(plainPassword)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "密码加密失败。"})
 		return
@@ -820,5 +849,9 @@ func (s *Server) changeMyPassword(c *gin.Context) {
 		return
 	}
 	slog.Info("user changed own password", "user_id", u.ID, "username", u.Username)
-	c.JSON(http.StatusOK, gin.H{"status": "ok", "message": "密码已修改。"})
+	c.JSON(http.StatusOK, gin.H{
+		"status":   "ok",
+		"password": plainPassword,
+		"message":  "密码已重置。请立即保存系统生成的随机密码。",
+	})
 }

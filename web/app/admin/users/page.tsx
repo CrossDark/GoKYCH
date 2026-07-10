@@ -25,10 +25,11 @@ export default function AdminUsers() {
   const [users, setUsers] = useState<User[]>([]);
   const toast = useToast();
   const [search, setSearch] = useState("");
-  const [form, setForm] = useState({ username: "", password: "", nickname: "", role: "user" });
+  const [form, setForm] = useState({ username: "", nickname: "", role: "user" });
+  const [generatedCredential, setGeneratedCredential] = useState<{ username: string; password: string } | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
-  const isDirty = !!(form.username || form.password || form.nickname);
+  const isDirty = !!(form.username || form.nickname);
 
   const load = () => {
     if (!csrf) return;
@@ -46,15 +47,15 @@ export default function AdminUsers() {
     e.preventDefault();
     setSubmitting(true);
     try {
-      await createUser(csrf, {
+      const result = await createUser(csrf, {
         username: form.username,
-        password: form.password,
         nickname: form.nickname || undefined,
         role: form.role,
       });
-      const username = form.username;
-      toast.success(`用户「${username}」已创建。`);
-      setForm({ username: "", password: "", nickname: "", role: "user" });
+      const username = result.user?.username || form.username;
+      setGeneratedCredential({ username, password: result.password });
+      toast.success(`用户「${username}」已创建，请立即保存随机密码。`);
+      setForm({ username: "", nickname: "", role: "user" });
       load();
     } catch (err: any) {
       toast.error(err.message || "创建失败。");
@@ -89,6 +90,16 @@ export default function AdminUsers() {
     }
   };
 
+  const copyGeneratedPassword = async () => {
+    if (!generatedCredential) return;
+    try {
+      await navigator.clipboard.writeText(generatedCredential.password);
+      toast.success("已复制随机密码。");
+    } catch {
+      toast.warning("复制失败，请手动选中密码复制。");
+    }
+  };
+
   const filtered = users.filter((u) => {
     if (!search) return true;
     const s = search.toLowerCase();
@@ -96,7 +107,7 @@ export default function AdminUsers() {
       || (u.nickname || "").toLowerCase().includes(s);
   });
 
-  useBeforeUnload(isDirty && !submitting);
+  useBeforeUnload((isDirty && !submitting) || !!generatedCredential);
 
   return (
     <div className="admin-users">
@@ -125,26 +136,13 @@ export default function AdminUsers() {
                   value={form.username}
                   onChange={(e) => setForm({ ...form, username: e.target.value })}
                   required
-                  minLength={3}
-                  placeholder="字母数字下划线"
+                  placeholder="字母、数字、汉字等 Unicode 字符"
                   autoComplete="username"
+                  aria-describedby="user-username-hint"
                 />
-              </div>
-              <div className="admin-form-group">
-                <label htmlFor="user-password">
-                  密码
-                  <span style={{ color: "var(--admin-danger)", marginLeft: 4 }} aria-hidden="true">*</span>
-                </label>
-                <input
-                  id="user-password"
-                  type="password"
-                  value={form.password}
-                  onChange={(e) => setForm({ ...form, password: e.target.value })}
-                  required
-                  minLength={6}
-                  placeholder="至少 6 位"
-                  autoComplete="new-password"
-                />
+                <div id="user-username-hint" className="admin-form-hint">
+                  不再限制用户名长度；仍只允许字母、数字以及 . _ -，避免 URL 和日志里出现危险字符。
+                </div>
               </div>
             </div>
             <div className="admin-form-row">
@@ -180,12 +178,26 @@ export default function AdminUsers() {
                 className={`admin-btn admin-btn-primary ${submitting ? "admin-btn-loading" : ""}`}
                 disabled={submitting}
               >
-                创建用户
+                创建并生成随机密码
               </button>
             </div>
           </form>
         </div>
       </div>
+
+      {generatedCredential && (
+        <div className="admin-notice admin-notice-success">
+          <span className="admin-notice-icon">🔐</span>
+          <div className="admin-notice-content">
+            <strong>用户「{generatedCredential.username}」的随机密码只显示这一次：</strong>
+            <div className="admin-generated-password" style={{ marginTop: 8 }}>
+              <code>{generatedCredential.password}</code>
+              <button type="button" className="admin-btn admin-btn-outline admin-btn-sm" onClick={copyGeneratedPassword}>复制</button>
+              <button type="button" className="admin-btn admin-btn-ghost admin-btn-sm" onClick={() => setGeneratedCredential(null)}>我已保存</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Filter */}
       <div className="admin-filter">

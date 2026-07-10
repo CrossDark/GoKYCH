@@ -43,6 +43,12 @@ function getBreadcrumb(pathname: string, role: string): { parent?: string; paren
       current: role === "user" ? "我的文章" : "文章管理",
     };
   }
+  if (pathname === "/admin/files" || pathname.startsWith("/admin/files/")) {
+    return {
+      parent: role === "user" ? "内容" : "管理",
+      current: role === "user" ? "我的文件" : "文件管理",
+    };
+  }
   const m = BREADCRUMB.find((b) => b.match(pathname));
   return m ? { parent: m.parent, current: m.label } : { current: "管理后台" };
 }
@@ -64,44 +70,65 @@ function AdminLayoutInner({ children }: { children: React.ReactNode }) {
   const [csrfToken, setCsrfToken] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
-  const [site, setSite] = useState<SiteConfig["site"] | null>(null);
+  const [siteConfig, setSiteConfig] = useState<SiteConfig | null>(null);
   const [brandLogoFailed, setBrandLogoFailed] = useState(false);
   const userMenuRef = useRef<HTMLDivElement | null>(null);
+  const site = siteConfig?.site ?? null;
+  const allowUserFileManagement = siteConfig?.features?.allow_user_file_management === true;
 
   useEffect(() => {
-    // Sidebar brand uses the same site logo as the public Header. Fetched
-    // here rather than in the public Header so the admin SPA doesn't need
-    // to share a context — both pages already pay for one /api/site each
-    // and the response is cached at the EdgeOne edge for everyone.
-    getSite().then((d) => setSite(d.site ?? null)).catch(() => {});
-    getMe().then((r) => {
-      if (!r.user) {
-        router.push("/auth/login?next=" + encodeURIComponent(pathname));
-        return;
+    let cancelled = false;
+    (async () => {
+      try {
+        // Sidebar brand and regular-user route gates both depend on /api/site.
+        // Fetch it together with /auth/me so /admin/files can be opened only
+        // when the owner enabled personal file management.
+        const [siteRes, meRes] = await Promise.all([
+          getSite().catch(() => null),
+          getMe(),
+        ]);
+        if (cancelled) return;
+        if (siteRes) setSiteConfig(siteRes);
+        if (!meRes.user) {
+          router.push("/auth/login?next=" + encodeURIComponent(pathname));
+          return;
+        }
+        // Anyone logged in can reach:
+        //   - /admin/profile               (self-service)
+        //   - /admin/articles              (regular users see only their own)
+        //   - /admin/articles/[type]/[slug] (regular users can edit/delete
+        //                                    articles they authored)
+        //   - /admin/files                 only when owner enables personal files
+        // Every other /admin/* page is admin/owner only — regular users
+        // would otherwise see admin dashboards they can't use, so bounce
+        // them back to their profile.
+        const isAdminLike = meRes.user.role === "admin" || meRes.user.role === "owner";
+        const canUseFiles = siteRes?.features?.allow_user_file_management === true;
+        const userAllowed =
+          pathname === "/admin/profile" ||
+          pathname === "/admin/articles" ||
+          /^\/admin\/articles\/[^/]+\/[^/]+/.test(pathname) ||
+          ((pathname === "/admin/files" || pathname.startsWith("/admin/files/")) && canUseFiles);
+        if (!isAdminLike && !userAllowed) {
+          router.replace("/admin/profile");
+          return;
+        }
+        setUser(meRes.user);
+        getCsrf().then((c) => {
+          if (!cancelled) setCsrfToken(c.csrf_token);
+        });
+      } catch {
+        if (!cancelled) {
+          router.push("/auth/login?next=" + encodeURIComponent(pathname));
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
       }
-      // Anyone logged in can reach:
-      //   - /admin/profile               (self-service)
-      //   - /admin/articles              (regular users see only their own)
-      //   - /admin/articles/[type]/[slug] (regular users can edit/delete
-      //                                    articles they authored)
-      // Every other /admin/* page is admin/owner only — regular users
-      // would otherwise see admin dashboards they can't use, so bounce
-      // them back to their profile.
-      const isAdminLike = r.user.role === "admin" || r.user.role === "owner";
-      const userAllowed =
-        pathname === "/admin/profile" ||
-        pathname === "/admin/articles" ||
-        /^\/admin\/articles\/[^/]+\/[^/]+/.test(pathname);
-      if (!isAdminLike && !userAllowed) {
-        router.replace("/admin/profile");
-        return;
-      }
-      setUser(r.user);
-      getCsrf().then((c) => setCsrfToken(c.csrf_token));
-    }).catch(() => {
-      router.push("/auth/login?next=" + encodeURIComponent(pathname));
-    }).finally(() => setLoading(false));
-  }, []);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [pathname, router]);
 
   // Close user menu on outside click
   useEffect(() => {
@@ -124,10 +151,11 @@ function AdminLayoutInner({ children }: { children: React.ReactNode }) {
 
   // Close user menu on route change
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setUserMenuOpen(false);
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setSidebarOpen(false);
+    const timer = window.setTimeout(() => {
+      setUserMenuOpen(false);
+      setSidebarOpen(false);
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [pathname]);
 
   const handleLogout = async () => {
@@ -165,6 +193,9 @@ function AdminLayoutInner({ children }: { children: React.ReactNode }) {
         label: "内容",
         items: [
           { href: "/admin/articles", label: "我的文章", icon: "📝" },
+          ...(allowUserFileManagement
+            ? [{ href: "/admin/files", label: "我的文件", icon: "📁" }]
+            : []),
         ],
       }, {
         label: "账号",

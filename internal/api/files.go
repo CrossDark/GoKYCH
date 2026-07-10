@@ -2,6 +2,7 @@ package api
 
 import (
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -16,12 +17,52 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	authuser "gokych/internal/auth/user"
 	coredb "gokych/internal/core/db"
+	"gokych/internal/core/settings"
 )
 
 // MaxUploadSize caps a single multipart upload at 10 MB. Anything larger is
 // rejected at the parse-multipart stage before we read it into memory.
 const MaxUploadSize = 10 * 1024 * 1024
+
+const featureAllowUserFileManagement = "allow_user_file_management"
+
+func (s *Server) regularUserFileManagementAllowed() (bool, error) {
+	cfg, err := settings.Load(s.DataDir)
+	if err != nil {
+		return false, err
+	}
+	features, _ := cfg["features"].(map[string]interface{})
+	allow, _ := features[featureAllowUserFileManagement].(bool)
+	return allow, nil
+}
+
+// resolveFileAccess returns the caller and whether they can see/manage every
+// static file. Admins and owners always can. Regular users are admitted only
+// when the owner has enabled features.allow_user_file_management, and handlers
+// must then scope reads/deletes to uploaded_by = caller.ID.
+func (s *Server) resolveFileAccess(c *gin.Context) (*authuser.User, bool, bool) {
+	u := CurrentUserFromContext(c)
+	if u == nil {
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "请先登录。"})
+		return nil, false, false
+	}
+	if authuser.IsAdmin(u.Role) {
+		return u, true, true
+	}
+	allow, err := s.regularUserFileManagementAllowed()
+	if err != nil {
+		slog.Error("resolveFileAccess: settings.Load", "err", err)
+		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "读取文件权限设置失败。"})
+		return nil, false, false
+	}
+	if !allow {
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "文件上传未向普通用户开放。"})
+		return nil, false, false
+	}
+	return u, false, true
+}
 
 // allowedUploadMIMEs is the server-side allowlist of content types. The MIME
 // is detected from the file header (http.DetectContentType) rather than
@@ -138,6 +179,10 @@ func extFromMIME(m string) string {
 // POST /api/admin/files — multipart upload of a single file (form field: file).
 func (s *Server) uploadFile(c *gin.Context) {
 	ctx := c.Request.Context()
+	u, _, ok := s.resolveFileAccess(c)
+	if !ok {
+		return
+	}
 	if err := c.Request.ParseMultipartForm(MaxUploadSize); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "文件过大或请求格式错误（上限 10MB）。"})
 		return
@@ -234,11 +279,7 @@ func (s *Server) uploadFile(c *gin.Context) {
 		}
 	}
 
-	var uploadedBy *int
-	if u := CurrentUserFromContext(c); u != nil {
-		uid := u.ID
-		uploadedBy = &uid
-	}
+	uploadedBy := &u.ID
 	_, err = s.DB.ExecContext(ctx,
 		`INSERT INTO static_files (filename, original_name, file_path, file_size, mime_type, uploaded_by)
 		 VALUES (?, ?, ?, ?, ?, ?)`,
@@ -271,20 +312,39 @@ func (s *Server) uploadFile(c *gin.Context) {
 // we still need to inspect; filesystem delete is best-effort and logs on error.
 func (s *Server) deleteFile(c *gin.Context) {
 	ctx := c.Request.Context()
+	u, canManageAll, ok := s.resolveFileAccess(c)
+	if !ok {
+		return
+	}
 	id, err := strconv.Atoi(c.Param("id"))
 	if err != nil || id <= 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的文件 ID。"})
 		return
 	}
 	var filename, filePath string
-	err = s.DB.QueryRowContext(ctx, `SELECT filename, file_path FROM static_files WHERE id = ?`, id).Scan(&filename, &filePath)
+	var uploadedBy sql.NullInt64
+	err = s.DB.QueryRowContext(ctx, `SELECT filename, file_path, uploaded_by FROM static_files WHERE id = ?`, id).Scan(&filename, &filePath, &uploadedBy)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "文件不存在。"})
 		return
 	}
-	if _, err := s.DB.ExecContext(ctx, `DELETE FROM static_files WHERE id = ?`, id); err != nil {
+	if !canManageAll && (!uploadedBy.Valid || int(uploadedBy.Int64) != u.ID) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "文件不存在或不属于你。"})
+		return
+	}
+	var res sql.Result
+	if canManageAll {
+		res, err = s.DB.ExecContext(ctx, `DELETE FROM static_files WHERE id = ?`, id)
+	} else {
+		res, err = s.DB.ExecContext(ctx, `DELETE FROM static_files WHERE id = ? AND uploaded_by = ?`, id, u.ID)
+	}
+	if err != nil {
 		slog.Error("deleteFile: db", "id", id, "err", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "删除文件记录失败。"})
+		return
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "文件不存在或不属于你。"})
 		return
 	}
 	if err := os.Remove(filePath); err != nil && !os.IsNotExist(err) {

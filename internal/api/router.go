@@ -173,17 +173,17 @@ func (s *Server) Setup(r *gin.Engine) {
 				adminG.PUT("/notifications/:id", requireAdmin, s.updateNotification)
 				adminG.DELETE("/notifications/:id", requireAdmin, s.deleteNotification)
 
-			adminG.GET("/tags", requireAdmin, s.listAdminTags)
-			adminG.POST("/tags", requireAdmin, s.createTag)
-			adminG.PUT("/tags/:id", requireAdmin, s.renameTag)
-			adminG.DELETE("/tags/:id", requireAdmin, s.deleteTag)
+				adminG.GET("/tags", requireAdmin, s.listAdminTags)
+				adminG.POST("/tags", requireAdmin, s.createTag)
+				adminG.PUT("/tags/:id", requireAdmin, s.renameTag)
+				adminG.DELETE("/tags/:id", requireAdmin, s.deleteTag)
 
-			// Sidebar cards admin CRUD. requireAdmin — the public
-			// /api/sidebar-cards above is anonymous.
-			adminG.GET("/sidebar-cards", requireAdmin, s.listAdminSidebarCards)
-			adminG.POST("/sidebar-cards", requireAdmin, s.createSidebarCard)
-			adminG.PUT("/sidebar-cards/:id", requireAdmin, s.updateSidebarCard)
-			adminG.DELETE("/sidebar-cards/:id", requireAdmin, s.deleteSidebarCard)
+				// Sidebar cards admin CRUD. requireAdmin — the public
+				// /api/sidebar-cards above is anonymous.
+				adminG.GET("/sidebar-cards", requireAdmin, s.listAdminSidebarCards)
+				adminG.POST("/sidebar-cards", requireAdmin, s.createSidebarCard)
+				adminG.PUT("/sidebar-cards/:id", requireAdmin, s.updateSidebarCard)
+				adminG.DELETE("/sidebar-cards/:id", requireAdmin, s.deleteSidebarCard)
 
 				adminG.GET("/settings", requireAdmin, s.getSettings)
 				adminG.PUT("/settings", requireOwner, s.updateSettings)
@@ -194,9 +194,9 @@ func (s *Server) Setup(r *gin.Engine) {
 				adminG.POST("/home/featured", requireAdmin, s.addFeatured)
 				adminG.DELETE("/home/featured/:id", requireAdmin, s.deleteFeatured)
 
-				adminG.GET("/files", requireAdmin, s.listFiles)
-				adminG.POST("/files", requireAdmin, s.uploadFile)
-				adminG.DELETE("/files/:id", requireAdmin, s.deleteFile)
+				adminG.GET("/files", requireLogin, s.listFiles)
+				adminG.POST("/files", requireLogin, s.uploadFile)
+				adminG.DELETE("/files/:id", requireLogin, s.deleteFile)
 
 				// API keys — owner-only management. The requirement is that
 				// only the site owner may add/revoke API keys, so we gate

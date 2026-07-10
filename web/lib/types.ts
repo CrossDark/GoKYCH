@@ -267,6 +267,9 @@ export interface SiteConfig {
     enable_tags_sidebar: boolean;
     posts_per_page: number;
     allow_all_edit: boolean;
+    /** Owner gate for regular users managing files under /admin/files.
+     *  Admins/owners always keep full file-library access. */
+    allow_user_file_management: boolean;
     /** Login captcha mode: "math" (decimal, default) or "matrix" (hex,
      *  higher difficulty). Toggled by the site owner in admin settings. */
     captcha_mode: "math" | "matrix";
@@ -307,6 +310,9 @@ export interface AdminFile {
   original_name: string;
   file_size: number;
   mime_type: string;
+  uploaded_by?: number | null;
+  uploader_name?: string;
+  uploader_nickname?: string;
   created_at: string;
   url: string;
 }
@@ -336,6 +342,9 @@ export interface SiteSettings {
     enable_tags_sidebar: boolean;
     posts_per_page: number;
     allow_all_edit: boolean;
+    /** Owner gate for regular users managing files under /admin/files.
+     *  Admins/owners always keep full file-library access. */
+    allow_user_file_management: boolean;
     /** Login captcha mode: "math" (decimal, default) or "matrix" (hex,
      *  higher difficulty). Toggled by the site owner in admin settings. */
     captcha_mode: "math" | "matrix";

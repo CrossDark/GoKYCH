@@ -40,7 +40,8 @@ export default function AdminProfile() {
     || form.social_github !== initial.social_github
     || form.social_qq !== initial.social_qq;
 
-  const [pw, setPw] = useState({ old: "", next: "", confirm: "" });
+  const [pwOld, setPwOld] = useState("");
+  const [generatedPassword, setGeneratedPassword] = useState("");
   const [pwSubmitting, setPwSubmitting] = useState(false);
 
   const [myKeys, setMyKeys] = useState<MyPasskeyInfo[]>([]);
@@ -81,7 +82,7 @@ export default function AdminProfile() {
     });
   }, []);
 
-  useBeforeUnload(isProfileDirty && !submitting);
+  useBeforeUnload((isProfileDirty && !submitting) || !!generatedPassword);
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -114,22 +115,29 @@ export default function AdminProfile() {
     }
   };
 
-  const pwValid = pw.next.length >= 8 && /[A-Z]/.test(pw.next) && /[a-z]/.test(pw.next) && /[0-9]/.test(pw.next) && !/\s/.test(pw.next);
   const handlePassword = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!pw.old || !pw.next) { toast.warning("旧密码和新密码不能为空。"); return; }
-    if (!pwValid) { toast.warning("新密码需 8 位以上，含大小写字母和数字，无空格。"); return; }
-    if (pw.next !== pw.confirm) { toast.warning("两次输入的新密码不一致。"); return; }
-    if (pw.old === pw.next) { toast.warning("新密码不能与旧密码相同。"); return; }
+    if (!pwOld) { toast.warning("旧密码不能为空。"); return; }
     setPwSubmitting(true);
     try {
-      await changeMyPassword(csrf, { old_password: pw.old, new_password: pw.next });
-      setPw({ old: "", next: "", confirm: "" });
-      toast.success("密码已修改。");
+      const result = await changeMyPassword(csrf, { old_password: pwOld });
+      setPwOld("");
+      setGeneratedPassword(result.password);
+      toast.success("密码已重置，请立即保存系统生成的新密码。");
     } catch (err: any) {
       toast.error(err.message || "修改失败。");
     } finally {
       setPwSubmitting(false);
+    }
+  };
+
+  const copyGeneratedPassword = async () => {
+    if (!generatedPassword) return;
+    try {
+      await navigator.clipboard.writeText(generatedPassword);
+      toast.success("已复制随机密码。");
+    } catch {
+      toast.warning("复制失败，请手动选中密码复制。");
     }
   };
 
@@ -270,29 +278,39 @@ export default function AdminProfile() {
       </form>
 
       <form onSubmit={handlePassword} className="admin-card" style={{ marginTop: "1.25rem" }}>
-        <div className="admin-card-header"><h2>🔐 修改密码</h2></div>
+        <div className="admin-card-header"><h2>🔐 重置密码</h2></div>
         <div className="admin-card-body">
           {passwordLoginDisabled && (
             <div className="admin-notice admin-notice-warning" style={{ marginBottom: 12 }}>
-              你已绑定 Passkey，密码登录已禁用。改密码不会影响当前的 Passkey 登录；若删除所有 Passkey，密码登录会自动恢复。
+              你已绑定 Passkey，密码登录已禁用。重置密码不会影响当前的 Passkey 登录；若删除所有 Passkey，密码登录会自动恢复。
+            </div>
+          )}
+          <div className="admin-notice admin-notice-info" style={{ marginBottom: 12 }}>
+            <span className="admin-notice-icon">ℹ</span>
+            <div className="admin-notice-content">
+              新密码只能由系统生成，包含数字、英文/拉丁字母、汉字、日语假名等 Unicode 字符；用户不能自定义新密码。
+            </div>
+          </div>
+          {generatedPassword && (
+            <div className="admin-notice admin-notice-success" style={{ marginBottom: 12 }}>
+              <span className="admin-notice-icon">🔐</span>
+              <div className="admin-notice-content">
+                <strong>新随机密码只显示这一次：</strong>
+                <div className="admin-generated-password" style={{ marginTop: 8 }}>
+                  <code>{generatedPassword}</code>
+                  <button type="button" className="admin-btn admin-btn-outline admin-btn-sm" onClick={copyGeneratedPassword}>复制</button>
+                  <button type="button" className="admin-btn admin-btn-ghost admin-btn-sm" onClick={() => setGeneratedPassword("")}>我已保存</button>
+                </div>
+              </div>
             </div>
           )}
           <div className="admin-form">
             <div className="admin-form-group">
               <label htmlFor="pw-old">旧密码</label>
-              <input id="pw-old" type="password" value={pw.old} onChange={(e) => setPw({ ...pw, old: e.target.value })} autoComplete="current-password" placeholder="当前密码" />
-            </div>
-            <div className="admin-form-group">
-              <label htmlFor="pw-new">新密码</label>
-              <input id="pw-new" type="password" value={pw.next} onChange={(e) => setPw({ ...pw, next: e.target.value })} autoComplete="new-password" placeholder="8 位以上，含大小写字母和数字" aria-describedby="pw-new-hint" />
-              <div id="pw-new-hint" className="admin-form-hint">8–72 位，必须包含大写字母、小写字母和数字，不含空格。</div>
-            </div>
-            <div className="admin-form-group">
-              <label htmlFor="pw-confirm">确认新密码</label>
-              <input id="pw-confirm" type="password" value={pw.confirm} onChange={(e) => setPw({ ...pw, confirm: e.target.value })} autoComplete="new-password" placeholder="再次输入新密码" />
+              <input id="pw-old" type="password" value={pwOld} onChange={(e) => setPwOld(e.target.value)} autoComplete="current-password" placeholder="当前密码" />
             </div>
             <div className="admin-form-actions">
-              <button type="submit" className={`admin-btn admin-btn-primary ${pwSubmitting ? "admin-btn-loading" : ""}`} disabled={pwSubmitting || !pw.old || !pw.next || !pw.confirm}>修改密码</button>
+              <button type="submit" className={`admin-btn admin-btn-primary ${pwSubmitting ? "admin-btn-loading" : ""}`} disabled={pwSubmitting || !pwOld}>生成并应用随机新密码</button>
             </div>
           </div>
         </div>

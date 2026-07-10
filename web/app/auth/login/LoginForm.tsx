@@ -178,10 +178,13 @@ export default function LoginForm() {
   };
 
   useEffect(() => {
-    refreshCsrf();
-    if (supportsWebAuthn()) {
-      setShowPasskey(true);
-    }
+    const timer = window.setTimeout(() => {
+      void refreshCsrf();
+      if (supportsWebAuthn()) {
+        setShowPasskey(true);
+      }
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, []);
 
   const matrixQ = captchaMode === "matrix" ? parseMatrixQuestion(captchaQuestion) : null;
