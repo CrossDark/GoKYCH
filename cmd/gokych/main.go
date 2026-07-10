@@ -26,6 +26,7 @@ import (
 	"gokych/internal/core/schema"
 	"gokych/internal/core/settings"
 	"gokych/internal/core/themes"
+	"gokych/internal/restart"
 	"gokych/internal/typst"
 )
 
@@ -272,24 +273,43 @@ func main() {
 		// place. We return immediately and schedule the actual restart
 		// 2s later so the HTTP response can flush to the client first.
 		time.AfterFunc(2*time.Second, func() {
-			slog.Info("update: restarting service...")
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			if err := httpSrv.Shutdown(ctx); err != nil {
-				slog.Error("update: graceful shutdown error, forcing restart", "err", err)
-			}
-			// Re-exec the binary at the same path with the same args/env.
-			// syscall.Exec replaces the current process image; PID stays
-			// the same so systemd tracks it as the continuous main PID.
-			exePath, err := os.Executable()
-			if err != nil {
-				slog.Error("update: cannot find executable path", "err", err)
-				return
-			}
+			// Close long-lived resources BEFORE handing control to
+			// either the systemd path (which will SIGTERM us) or the
+			// syscall.Exec path (which won't run defers). Both paths
+			// need the DB pool / typst worker quiet so the new
+			// process can start cleanly.
 			db.Close()
 			typstW.StopWorker()
-			if err := syscall.Exec(exePath, os.Args, os.Environ()); err != nil {
-				slog.Error("update: exec failed", "err", err)
+			switch restart.PickStrategy() {
+			case restart.StrategySystemd:
+				// Spawn `sudo systemctl restart gokych.service` in a
+				// detached process group. The command will SIGTERM
+				// us, the graceful-shutdown signal handler in main
+				// below runs, and the new instance starts.
+				slog.Info("update: restarting via systemd")
+				if err := restart.SystemdRestart("gokych.service"); err != nil {
+					slog.Error("update: systemd restart failed, falling back to exec", "err", err)
+					exePath, _ := os.Executable()
+					_ = restart.ExecRestart(exePath, os.Args, os.Environ())
+				}
+			default:
+				// No systemd (dev / docker / manual run). In-place
+				// exec keeps the same PID so the parent shell
+				// doesn't notice anything happened. This is the
+				// pre-systemd behaviour; preserved for backwards
+				// compatibility.
+				slog.Info("update: restarting via in-process exec")
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				if err := httpSrv.Shutdown(ctx); err != nil {
+					slog.Error("update: graceful shutdown error, forcing restart", "err", err)
+				}
+				exePath, err := os.Executable()
+				if err != nil {
+					slog.Error("update: cannot find executable path", "err", err)
+					return
+				}
+				_ = restart.ExecRestart(exePath, os.Args, os.Environ())
 			}
 		})
 		return nil

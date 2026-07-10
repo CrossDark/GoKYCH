@@ -450,7 +450,8 @@ RestartSec=5s
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/opt/gokych/data
+# /opt/gokych/bin: self-update replaces the binary in place via os.Rename.
+ReadWritePaths=/opt/gokych/bin /opt/gokych/data
 PrivateTmp=true
 LimitNOFILE=65535
 
@@ -459,6 +460,25 @@ WantedBy=multi-user.target
 UNIT
 systemctl daemon-reload
 systemctl enable gokych
+
+# sudoers: allow the deploy user to ask systemd to restart the service
+# without a password. This is what makes the in-app "auto-restart after
+# update" flow work — see internal/restart/restart.go.
+SYSTEMCTL_BIN="$(command -v systemctl)"
+if [[ -n "$SYSTEMCTL_BIN" ]]; then
+  SUDOERS_FILE="/etc/sudoers.d/gokych-restart"
+  cat > "$SUDOERS_FILE" <<SUDOERS
+# Auto-generated/refreshed by deploy-backend.sh. Scoped to systemctl
+# restart verbs only — no other root commands.
+deploy ALL=(root) NOPASSWD: $SYSTEMCTL_BIN restart gokych.service
+deploy ALL=(root) NOPASSWD: $SYSTEMCTL_BIN try-restart gokych.service
+SUDOERS
+  chmod 440 "$SUDOERS_FILE"
+  if ! visudo -c -f "$SUDOERS_FILE" >/dev/null 2>&1; then
+    echo "WARN: $SUDOERS_FILE failed visudo -c; removing." >&2
+    rm -f "$SUDOERS_FILE"
+  fi
+fi
 REMOTE
   ok "systemd unit 就位"
 fi

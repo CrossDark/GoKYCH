@@ -540,12 +540,12 @@ export default function AdminUpdate() {
             <li>后台异步下载对应平台二进制（显示进度），不会阻塞浏览器</li>
             <li>用 Release 中的 <code>SHA256SUMS</code> 校验文件完整性</li>
             <li>备份当前二进制为 <code>.prev</code>，原子替换为新版本</li>
-            <li>2 秒后优雅关闭 HTTP 服务并用 <code>syscall.Exec</code> 替换进程（PID 不变，systemd 无缝接管）</li>
+            <li>若是 systemd 部署（<code>INVOCATION_ID</code> 存在 + 有 <code>sudo systemctl</code> 权限），spawn 一次 <code>sudo systemctl restart gokych.service</code>，让 systemd 走 SIGTERM → 优雅停 → 拉起新版本；非 systemd 环境 fallback 到 <code>syscall.Exec</code>，PID 不变</li>
           </ol>
           <p style={{ margin: "0.75rem 0 0" }}>
             ⚠️ 若更新后无法启动，可手动回滚：<code style={{
               background: "var(--surface-2)", padding: "0.1rem 0.4rem", borderRadius: 3,
-            }}>cp gokych.prev gokych && systemctl restart gokych</code>
+            }}>cp gokych.prev gokych && sudo systemctl restart gokych</code>
           </p>
         </div>
       </div>
