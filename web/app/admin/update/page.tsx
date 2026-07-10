@@ -223,6 +223,15 @@ export default function AdminUpdate() {
   const [updStatus, setUpdStatus] = useState<UpdateStatus | null>(null);
   const [switchingSource, setSwitchingSource] = useState<UpdateSource | null>(null);
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Silences the "已是最新" / "可更新" toast on the auto check that runs
+  // when the page first mounts — the UI already shows the status inline
+  // in the cards below, and re-issuing the toast on every render loop
+  // (when an upstream `toast` reference is unstable) used to flood the
+  // screen with "v0.3.20 已是最新" the whole time the page was open.
+  // Manually clicking "🔄 检查更新" (or applying an update) sets this
+  // ref to true so the same call surface still surfaces feedback.
+  const allowCheckToastRef = useRef(false);
+  const lastCheckedVersionRef = useRef<string | null>(null);
 
   const stopPolling = useCallback(() => {
     if (pollTimerRef.current) {
@@ -266,14 +275,24 @@ export default function AdminUpdate() {
       const data = await checkUpdate();
       setInfo(data);
       if (data.error) {
-        toast.error("检查完成但有警告: " + data.error);
+        if (allowCheckToastRef.current) toast.error("检查完成但有警告: " + data.error);
       } else if (data.update_available) {
+        if (allowCheckToastRef.current) toast.success(`发现新版本 ${data.latest_version}`);
       } else {
-        toast.success(`当前版本 ${data.current_version} 已是最新`);
+        // De-dupe: only surface the "up-to-date" toast once per (version,
+        // latest_version) pair. With the version comparison fixed on the
+        // server, the same pair won't change while the page is open —
+        // so if we already toasted it, don't toast again.
+        const tag = `${data.current_version}|${data.latest_version ?? ""}`;
+        if (allowCheckToastRef.current && lastCheckedVersionRef.current !== tag) {
+          toast.success(`当前版本 ${data.current_version} 已是最新`);
+        }
+        lastCheckedVersionRef.current = tag;
       }
     } catch (e: any) {
-      toast.error("检查更新失败: " + e.message);
+      if (allowCheckToastRef.current) toast.error("检查更新失败: " + e.message);
     } finally {
+      allowCheckToastRef.current = false;
       setChecking(false);
     }
   }, [toast]);
@@ -297,6 +316,7 @@ export default function AdminUpdate() {
   }, [csrf, pollStatus]);
 
   const handleApply = useCallback(async () => {
+    allowCheckToastRef.current = true; // apply-implicit "I poked you" signal
     if (!info?.update_available) return;
     if (!info.can_write) {
       toast.error("二进制目录不可写，请检查进程权限");
@@ -336,8 +356,10 @@ export default function AdminUpdate() {
     try {
       const r = await setUpdateSource(csrf, next);
       toast.success(r.message || `已切换到 ${next}`);
-      // Trigger a fresh check against the new source.
-      setChecking(true);
+      // Trigger a fresh check against the new source. The user explicitly
+      // asked for this check via the source switch, so the version
+      // comparison toast SHOULD fire even if the result is "up to date".
+      allowCheckToastRef.current = true;
       const data = await checkUpdate();
       setInfo(data);
       if (data.error) {
@@ -350,7 +372,7 @@ export default function AdminUpdate() {
     } finally {
       setSwitchingSource(null);
     }
-  }, [csrf, info?.source, toast]);
+  }, [csrf, info?.source, toast, check]);
 
   const isInProgress = applying && updStatus && updStatus.status !== "done" && updStatus.status !== "error";
 
@@ -514,7 +536,11 @@ export default function AdminUpdate() {
           <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
             <button
               className="btn"
-              onClick={check}
+              onClick={() => {
+                // Manual click: enable the toast feedback for this check.
+                allowCheckToastRef.current = true;
+                void check();
+              }}
               disabled={checking || applying}
             >
               {checking ? "检查中…" : "🔄 检查更新"}

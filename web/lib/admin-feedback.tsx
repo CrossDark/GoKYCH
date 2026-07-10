@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useContext, useState, useCallback, useEffect, useRef, ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, ReactNode } from "react";
 
 export type ToastKind = "success" | "error" | "warning" | "info";
 
@@ -67,14 +67,25 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     [dismiss]
   );
 
-  const api: ToastApi = {
-    show,
-    success: (text, ttl) => show(text, "success", ttl),
-    error: (text, ttl) => show(text, "error", ttl),
-    warning: (text, ttl) => show(text, "warning", ttl),
-    info: (text, ttl) => show(text, "info", ttl),
-    dismiss,
-  };
+  // Build the API object once and memo it on its stable callbacks. Without
+  // this memo, every render of the provider would hand consumers a brand
+  // new `api` object — even though its function members are the same —
+  // and any `useCallback(fn, [toast])` in a consumer would re-fire every
+  // render. That was the root cause of the "v0.3.20 已是最新" toast
+  // re-appearing on the update page: useEffect triggered check(), which
+  // called toast.success(), which re-rendered, which re-ran useEffect, ad
+  // infinitum.
+  const api: ToastApi = useMemo(
+    () => ({
+      show,
+      success: (text, ttl) => show(text, "success", ttl),
+      error: (text, ttl) => show(text, "error", ttl),
+      warning: (text, ttl) => show(text, "warning", ttl),
+      info: (text, ttl) => show(text, "info", ttl),
+      dismiss,
+    }),
+    [show, dismiss]
+  );
 
   return (
     <ToastContext.Provider value={api}>

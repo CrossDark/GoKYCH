@@ -29,6 +29,9 @@ go.work.sum
 
 # ── GoKYCH 项目特定忽略 ──────────────────────────────────────
 
+# 本地构建产物（make build / go build 落点）
+bin/
+
 # PyKYCH 参考软链接
 PyKYCH_ref/
 
