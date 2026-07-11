@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strings"
 
 	"golang.org/x/crypto/bcrypt"
@@ -22,6 +23,12 @@ func Init(db *sql.DB) error {
 	// not retroactively add columns).
 	if err := runMigrations(db); err != nil {
 		return fmt.Errorf("[schema] migration failed: %w", err)
+	}
+	if err := seedInitialRevisions(db); err != nil {
+		return fmt.Errorf("[schema] seed initial revisions failed: %w", err)
+	}
+	if err := dropLegacyTables(db); err != nil {
+		return fmt.Errorf("[schema] drop legacy tables failed: %w", err)
 	}
 	slog.Info("all tables initialized")
 	return nil
@@ -98,6 +105,7 @@ func runMigrations(db *sql.DB) error {
 		//   also bump this so a hijacker with a still-valid cookie loses it
 		//   immediately.
 		{"users", "session_invalidated_at", "ALTER TABLE users ADD COLUMN session_invalidated_at INT UNSIGNED DEFAULT NULL AFTER must_reset_password"},
+		{"discussions", "slug", "ALTER TABLE discussions ADD COLUMN slug VARCHAR(128) NOT NULL DEFAULT '' AFTER id"},
 	}
 	for _, m := range migrations {
 		var n int
@@ -216,7 +224,53 @@ func runMigrations(db *sql.DB) error {
 			slog.Info("session_invalidated_at converted to INT (unix seconds)")
 		}
 	}
+
+	// Generate slugs for discussions that have empty slugs
+	var emptySlugCount int
+	err = db.QueryRow(`SELECT COUNT(*) FROM discussions WHERE slug = ''`).Scan(&emptySlugCount)
+	if err == nil && emptySlugCount > 0 {
+		slog.Info("generating slugs for discussions with empty slugs", "count", emptySlugCount)
+		rows, err := db.Query(`SELECT id, title FROM discussions WHERE slug = ''`)
+		if err == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var id int
+				var title string
+				if err := rows.Scan(&id, &title); err == nil {
+					slug := generateSlug(title)
+					if slug == "" {
+						slug = fmt.Sprintf("discussion-%d", id)
+					}
+					var existingID int
+					err2 := db.QueryRow(`SELECT id FROM discussions WHERE slug = ? AND id != ?`, slug, id).Scan(&existingID)
+					if err2 != nil {
+						_, _ = db.Exec(`UPDATE discussions SET slug = ? WHERE id = ?`, slug, id)
+					} else {
+						_, _ = db.Exec(`UPDATE discussions SET slug = ? WHERE id = ?`, slug+"-"+fmt.Sprintf("%d", id), id)
+					}
+				}
+			}
+			slog.Info("finished generating slugs for discussions")
+		}
+	}
+
+	_, _ = db.Exec(`ALTER TABLE discussions ADD UNIQUE INDEX uk_discussion_slug (slug)`)
+	_, _ = db.Exec(`ALTER TABLE discussions ADD INDEX idx_slug (slug)`)
+
 	return nil
+}
+
+var slugRe = regexp.MustCompile(`[\x00-\x1F\x7F/\\]`)
+const maxSlugRunes = 128
+
+func generateSlug(title string) string {
+	slug := strings.TrimSpace(title)
+	slug = slugRe.ReplaceAllString(slug, "")
+	if len([]rune(slug)) > maxSlugRunes {
+		slug = string([]rune(slug)[:maxSlugRunes])
+	}
+	slug = strings.TrimSpace(slug)
+	return slug
 }
 
 // SeedAdmin inserts the default admin user if the users table is empty.
@@ -540,4 +594,136 @@ var allTables = [...]string{
 		updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 		PRIMARY KEY (theme_name, ` + "`key`" + `)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
+	// ═══ 20. discussions — 讨论主题 ═══
+	// 独立的讨论系统，支持md、bbcode、html格式
+	`CREATE TABLE IF NOT EXISTS discussions (
+		id          INT AUTO_INCREMENT PRIMARY KEY,
+		slug        VARCHAR(128) NOT NULL UNIQUE,
+		title       VARCHAR(255) NOT NULL,
+		content     LONGTEXT NOT NULL,
+		format      ENUM('md','bbcode','html') NOT NULL DEFAULT 'md',
+		author_id   INT DEFAULT NULL,
+		reply_count INT NOT NULL DEFAULT 0,
+		created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+		INDEX idx_author (author_id),
+		INDEX idx_created (created_at),
+		INDEX idx_slug (slug),
+		FULLTEXT INDEX ft_discussion_title_content (title, content)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+
+	// ═══ 21. discussion_replies — 讨论回复 ═══
+	`CREATE TABLE IF NOT EXISTS discussion_replies (
+		id           INT AUTO_INCREMENT PRIMARY KEY,
+		discussion_id INT NOT NULL,
+		content      TEXT NOT NULL,
+		format       ENUM('md','bbcode','html') NOT NULL DEFAULT 'md',
+		user_id      INT DEFAULT NULL,
+		author_name  VARCHAR(128) NOT NULL DEFAULT '匿名',
+		created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		FOREIGN KEY (discussion_id) REFERENCES discussions(id) ON DELETE CASCADE,
+		INDEX idx_discussion (discussion_id, created_at),
+		INDEX idx_reply_user (user_id)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+}
+
+func seedInitialRevisions(db *sql.DB) error {
+	var seeded int
+	err := db.QueryRow(`
+		SELECT COUNT(*) FROM articles a
+		LEFT JOIN article_revisions ar ON ar.article_id = a.id AND ar.seq = 1
+		WHERE ar.id IS NULL
+	`).Scan(&seeded)
+	if err != nil {
+		return err
+	}
+
+	if seeded == 0 {
+		return nil
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	res, err := tx.Exec(`
+		INSERT INTO article_revisions
+			(article_id, seq, title, patch, is_snapshot, parent_seq, author_id, message, created_at)
+		SELECT a.id, 1, a.title, a.content, 1, NULL, a.author_id, '初始版本（数据迁移）', a.created_at
+		FROM articles a
+		LEFT JOIN article_revisions ar ON ar.article_id = a.id AND ar.seq = 1
+		WHERE ar.id IS NULL
+	`)
+	if err != nil {
+		return err
+	}
+
+	n, _ := res.RowsAffected()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+
+	if n > 0 {
+		slog.Info("seeded initial article revisions", "count", n)
+	}
+	return nil
+}
+
+func dropLegacyTables(db *sql.DB) error {
+	legacyTables := []string{
+		"md_articles",
+		"wikidot_articles",
+		"html_articles",
+		"bbcode_articles",
+		"typst_articles",
+	}
+
+	dropped := []string{}
+	for _, table := range legacyTables {
+		var exists int
+		err := db.QueryRow(`
+			SELECT COUNT(*) FROM information_schema.TABLES
+			WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?
+		`, table).Scan(&exists)
+		if err != nil {
+			slog.Warn("check legacy table failed", "table", table, "err", err)
+			continue
+		}
+		if exists == 0 {
+			continue
+		}
+
+		var legacyCount, unifiedCount int
+		rowCheck := db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM `%s`", table))
+		if err := rowCheck.Scan(&legacyCount); err != nil {
+			slog.Warn("count legacy table failed", "table", table, "err", err)
+			continue
+		}
+		if err := db.QueryRow(`
+			SELECT COUNT(*) FROM articles WHERE type = ?
+		`, strings.TrimSuffix(table, "_articles")).Scan(&unifiedCount); err != nil {
+			slog.Warn("count unified table failed", "type", strings.TrimSuffix(table, "_articles"), "err", err)
+			continue
+		}
+
+		if legacyCount > unifiedCount {
+			slog.Warn("legacy table has more rows than unified, skipping drop",
+				"table", table, "legacy", legacyCount, "unified", unifiedCount)
+			continue
+		}
+
+		if _, err := db.Exec(fmt.Sprintf("DROP TABLE IF EXISTS `%s`", table)); err != nil {
+			slog.Warn("drop legacy table failed", "table", table, "err", err)
+			continue
+		}
+		dropped = append(dropped, table)
+	}
+
+	if len(dropped) > 0 {
+		slog.Info("dropped legacy article tables", "tables", dropped)
+	}
+	return nil
 }

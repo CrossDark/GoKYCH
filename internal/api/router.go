@@ -110,6 +110,8 @@ func (s *Server) Setup(r *gin.Engine) {
 		apiG.GET("/articles/:type/:slug/line-comments", s.listLineComments)
 		apiG.GET("/articles/:type/:slug/rating", s.getRating)
 		apiG.GET("/articles/:type/:slug/ratings", s.listRatings)
+		apiG.GET("/discussions", s.listDiscussions)
+		apiG.GET("/discussions/:slug", s.getDiscussion)
 
 		// Auth (public + CSRF-gated).
 		authG := apiG.Group("/auth")
@@ -141,6 +143,10 @@ func (s *Server) Setup(r *gin.Engine) {
 			mutG.POST("/articles/:type/:slug/line-comments", requireLogin, s.addLineComment)
 			mutG.POST("/articles/:type/:slug/rating", requireLogin, s.setRating)
 			mutG.DELETE("/articles/:type/:slug/rating", requireLogin, s.deleteRating)
+
+			mutG.POST("/discussions", requireLogin, s.createDiscussion)
+			mutG.POST("/discussions/:slug/replies", requireLogin, s.addDiscussionReply)
+			mutG.DELETE("/discussions/:slug", requireLogin, s.deleteDiscussion)
 
 			// Article CRUD. Any logged-in user can create, but PUT/DELETE
 			// additionally check ownership inside the handler — a non-admin

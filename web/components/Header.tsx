@@ -164,6 +164,9 @@ export function Header() {
           </button>
           {/* Middle: admin-editable subsite links */}
           <nav className="header-subsites">
+            <Link href="/discuss" className="nav-link subsite-link" title="讨论">
+              💬 讨论
+            </Link>
             {subsiteLinks.map((link) => (
               <a
                 key={link.url}
