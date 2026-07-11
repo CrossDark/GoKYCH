@@ -556,6 +556,88 @@ export function activateTheme(csrf: string, name: string) {
   });
 }
 
+// ── Database management ──────────────────────────────────────────────
+
+export interface DatabaseTableInfo {
+  name: string;
+  rows: number;
+  can_import: boolean;
+  can_export: boolean;
+}
+
+export interface DatabaseTablesResponse {
+  tables: DatabaseTableInfo[];
+  permissions: {
+    can_import: boolean;
+    is_admin: boolean;
+    is_owner: boolean;
+  };
+}
+
+export interface TableDataResponse {
+  columns: string[];
+  data: (string | number | boolean | null)[][];
+  total: number;
+  page: number;
+  per_page: number;
+}
+
+export function listDatabaseTables(csrf: string) {
+  return request<DatabaseTablesResponse>("/admin/database/tables", {
+    headers: { "X-CSRF-Token": csrf },
+    next: { revalidate: 0 },
+  });
+}
+
+export function getTableData(csrf: string, table: string, page = 1, perPage = 50) {
+  return request<TableDataResponse>(
+    `/admin/database/tables/${encodeURIComponent(table)}?page=${page}&per_page=${perPage}`,
+    {
+      headers: { "X-CSRF-Token": csrf },
+      next: { revalidate: 0 },
+    }
+  );
+}
+
+export function getTableExportUrl(table: string, format: "csv" | "json" = "csv") {
+  return `/api/admin/database/tables/${encodeURIComponent(table)}/export?format=${format}`;
+}
+
+export function importTableData(csrf: string, table: string, file: File) {
+  const fd = new FormData();
+  fd.append("file", file);
+  return request<{ status: string; imported: number; message: string }>(
+    `/admin/database/tables/${encodeURIComponent(table)}/import`,
+    {
+      method: "POST",
+      headers: { "X-CSRF-Token": csrf },
+      body: fd,
+    }
+  );
+}
+
+export function getBulkExportUrl() {
+  return `/api/admin/database/export-all`;
+}
+
+export interface BulkImportResult {
+  status: string;
+  imported: number;
+  imported_tables: Record<string, number>;
+  skipped_tables: string[];
+  message: string;
+}
+
+export function importAllTables(csrf: string, file: File) {
+  const fd = new FormData();
+  fd.append("file", file);
+  return request<BulkImportResult>("/admin/database/import-all", {
+    method: "POST",
+    headers: { "X-CSRF-Token": csrf },
+    body: fd,
+  });
+}
+
 // ── Theme settings (P10) ─────────────────────────────────────────────
 //
 // Public read of schema + admin overrides at GET /api/themes/:name/settings.

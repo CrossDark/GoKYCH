@@ -20,6 +20,7 @@ const BREADCRUMB: { match: (p: string) => boolean; label: string; parent?: strin
   { match: (p) => p.startsWith("/admin/notifications"), label: "通知管理", parent: "管理" },
   { match: (p) => p.startsWith("/admin/sidebar-cards"), label: "侧栏卡片", parent: "管理" },
   { match: (p) => p.startsWith("/admin/users"), label: "用户管理", parent: "管理" },
+  { match: (p) => p.startsWith("/admin/database"), label: "数据库管理", parent: "管理" },
   { match: (p) => p.startsWith("/admin/settings"), label: "站点设置", parent: "设置" },
   { match: (p) => p.startsWith("/admin/api-keys"), label: "API Key", parent: "管理" },
   { match: (p) => p.startsWith("/admin/passkeys"), label: "Passkey", parent: "管理" },
@@ -47,6 +48,12 @@ function getBreadcrumb(pathname: string, role: string): { parent?: string; paren
     return {
       parent: role === "user" ? "内容" : "管理",
       current: role === "user" ? "我的文件" : "文件管理",
+    };
+  }
+  if (pathname === "/admin/database" || pathname.startsWith("/admin/database/")) {
+    return {
+      parent: role === "user" ? "内容" : "管理",
+      current: role === "user" ? "数据查看" : "数据库管理",
     };
   }
   const m = BREADCRUMB.find((b) => b.match(pathname));
@@ -107,6 +114,7 @@ function AdminLayoutInner({ children }: { children: React.ReactNode }) {
         const userAllowed =
           pathname === "/admin/profile" ||
           pathname === "/admin/articles" ||
+          pathname === "/admin/database" ||
           /^\/admin\/articles\/[^/]+\/[^/]+/.test(pathname) ||
           ((pathname === "/admin/files" || pathname.startsWith("/admin/files/")) && canUseFiles);
         if (!isAdminLike && !userAllowed) {
@@ -196,6 +204,7 @@ function AdminLayoutInner({ children }: { children: React.ReactNode }) {
           ...(allowUserFileManagement
             ? [{ href: "/admin/files", label: "我的文件", icon: "📁" }]
             : []),
+          { href: "/admin/database", label: "数据查看", icon: "🗄️" },
         ],
       }, {
         label: "账号",
@@ -218,6 +227,7 @@ function AdminLayoutInner({ children }: { children: React.ReactNode }) {
             { href: "/admin/files", label: "文件管理", icon: "📁" },
             { href: "/admin/notifications", label: "通知管理", icon: "🔔" },
             { href: "/admin/users", label: "用户管理", icon: "👥" },
+            { href: "/admin/database", label: "数据库管理", icon: "🗄️" },
             // Owner-only entries: API Key + 全站 Passkey 管理. Backend
             // gates both with requireOwner, so hide them from non-owners
             // to avoid a wall of 403s on direct nav.

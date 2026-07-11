@@ -250,6 +250,17 @@ func (s *Server) Setup(r *gin.Engine) {
 				// Admin overrides for a theme's settings schema (P10).
 				// Public read lives at GET /api/themes/:name/settings.
 				adminG.PUT("/themes/:name/settings", requireOwner, s.adminUpdateThemeSettings)
+
+				// Database management
+				// Regular users: view/export articles table, bulk export articles
+				// Admins: view/export all tables, bulk export all
+				// Owners: view/export/import all tables, bulk export/import all
+				adminG.GET("/database/tables", requireLogin, s.listDatabaseTables)
+				adminG.GET("/database/tables/:table", requireLogin, s.getTableData)
+				adminG.GET("/database/tables/:table/export", requireLogin, s.exportTable)
+				adminG.POST("/database/tables/:table/import", requireOwner, s.importTable)
+				adminG.GET("/database/export-all", requireLogin, s.exportAllTables)
+				adminG.POST("/database/import-all", requireOwner, s.importAllTables)
 			}
 		}
 	}
