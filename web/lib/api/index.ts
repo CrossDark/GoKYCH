@@ -24,6 +24,9 @@ export {
   createUser,
   updateUserRole,
   deleteUser,
+  forceResetUserPassword,
+  immediateResetUserPassword,
+  forceLogoutUser,
   listNotifications,
   createNotification,
   updateNotification,
@@ -69,4 +72,4 @@ export {
   deleteTheme,
   activateTheme,
 } from "./admin";
-export type { ApplyUpdateResult, SetUpdateSourceResult } from "./admin";
+export type { ApplyUpdateResult, SetUpdateSourceResult, ImmediateResetResult } from "./admin";

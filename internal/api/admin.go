@@ -26,6 +26,10 @@ type userSummary struct {
 	Nickname  string    `json:"nickname"`
 	Role      string    `json:"role"`
 	CreatedAt time.Time `json:"created_at"`
+	// MustResetPassword surfaces the "等待用户再次登录" state set by
+	// the force-reset endpoint, so the admin UI can flip its button
+	// to a disabled confirmation chip without a second round-trip.
+	MustResetPassword bool `json:"must_reset_password"`
 }
 
 func (s *Server) listUsers(c *gin.Context) {
@@ -39,11 +43,12 @@ func (s *Server) listUsers(c *gin.Context) {
 	out := make([]userSummary, 0, len(users))
 	for _, u := range users {
 		out = append(out, userSummary{
-			ID:        u.ID,
-			Username:  u.Username,
-			Nickname:  u.Nickname,
-			Role:      u.Role,
-			CreatedAt: u.CreatedAt,
+			ID:                u.ID,
+			Username:          u.Username,
+			Nickname:          u.Nickname,
+			Role:              u.Role,
+			CreatedAt:         u.CreatedAt,
+			MustResetPassword: u.MustResetPassword,
 		})
 	}
 	c.JSON(http.StatusOK, out)
@@ -159,6 +164,124 @@ func (s *Server) deleteUser(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+}
+
+// forceResetUserPassword marks a user for "rotate-on-next-login" and
+// kicks their current session. The new password is NOT generated here —
+// it is generated and surfaced to the user the next time they log in
+// (with their still-valid old password), via the postLogin flow's
+// must_reset_password branch. This split keeps the admin's UI simple
+// (no plaintext to copy / show) and keeps the new password away from
+// the admin's eyes — only the user sees it.
+//
+// If the user is an owner, refuse — owner accounts are bootstrapped
+// once and a force-reset would lock the operator out of the only
+// account that can re-grant owner.
+func (s *Server) forceResetUserPassword(c *gin.Context) {
+	username := c.Param("username")
+	ctx := c.Request.Context()
+	target, err := user.GetByUsernameCtx(ctx, s.DB, username)
+	if err != nil || target == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "用户不存在。"})
+		return
+	}
+	if user.IsOwner(target.Role) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "不能对站长账号执行强制重置。"})
+		return
+	}
+	if _, err := user.SetMustResetPasswordCtx(ctx, s.DB, username, true); err != nil {
+		slog.Error("forceResetUserPassword: set flag", "username", username, "err", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "标记失败。"})
+		return
+	}
+	if _, err := user.BumpSessionInvalidatedAtCtx(ctx, s.DB, username); err != nil {
+		slog.Error("forceResetUserPassword: bump session_invalidated_at", "username", username, "err", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "踢出登录失败。"})
+		return
+	}
+	slog.Info("force-reset password requested", "username", username, "by", CurrentUserFromContext(c).Username)
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "ok",
+		"message": "已标记。用户下次登录时将自动生成新密码并弹出。",
+	})
+}
+
+// immediateResetUserPassword generates a new random password RIGHT NOW,
+// invalidates the user's current session, and returns the new plaintext
+// to the admin in the response body. The admin is expected to deliver
+// the new password to the user out-of-band (in person / IM / etc.) —
+// the user does NOT see a popup on next login because the password
+// already changed in the DB. This is the right primitive for
+// "I just need them back in, and I have a way to reach them."
+func (s *Server) immediateResetUserPassword(c *gin.Context) {
+	username := c.Param("username")
+	ctx := c.Request.Context()
+	target, err := user.GetByUsernameCtx(ctx, s.DB, username)
+	if err != nil || target == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "用户不存在。"})
+		return
+	}
+	if user.IsOwner(target.Role) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "不能对站长账号执行立即重置。"})
+		return
+	}
+	plain, err := password.GenerateRandom()
+	if err != nil {
+		slog.Error("immediateResetUserPassword: generate", "err", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "生成随机密码失败。"})
+		return
+	}
+	hash, err := password.Hash(plain)
+	if err != nil {
+		slog.Error("immediateResetUserPassword: hash", "err", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "密码加密失败。"})
+		return
+	}
+	// clearMustReset = false — a previous force-reset may have set the
+	// flag, and we want it cleared too so the next login doesn't trigger
+	// another auto-rotation. RotatePasswordCtx with clearMustReset=true
+	// does both. But that requires the helper to accept a bool — use
+	// the existing helper for clarity and pass true.
+	if _, err := user.RotatePasswordCtx(ctx, s.DB, username, hash, true); err != nil {
+		slog.Error("immediateResetUserPassword: rotate", "err", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "更新密码失败。"})
+		return
+	}
+	slog.Info("immediate-reset password", "username", username, "by", CurrentUserFromContext(c).Username)
+	c.JSON(http.StatusOK, gin.H{
+		"status":   "ok",
+		"password": plain,
+		"message":  "新密码已生成，请转交给用户。",
+	})
+}
+
+// forceLogoutUser invalidates the user's current session by bumping
+// their session_invalidated_at to NOW(). Their password is left
+// unchanged. The next request carrying their session cookie will be
+// rejected by loadUserMiddleware and the cookie will be cleared.
+func (s *Server) forceLogoutUser(c *gin.Context) {
+	username := c.Param("username")
+	currentUser := CurrentUserFromContext(c)
+	if currentUser != nil && currentUser.Username == username {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "不能让自己立即退出登录，请直接登出。"})
+		return
+	}
+	ctx := c.Request.Context()
+	target, err := user.GetByUsernameCtx(ctx, s.DB, username)
+	if err != nil || target == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "用户不存在。"})
+		return
+	}
+	if _, err := user.BumpSessionInvalidatedAtCtx(ctx, s.DB, username); err != nil {
+		slog.Error("forceLogoutUser: bump session_invalidated_at", "username", username, "err", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "操作失败。"})
+		return
+	}
+	slog.Info("force-logout", "username", username, "by", currentUser.Username)
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "ok",
+		"message": "已强制退出登录。",
+	})
 }
 
 const tagNameMaxLen = 64
@@ -844,7 +967,10 @@ func (s *Server) changeMyPassword(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "密码加密失败。"})
 		return
 	}
-	if _, err := user.UpdatePasswordCtx(ctx, s.DB, u.Username, hash); err != nil {
+	// RotatePasswordCtx also bumps session_invalidated_at so any other
+	// tab/device with this user's cookie is forced to re-login — a
+	// hijacker holding a stale cookie loses it the next request.
+	if _, err := user.RotatePasswordCtx(ctx, s.DB, u.Username, hash, false); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "更新密码失败。"})
 		return
 	}

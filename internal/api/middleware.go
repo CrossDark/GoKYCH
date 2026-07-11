@@ -38,9 +38,18 @@ func (s *Server) loadUserMiddleware() gin.HandlerFunc {
 			}
 		}
 		if _, set := c.Get(ctxUserKey); !set {
+			// Detect "session present but invalidated" BEFORE the manager
+			// drops the user — if user_id exists in the session but
+			// CurrentUserCtx returns nil, it means the session was
+			// forcibly logged out (session_invalidated_at bumped). In
+			// that case we must clear the session cookie so the next
+			// request doesn't keep carrying a now-dead session id.
+			hadSession := s.sessions.HasUserID(c.Request)
 			u, err := s.sessions.CurrentUserCtx(ctx, c.Request)
 			if err == nil && u != nil {
 				c.Set(ctxUserKey, u)
+			} else if hadSession {
+				s.sessions.ClearInvalidated(c.Request, c.Writer)
 			}
 		}
 		c.Next()

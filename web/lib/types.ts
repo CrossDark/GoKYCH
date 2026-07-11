@@ -14,6 +14,12 @@ export interface User {
   /** Owner's QQ number (digits, no UI rendering — just the value). */
   social_qq: string;
   created_at: string;
+  /** True when an admin/owner has triggered "强制重置密码" — the next
+   *  successful login will atomically rotate the password and surface
+   *  the new plaintext to the user via LoginResponse.new_password.
+   *  Surfaced on the user list (admin page) so the action button can
+   *  flip to a disabled "等待用户再次登录" state. */
+  must_reset_password: boolean;
 }
 
 export interface LoginResponse {
@@ -21,6 +27,15 @@ export interface LoginResponse {
   user: User;
   next: string;
   message: string;
+  /** Set ONLY on the first login after an admin/owner triggered force
+   *  reset. The plaintext value is shown to the user via a "you must
+   *  copy this" modal before they reach the dashboard. Never set for
+   *  regular logins or for admin-initiated immediate-reset (that flow
+   *  shows the password to the admin, not the user). */
+  new_password?: string;
+  /** Mirrors `new_password` being set — convenience flag for the login
+   *  page to decide whether to render the new-password modal. */
+  must_change_password?: boolean;
 }
 
 export interface CaptchaResponse {

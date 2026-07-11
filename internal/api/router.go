@@ -167,6 +167,16 @@ func (s *Server) Setup(r *gin.Engine) {
 				adminG.POST("/users", requireAdmin, s.createUser)
 				adminG.PUT("/users/:username/role", requireOwner, s.updateUserRole)
 				adminG.DELETE("/users/:username", requireOwner, s.deleteUser)
+				// User lifecycle actions (admin+ — both admin and owner can
+				// press these per product spec).
+				//   force-reset-password: rotates on next login, surfaces
+				//     the new plaintext to the user via the login modal.
+				//   reset-password-immediate: rotates NOW, returns the
+				//     plaintext to the admin to deliver out-of-band.
+				//   force-logout: kicks the user out, no password change.
+				adminG.POST("/users/:username/force-reset-password", requireAdmin, s.forceResetUserPassword)
+				adminG.POST("/users/:username/reset-password-immediate", requireAdmin, s.immediateResetUserPassword)
+				adminG.POST("/users/:username/force-logout", requireAdmin, s.forceLogoutUser)
 
 				adminG.GET("/notifications", requireAdmin, s.listAdminNotifications)
 				adminG.POST("/notifications", requireAdmin, s.createNotification)

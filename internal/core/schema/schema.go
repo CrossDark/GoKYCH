@@ -70,6 +70,34 @@ func runMigrations(db *sql.DB) error {
 		// becomes a thin JSON assembler, and Next.js ISR + CDN cache the HTML
 		// indefinitely until the webhook triggers a revalidate.
 		{"articles", "rendered_html", "ALTER TABLE articles ADD COLUMN rendered_html MEDIUMTEXT DEFAULT NULL AFTER content"},
+		// must_reset_password: set by admin/owner via "强制重置密码". When the
+		// affected user next logs in (with their current password), the login
+		// handler sees the flag, atomically generates a fresh random password,
+		// updates password_hash + clears the flag, and returns the new plaintext
+		// in the login response so the user can copy it. The current session is
+		// kicked out via session_invalidated_at (below) at the moment the flag
+		// is set, forcing the user to re-authenticate.
+		{"users", "must_reset_password", "ALTER TABLE users ADD COLUMN must_reset_password TINYINT(1) NOT NULL DEFAULT 0 AFTER social_qq"},
+		// session_invalidated_at: a moving "credentials/invalidation unix
+		// timestamp" used to forcibly log out a user. Stored as INT
+		// (seconds since epoch, UTC) rather than DATETIME because:
+		//   (a) we compare it to the session's login_time which is also
+		//       a Unix timestamp, so an int/int compare is exact and
+		//       immune to the MySQL DSN's loc=UTC-default reading of
+		//       DATETIME columns as if they were in UTC (off by 8h vs
+		//       the MySQL server's CST);
+		//   (b) the value is never displayed to the user — it's pure
+		//       server-side bookkeeping, so we don't need a human
+		//       date format. Touched by:
+		//     - "强制重置密码" (force reset, kicks them out so they re-login)
+		//     - "立即重置密码" (immediate reset, kicks them out with the new pwd)
+		//     - "立即退出登录" (force logout, no password change, just kicks them)
+		//     - "立即重置密码" triggered automatically on next login by the
+		//       must_reset_password flow above.
+		//   PASSWORD-rotation events (admin self-service change in /admin/profile)
+		//   also bump this so a hijacker with a still-valid cookie loses it
+		//   immediately.
+		{"users", "session_invalidated_at", "ALTER TABLE users ADD COLUMN session_invalidated_at INT UNSIGNED DEFAULT NULL AFTER must_reset_password"},
 	}
 	for _, m := range migrations {
 		var n int
@@ -139,6 +167,53 @@ func runMigrations(db *sql.DB) error {
 			if !strings.Contains(msg, "Duplicate key name") && !strings.Contains(msg, "1061") {
 				slog.Warn("index add failed", "stmt", s, "err", err)
 			}
+		}
+	}
+
+	// Type migrations: session_invalidated_at was first introduced as
+	// DATETIME in the first cut of the user-lifecycle feature, then
+	// changed to INT (Unix timestamp) to avoid the DSN/parseTime-vs-
+	// server-tz mismatch that makes the kick-out compare off by 8
+	// hours. If a database was created during the DATETIME window,
+	// convert the column to INT (preserving the value via
+	// UNIX_TIMESTAMP()) and drop any pre-existing rows that no longer
+	// have a valid Unix equivalent (defensive: UNIX_TIMESTAMP() returns
+	// NULL for the zero date, which we accept as "no invalidation").
+	var sessionInvType string
+	err := db.QueryRow(
+		`SELECT DATA_TYPE FROM information_schema.COLUMNS
+		 WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'session_invalidated_at'`,
+	).Scan(&sessionInvType)
+	if err != nil {
+		slog.Warn("session_invalidated_at type check failed", "err", err)
+	} else if sessionInvType == "datetime" {
+		slog.Info("converting users.session_invalidated_at from DATETIME to INT (unix seconds)")
+		if _, err := db.Exec(
+			`ALTER TABLE users MODIFY COLUMN session_invalidated_at INT UNSIGNED DEFAULT NULL`,
+		); err != nil {
+			// INT UNSIGNED can't be populated directly from DATETIME
+			// with a single ALTER — MySQL will coerce via implicit
+			// string cast, but for safety we do an explicit two-step:
+			// add a temp int column, copy UNIX_TIMESTAMP() over, drop
+			// the old, rename the new. In practice the single ALTER
+			// works on MySQL 8 because the implicit conversion treats
+			// DATETIME as a string and parses "YYYY-MM-DD HH:MM:SS"
+			// as a year-prefixed number ("20260711084511"), which is
+			// NOT a Unix timestamp. So: do the two-step.
+			slog.Warn("single-step ALTER failed, falling back to add-column / copy / drop / rename", "err", err)
+			if _, err2 := db.Exec(`ALTER TABLE users ADD COLUMN session_invalidated_at_new INT UNSIGNED DEFAULT NULL AFTER must_reset_password`); err2 != nil {
+				slog.Error("add temp column failed", "err", err2)
+			} else if _, err2 := db.Exec(`UPDATE users SET session_invalidated_at_new = UNIX_TIMESTAMP(session_invalidated_at)`); err2 != nil {
+				slog.Error("copy via UNIX_TIMESTAMP failed", "err", err2)
+			} else if _, err2 := db.Exec(`ALTER TABLE users DROP COLUMN session_invalidated_at`); err2 != nil {
+				slog.Error("drop old column failed", "err", err2)
+			} else if _, err2 := db.Exec(`ALTER TABLE users CHANGE COLUMN session_invalidated_at_new session_invalidated_at INT UNSIGNED DEFAULT NULL`); err2 != nil {
+				slog.Error("rename temp column failed", "err", err2)
+			} else {
+				slog.Info("session_invalidated_at converted to INT (unix seconds)")
+			}
+		} else {
+			slog.Info("session_invalidated_at converted to INT (unix seconds)")
 		}
 	}
 	return nil

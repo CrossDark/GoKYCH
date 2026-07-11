@@ -349,6 +349,45 @@ func (s *Server) postLogin(c *gin.Context) {
 		}
 	}
 
+	// 5c. Force-reset-on-next-login branch. If the admin/owner previously
+	// triggered "强制重置密码" on this account, the user's old password
+	// STILL works for THIS login (we want the user to be able to
+	// re-enter at all), but we atomically rotate the password and
+	// surface the new plaintext to the user via the login response.
+	// After this, must_reset_password is cleared and any future login
+	// uses the new password. The new password goes into the response
+	// (not the DB only) so the user can copy it before the redirect
+	// fires — owner is exempt because a self-rotated owner password
+	// with no admin backup would be a one-way lock-out.
+	//
+	// Uses RotatePasswordForLoginCtx (not RotatePasswordCtx) because
+	// bumping session_invalidated_at here would race with the
+	// sessions.Login call immediately below — the new session's
+	// login_time would then be older than the bump, and the user
+	// would be silently logged out on their first request.
+	var rotatedPassword string
+	if uwp.MustResetPassword && !user.IsOwner(uwp.Role) {
+		plain, err := password.GenerateRandom()
+		if err != nil {
+			slog.Error("postLogin: force-reset generate", "err", err)
+			s.loginError(c, http.StatusInternalServerError, "生成新密码失败。")
+			return
+		}
+		hash, err := password.Hash(plain)
+		if err != nil {
+			slog.Error("postLogin: force-reset hash", "err", err)
+			s.loginError(c, http.StatusInternalServerError, "密码加密失败。")
+			return
+		}
+		if _, err := user.RotatePasswordForLoginCtx(ctx, s.DB, uwp.Username, hash); err != nil {
+			slog.Error("postLogin: force-reset rotate", "err", err)
+			s.loginError(c, http.StatusInternalServerError, "重置密码失败。")
+			return
+		}
+		rotatedPassword = plain
+		slog.Info("postLogin: force-rotated password", "user_id", uwp.ID, "username", uwp.Username)
+	}
+
 	// 6. Success.
 	if err := s.sessions.Login(c.Writer, c.Request, uwp.ID, uwp.Username); err != nil {
 		s.loginError(c, http.StatusInternalServerError, "登录失败，请重试。")
@@ -365,12 +404,17 @@ func (s *Server) postLogin(c *gin.Context) {
 	}
 	next := sanitizeNext(req.Next)
 
-	c.JSON(http.StatusOK, gin.H{
+	resp := gin.H{
 		"status":  "ok",
 		"user":    &uwp.User,
 		"next":    next,
 		"message": "登录成功。",
-	})
+	}
+	if rotatedPassword != "" {
+		resp["new_password"] = rotatedPassword
+		resp["must_change_password"] = true
+	}
+	c.JSON(http.StatusOK, resp)
 }
 
 // POST /api/auth/logout — clears the session.

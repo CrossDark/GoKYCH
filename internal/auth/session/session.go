@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"database/sql"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -98,10 +99,49 @@ func (m *Manager) Logout(w http.ResponseWriter, r *http.Request) error {
 	return s.Save(r, w)
 }
 
+// HasUserID reports whether the request's session has a user_id key —
+// used by loadUserMiddleware to distinguish "no session at all" from
+// "session present but invalidated" (the latter is the signature of an
+// admin-triggered force-logout / password rotation).
+func (m *Manager) HasUserID(r *http.Request) bool {
+	s, err := m.Session(r)
+	if err != nil {
+		return false
+	}
+	uidRaw, ok := s.Values["user_id"]
+	if !ok {
+		return false
+	}
+	uid, ok := uidRaw.(int64)
+	return ok && uid != 0
+}
+
+// ClearInvalidated wipes the cookie for a session that was previously
+// authenticated but has just been forcibly invalidated
+// (session_invalidated_at bumped past the session's login_time). Called
+// by loadUserMiddleware so the browser stops sending the now-dead
+// session id on subsequent requests.
+func (m *Manager) ClearInvalidated(r *http.Request, w http.ResponseWriter) {
+	s, err := m.Session(r)
+	if err != nil {
+		return
+	}
+	s.Options.MaxAge = -1
+	delete(s.Values, "user_id")
+	delete(s.Values, "username")
+	delete(s.Values, "login_time")
+	delete(s.Values, "last_activity")
+	delete(s.Values, "csrf_token")
+	if err := s.Save(r, w); err != nil {
+		slog.Error("session clear invalidated", "err", err)
+	}
+}
+
 // CurrentUserCtx resolves the authenticated user for the request, enforcing the
-// 24h idle timeout. On expiry or anonymous access it returns nil (and clears
-// stale session values if expired). The resolved *user.User is stashed in the
-// request context for downstream handlers.
+// 24h idle timeout and the per-user session_invalidated_at "kick-out"
+// timestamp. On expiry, forced-logout, or anonymous access it returns nil
+// (and clears stale session values if expired). The resolved *user.User is
+// stashed in the request context for downstream handlers.
 func (m *Manager) CurrentUserCtx(ctx context.Context, r *http.Request) (*user.User, error) {
 	s, err := m.Session(r)
 	if err != nil {
@@ -136,6 +176,29 @@ func (m *Manager) CurrentUserCtx(ctx context.Context, r *http.Request) (*user.Us
 		}
 		return nil, err
 	}
+	if u == nil {
+		return nil, nil
+	}
+
+	// Per-user kick-out: if the user's session_invalidated_at is set and
+	// is later than this session's login_time, the session was created
+	// before the user's credentials were rotated / they were forcibly
+	// logged out — drop the session. We do NOT mutate the session here;
+	// the caller is responsible for clearing it (loadUserMiddleware
+	// sets s.Options.MaxAge = -1 in that case so the cookie is wiped
+	// on the next response).
+	//
+	// Both sides are int64 Unix timestamps, so the compare is exact and
+	// doesn't depend on MySQL DATETIME ↔ Go time.Time timezone
+	// interpretation (which is the bug this column was changed to
+	// avoid — see schema.go for the long version).
+	loginTimeRaw, _ := s.Values["login_time"].(int64)
+	if u.SessionInvalidatedAt > 0 && loginTimeRaw > 0 {
+		if u.SessionInvalidatedAt > loginTimeRaw {
+			return nil, nil
+		}
+	}
+
 	return u, nil
 }
 

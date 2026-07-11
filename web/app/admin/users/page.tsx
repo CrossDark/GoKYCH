@@ -1,10 +1,14 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { getCsrf, listUsers, createUser, updateUserRole, deleteUser } from "@/lib/api";
+import {
+  getCsrf, listUsers, createUser, updateUserRole, deleteUser,
+  forceResetUserPassword, immediateResetUserPassword, forceLogoutUser,
+} from "@/lib/api";
 import type { User } from "@/lib/types";
 import { useToast, useBeforeUnload } from "@/lib/admin-feedback";
 import { AdminConfirm } from "@/components/admin/AdminConfirm";
+import { AdminModal } from "@/components/admin/AdminModal";
 import { UserAvatar } from "@/components/admin/UserAvatar";
 import { fmtDate } from "@/lib/format";
 
@@ -23,12 +27,27 @@ const ROLE_LABEL: Record<string, string> = {
 export default function AdminUsers() {
   const [csrf, setCsrf] = useState("");
   const [users, setUsers] = useState<User[]>([]);
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
   const toast = useToast();
   const [search, setSearch] = useState("");
   const [form, setForm] = useState({ username: "", nickname: "", role: "user" });
   const [generatedCredential, setGeneratedCredential] = useState<{ username: string; password: string } | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
+  // Lifecycle action state. The "kind" discriminates which operation
+  // the modal is for; targetUsername is the user being acted on. Only
+  // one of these is open at a time.
+  const [pendingAction, setPendingAction] = useState<
+    | { kind: "force-reset"; username: string }
+    | { kind: "immediate-reset"; username: string }
+    | { kind: "force-logout"; username: string }
+    | null
+  >(null);
+  // Sticky modal for the new plaintext after an immediate-reset. We
+  // deliberately don't put the plaintext in a toast — too easy to miss
+  // before auto-dismiss, and the admin is expected to copy and deliver
+  // it to the user out-of-band.
+  const [revealedPassword, setRevealedPassword] = useState<{ username: string; password: string } | null>(null);
   const isDirty = !!(form.username || form.nickname);
 
   const load = () => {
@@ -40,6 +59,13 @@ export default function AdminUsers() {
     getCsrf().then((r) => {
       setCsrf(r.csrf_token);
       listUsers(r.csrf_token).then(setUsers).catch(() => {});
+      // Determine the current logged-in user by fetching /auth/me with
+      // the same CSRF. We need this to disable self-actions (don't
+      // reset my own password from the admin page) and to gate the
+      // owner-row actions (can't reset the owner's password).
+      import("@/lib/api").then((m) => m.getMe()).then((r) => {
+        if (r && r.user) setCurrentUser(r.user as User);
+      }).catch(() => {});
     });
   }, []);
 
@@ -100,6 +126,48 @@ export default function AdminUsers() {
     }
   };
 
+  const copyRevealedPassword = async () => {
+    if (!revealedPassword) return;
+    try {
+      await navigator.clipboard.writeText(revealedPassword.password);
+      toast.success("已复制新密码。");
+    } catch {
+      toast.warning("复制失败，请手动选中密码复制。");
+    }
+  };
+
+  // confirmAction runs the chosen lifecycle action. Errors are
+  // surfaced via toast; the only thing we special-case is
+  // immediate-reset, whose response carries the new plaintext we
+  // need to surface in a sticky modal.
+  const confirmAction = async () => {
+    if (!pendingAction) return;
+    const act = pendingAction;
+    try {
+      if (act.kind === "force-reset") {
+        await forceResetUserPassword(csrf, act.username);
+        toast.success(`已标记「${act.username}」强制重置：用户下次登录时将自动生成新密码。`);
+      } else if (act.kind === "force-logout") {
+        await forceLogoutUser(csrf, act.username);
+        toast.success(`已强制「${act.username}」退出登录。`);
+      } else if (act.kind === "immediate-reset") {
+        const r = await immediateResetUserPassword(csrf, act.username);
+        setRevealedPassword({ username: act.username, password: r.password });
+        toast.success(`已立即重置「${act.username}」的密码，新密码已生成。`);
+      }
+      load();
+    } catch (err: any) {
+      toast.error(err.message || "操作失败。");
+      throw err; // keep confirm modal open so the user can retry
+    } finally {
+      if (act.kind !== "immediate-reset") setPendingAction(null);
+      // For immediate-reset, we close the confirm modal and let the
+      // sticky "revealedPassword" modal take over. The user dismisses
+      // that one explicitly.
+      if (act.kind === "immediate-reset") setPendingAction(null);
+    }
+  };
+
   const filtered = users.filter((u) => {
     if (!search) return true;
     const s = search.toLowerCase();
@@ -108,6 +176,17 @@ export default function AdminUsers() {
   });
 
   useBeforeUnload((isDirty && !submitting) || !!generatedCredential);
+
+  // The lifecycle actions are gated on:
+  //  - must NOT act on the owner role (would lock the only path to
+  //    re-grant owner).
+  //  - must NOT act on the current logged-in user (use the
+  //    profile / logout flow for yourself).
+  //  - must be admin or owner (everyone who can see this page is,
+  //    but we encode the check explicitly so future role-tightening
+  //    only touches one helper).
+  const canActOnUser = (u: User) =>
+    u.role !== "owner" && (currentUser ? u.username !== currentUser.username : true);
 
   return (
     <div className="admin-users">
@@ -248,6 +327,15 @@ export default function AdminUsers() {
                       <span style={{ display: "inline-flex", alignItems: "center", gap: "0.5rem" }}>
                         <UserAvatar user={u} size={24} />
                         {u.username}
+                        {u.must_reset_password && (
+                          <span
+                            className="admin-badge admin-badge-warning"
+                            title="该用户已被标记强制重置密码"
+                            style={{ marginLeft: 4 }}
+                          >
+                            等待重置
+                          </span>
+                        )}
                       </span>
                     </td>
                     <td>{u.nickname || <span style={{ color: "var(--text-muted)" }}>—</span>}</td>
@@ -269,10 +357,57 @@ export default function AdminUsers() {
                     <td className="col-date">{fmtDate(u.created_at)}</td>
                     <td className="col-actions">
                       <div className="admin-table-actions">
+                        {/* 强制重置密码 — when the user is in the
+                            must_reset_password state, the button flips
+                            to a disabled confirmation chip so the admin
+                            knows the request has been sent. The chip
+                            is the source of truth: the server is the
+                            only one who can clear the flag (which
+                            happens automatically on the user's next
+                            successful login). */}
+                        {u.must_reset_password ? (
+                          <button
+                            type="button"
+                            className="admin-btn admin-btn-outline admin-btn-sm"
+                            disabled
+                            title="已标记。用户下次登录时将自动生成新密码。"
+                          >
+                            等待用户再次登录
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            className="admin-btn admin-btn-warning admin-btn-sm"
+                            disabled={!canActOnUser(u)}
+                            onClick={() => setPendingAction({ kind: "force-reset", username: u.username })}
+                            title={canActOnUser(u) ? "强制重置密码（用户下次登录时自动生成新密码）" : "无法对该用户执行此操作"}
+                          >
+                            🔑 强制重置
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          className="admin-btn admin-btn-danger admin-btn-sm"
+                          disabled={!canActOnUser(u)}
+                          onClick={() => setPendingAction({ kind: "immediate-reset", username: u.username })}
+                          title={canActOnUser(u) ? "立即重置密码（旧密码立即失效，新密码将显示给你）" : "无法对该用户执行此操作"}
+                        >
+                          ⚡ 立即重置
+                        </button>
+                        <button
+                          type="button"
+                          className="admin-btn admin-btn-ghost admin-btn-sm"
+                          disabled={!canActOnUser(u)}
+                          onClick={() => setPendingAction({ kind: "force-logout", username: u.username })}
+                          title={canActOnUser(u) ? "立即退出登录（不修改密码）" : "无法对该用户执行此操作"}
+                        >
+                          🚪 退出登录
+                        </button>
                         <button
                           className="admin-btn admin-btn-danger admin-btn-sm"
                           onClick={() => handleDelete(u.username)}
-                          title="删除"
+                          disabled={!canActOnUser(u)}
+                          title={canActOnUser(u) ? "删除" : "无法删除该用户"}
                         >
                           🗑
                         </button>
@@ -286,6 +421,7 @@ export default function AdminUsers() {
         </div>
       </div>
 
+      {/* Delete confirm — unchanged behaviour. */}
       <AdminConfirm
         open={!!pendingDelete}
         title="删除用户"
@@ -295,6 +431,82 @@ export default function AdminUsers() {
         onConfirm={confirmDelete}
         onCancel={() => setPendingDelete(null)}
       />
+
+      {/* Lifecycle action confirm. The same AdminConfirm is reused for
+          three different actions; the title/message/variant are picked
+          from `pendingAction.kind` so the modal feels specific. */}
+      <AdminConfirm
+        open={!!pendingAction}
+        title={
+          pendingAction?.kind === "force-reset" ? "强制重置密码"
+          : pendingAction?.kind === "immediate-reset" ? "立即重置密码"
+          : pendingAction?.kind === "force-logout" ? "立即退出登录"
+          : ""
+        }
+        message={
+          pendingAction?.kind === "force-reset"
+            ? `标记「${pendingAction.username}」为强制重置？用户当前会话会被踢出；用户下次登录时将自动生成新密码，弹窗只对用户可见。`
+            : pendingAction?.kind === "immediate-reset"
+            ? `立即重置「${pendingAction.username}」的密码？旧密码立即失效，新密码将在弹窗中显示给你（只有你看到），请自行转交给用户。`
+            : pendingAction?.kind === "force-logout"
+            ? `立即让「${pendingAction.username}」退出登录？密码不变，下一次请求该用户的会话将被拒绝。`
+            : ""
+        }
+        confirmText={
+          pendingAction?.kind === "force-reset" ? "标记强制重置"
+          : pendingAction?.kind === "immediate-reset" ? "立即重置"
+          : pendingAction?.kind === "force-logout" ? "强制退出"
+          : "确定"
+        }
+        variant={pendingAction?.kind === "force-logout" ? "primary" : "danger"}
+        onConfirm={confirmAction}
+        onCancel={() => setPendingAction(null)}
+      />
+
+      {/* Sticky "your new password" modal — only used by immediate-reset.
+          Persistent (no Escape / backdrop close) so the admin can't
+          accidentally dismiss it before copying the new password. The
+          "我已保存" button is the only way out. */}
+      <AdminModal
+        open={!!revealedPassword}
+        onClose={() => undefined}
+        title="新密码已生成"
+        size="sm"
+        persistent
+        footer={
+          <>
+            <button
+              type="button"
+              className="admin-btn admin-btn-outline"
+              onClick={copyRevealedPassword}
+            >
+              📋 复制
+            </button>
+            <button
+              type="button"
+              className="admin-btn admin-btn-primary"
+              onClick={() => setRevealedPassword(null)}
+            >
+              我已保存
+            </button>
+          </>
+        }
+      >
+        {revealedPassword && (
+          <div>
+            <p style={{ margin: "0 0 12px", lineHeight: 1.6 }}>
+              「<strong>{revealedPassword.username}</strong>」的旧密码已立即失效。
+              新密码只显示一次，请现在复制并通过安全的渠道转交给该用户。
+            </p>
+            <div className="admin-generated-password">
+              <code style={{ wordBreak: "break-all" }}>{revealedPassword.password}</code>
+            </div>
+            <div className="admin-form-hint" style={{ marginTop: 12 }}>
+              关闭此弹窗后密码将无法再次查看。如遗失，请再次执行「立即重置」重新生成。
+            </div>
+          </div>
+        )}
+      </AdminModal>
     </div>
   );
 }

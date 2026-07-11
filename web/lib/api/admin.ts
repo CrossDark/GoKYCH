@@ -61,6 +61,59 @@ export function deleteUser(csrf: string, username: string) {
   });
 }
 
+// Force-reset-password: mark the user for a rotate-on-next-login and
+// kick their current session. The new plaintext password is NOT in
+// this response — it will be generated and shown to the USER the next
+// time they log in (via the login modal). The admin's UI flips the
+// button to a disabled "等待用户再次登录" chip while the flag is set.
+export function forceResetUserPassword(csrf: string, username: string) {
+  return request<{ status: string; message: string }>(
+    `/admin/users/${encodeURIComponent(username)}/force-reset-password`,
+    {
+      method: "POST",
+      headers: { "X-CSRF-Token": csrf },
+      body: JSON.stringify({}),
+    }
+  );
+}
+
+// Immediate-reset-password: rotate the password NOW and return the
+// new plaintext to the admin (in the response). The admin is expected
+// to deliver the new password to the user out-of-band (in person /
+// IM / etc.) — the user does NOT see a popup on next login because
+// the password already changed in the DB. The user's current session
+// is invalidated as a side effect of the rotation.
+export interface ImmediateResetResult {
+  status: string;
+  password: string;
+  message: string;
+}
+
+export function immediateResetUserPassword(csrf: string, username: string) {
+  return request<ImmediateResetResult>(
+    `/admin/users/${encodeURIComponent(username)}/reset-password-immediate`,
+    {
+      method: "POST",
+      headers: { "X-CSRF-Token": csrf },
+      body: JSON.stringify({}),
+    }
+  );
+}
+
+// Force-logout: invalidate the user's current session without
+// touching their password. Their cookie is rejected on the next
+// request; the user lands on the login page.
+export function forceLogoutUser(csrf: string, username: string) {
+  return request<{ status: string; message: string }>(
+    `/admin/users/${encodeURIComponent(username)}/force-logout`,
+    {
+      method: "POST",
+      headers: { "X-CSRF-Token": csrf },
+      body: JSON.stringify({}),
+    }
+  );
+}
+
 export function listNotifications(csrf: string) {
   return request<Notification[]>("/admin/notifications", {
     headers: { "X-CSRF-Token": csrf },
