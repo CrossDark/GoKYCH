@@ -17,13 +17,21 @@ func (s *Server) listDiscussions(c *gin.Context) {
 	if page < 1 {
 		page = 1
 	}
+
+	var authorID *int
+	if authorStr := c.Query("author_id"); authorStr != "" {
+		if aid, err := strconv.Atoi(authorStr); err == nil && aid > 0 {
+			authorID = &aid
+		}
+	}
+
 	ctx := c.Request.Context()
-	discussions, err := content.ListDiscussionsCtx(ctx, s.DB, page, 20)
+	discussions, err := content.ListDiscussionsCtx(ctx, s.DB, page, 20, authorID)
 	if err != nil {
 		respondInternalErr(c, "加载讨论列表失败。")
 		return
 	}
-	count, _ := content.CountDiscussionsCtx(ctx, s.DB)
+	count, _ := content.CountDiscussionsCtx(ctx, s.DB, authorID)
 	for i := range discussions {
 		discussions[i].ContentHTML = s.renderDiscussionContent(discussions[i].Content, discussions[i].Format)
 	}

@@ -51,11 +51,18 @@ SELECT d.id, d.slug, d.title, d.content, d.format,
 FROM discussions d
 LEFT JOIN users u ON u.id = d.author_id`
 
-func ListDiscussionsCtx(ctx context.Context, db *sql.DB, page, pageSize int) ([]Discussion, error) {
+func ListDiscussionsCtx(ctx context.Context, db *sql.DB, page, pageSize int, authorID *int) ([]Discussion, error) {
 	offset := (page - 1) * pageSize
-	rows, err := db.QueryContext(ctx,
-		discussionSelect+` ORDER BY d.created_at DESC LIMIT ? OFFSET ?`,
-		pageSize, offset)
+	var query string
+	var args []interface{}
+	if authorID != nil {
+		query = discussionSelect + ` WHERE d.author_id = ? ORDER BY d.created_at DESC LIMIT ? OFFSET ?`
+		args = []interface{}{*authorID, pageSize, offset}
+	} else {
+		query = discussionSelect + ` ORDER BY d.created_at DESC LIMIT ? OFFSET ?`
+		args = []interface{}{pageSize, offset}
+	}
+	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -63,9 +70,17 @@ func ListDiscussionsCtx(ctx context.Context, db *sql.DB, page, pageSize int) ([]
 	return scanDiscussions(rows)
 }
 
-func CountDiscussionsCtx(ctx context.Context, db *sql.DB) (int, error) {
+func CountDiscussionsCtx(ctx context.Context, db *sql.DB, authorID *int) (int, error) {
 	var count int
-	err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM discussions`).Scan(&count)
+	var query string
+	var args []interface{}
+	if authorID != nil {
+		query = `SELECT COUNT(*) FROM discussions WHERE author_id = ?`
+		args = []interface{}{*authorID}
+	} else {
+		query = `SELECT COUNT(*) FROM discussions`
+	}
+	err := db.QueryRowContext(ctx, query, args...).Scan(&count)
 	return count, err
 }
 

@@ -27,6 +27,7 @@ const BREADCRUMB: { match: (p: string) => boolean; label: string; parent?: strin
   { match: (p) => p.startsWith("/admin/update"), label: "系统更新", parent: "设置" },
   { match: (p) => p.startsWith("/admin/themes"), label: "主题管理", parent: "外观" },
   { match: (p) => p.startsWith("/admin/profile"), label: "个人资料", parent: "设置" },
+  { match: (p) => p.startsWith("/admin/discuss"), label: "讨论管理", parent: "内容" },
 ];
 
 function getBreadcrumb(pathname: string, role: string): { parent?: string; parentHref?: string; current: string } {
@@ -54,6 +55,12 @@ function getBreadcrumb(pathname: string, role: string): { parent?: string; paren
     return {
       parent: role === "user" ? "内容" : "管理",
       current: role === "user" ? "数据查看" : "数据库管理",
+    };
+  }
+  if (pathname === "/admin/discuss" || pathname.startsWith("/admin/discuss/")) {
+    return {
+      parent: "内容",
+      current: role === "user" ? "我的讨论" : "讨论管理",
     };
   }
   const m = BREADCRUMB.find((b) => b.match(pathname));
@@ -115,6 +122,7 @@ function AdminLayoutInner({ children }: { children: React.ReactNode }) {
           pathname === "/admin/profile" ||
           pathname === "/admin/articles" ||
           pathname === "/admin/database" ||
+          pathname === "/admin/discuss" ||
           /^\/admin\/articles\/[^/]+\/[^/]+/.test(pathname) ||
           ((pathname === "/admin/files" || pathname.startsWith("/admin/files/")) && canUseFiles);
         if (!isAdminLike && !userAllowed) {
@@ -201,6 +209,7 @@ function AdminLayoutInner({ children }: { children: React.ReactNode }) {
         label: "内容",
         items: [
           { href: "/admin/articles", label: "我的文章", icon: "📝" },
+          { href: "/admin/discuss", label: "我的讨论", icon: "💬" },
           ...(allowUserFileManagement
             ? [{ href: "/admin/files", label: "我的文件", icon: "📁" }]
             : []),
@@ -212,12 +221,13 @@ function AdminLayoutInner({ children }: { children: React.ReactNode }) {
       }]
     : [
         {
-          label: "内容",
-          items: [
-            { href: "/admin", label: "仪表盘", icon: "📊" },
-            { href: "/admin/articles", label: "文章管理", icon: "📝" },
-          ],
-        },
+        label: "内容",
+        items: [
+          { href: "/admin", label: "仪表盘", icon: "📊" },
+          { href: "/admin/articles", label: "文章管理", icon: "📝" },
+          { href: "/admin/discuss", label: "讨论管理", icon: "💬" },
+        ],
+      },
         {
           label: "管理",
           items: [

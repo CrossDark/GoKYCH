@@ -40,10 +40,14 @@ export interface DiscussionDetailResponse {
   replies: DiscussionReply[];
 }
 
-export function listDiscussions(page: number = 1) {
+export function listDiscussions(page: number = 1, authorId?: number) {
+  const params: Record<string, any> = { page };
+  if (authorId !== undefined) {
+    params.author_id = authorId;
+  }
   return request<DiscussionListResponse>("/discussions", {
     method: "GET",
-    params: { page },
+    params,
   });
 }
 
