@@ -69,6 +69,9 @@ export function ThemeStylesheet() {
     link.dataset.themeStylesheet = "active";
     document.head.appendChild(link);
 
+    const apiBase = apiUrl("/").replace(/\/$/, "");
+    (window as unknown as { __GK_API_BASE_URL?: string }).__GK_API_BASE_URL = apiBase;
+
     // Theme-bundled effect scripts — each theme loads its own script if available.
     // The scripts are deferred so the browser executes them after CSS is applied.
     const scripts: HTMLScriptElement[] = [];

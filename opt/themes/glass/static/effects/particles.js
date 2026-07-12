@@ -42,6 +42,13 @@
         density: 'gokych:glass:particle_density',
         bgImage: 'gokych:glass:background_image',
     };
+    function apiBase() {
+        return (window.__GK_API_BASE_URL || '');
+    }
+    function apiPath(path) {
+        if (!path.startsWith('/')) path = '/' + path;
+        return apiBase() + path;
+    }
     const DEFAULT_DENSITY = 60;
     const MAX_PARTICLES = 400;
     const MIN_PARTICLES = 30;
@@ -213,7 +220,7 @@
         // overrides when the user visits admin.
         async _loadConfig() {
             try {
-                const r = await fetch('/api/themes/glass/settings', { cache: 'no-store' });
+                const r = await fetch(apiPath('/api/themes/glass/settings'), { cache: 'no-store' });
                 if (!r.ok) throw new Error('settings HTTP ' + r.status);
                 const data = await r.json();
                 const schema = (data && data.schema) || [];
@@ -397,7 +404,7 @@
         // 是否真的重新拉了 (network 失败 false, 但不抛错)。
         async reload() {
             try {
-                const r = await fetch('/api/themes/glass/settings', { cache: 'no-store' });
+                const r = await fetch(apiPath('/api/themes/glass/settings'), { cache: 'no-store' });
                 if (!r.ok) return false;
                 const data = await r.json();
                 const schema = (data && data.schema) || [];
