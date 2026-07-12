@@ -1,0 +1,22 @@
+name: Rainbow
+version: "1.0"
+author: GoKYCH
+description: 彩虹主题 — 多彩渐变背景 + 彩虹色调卡片 + 活泼清新的视觉体验
+
+settings:
+  - key: rainbow_speed
+    type: range
+    label: 渐变动画速度
+    min: 5
+    max: 30
+    step: 1
+    default: 15
+    hint: "彩虹渐变的动画周期（秒），数字越小变化越快"
+  - key: card_intensity
+    type: range
+    label: 卡片饱和度
+    min: 0
+    max: 100
+    step: 5
+    default: 80
+    hint: "卡片颜色的饱和度，0为灰色，100为最高饱和度"

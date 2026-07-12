@@ -6471,11 +6471,18 @@ body.admin-modal-open { overflow: hidden; }
 
 .discussion-detail-page .discussion-header {
     margin-bottom: 1rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
 }
 
 .discussion-detail-page h1 {
     font-size: 1.75rem;
-    margin: 0 1rem;
+    margin: 0;
+    flex: 1;
+    text-align: center;
+    min-width: 0;
 }
 
 .discussion-detail-page .discussion-content {
