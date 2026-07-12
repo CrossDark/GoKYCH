@@ -111,12 +111,22 @@ export type RequestOptions = RequestInit & {
   timeoutMs?: number;
   anon?: boolean; // skip forwarding SSR cookies (for public endpoints like /api/site)
   raw?: boolean;  // return the raw Response instead of parsing JSON
+  params?: Record<string, any>;
 };
 
 export function request(path: string, options?: RequestOptions & { raw: true }): Promise<Response>;
 export function request<T>(path: string, options?: RequestOptions & { raw?: false }): Promise<T>;
 export async function request<T>(path: string, options?: RequestOptions): Promise<T | Response> {
-  const { raw, anon, ...rest } = options || {};
+  const { raw, anon, params, ...rest } = options || {};
+
+  let urlPath = path;
+  if (params) {
+    const searchParams = new URLSearchParams(params as Record<string, string>);
+    const queryString = searchParams.toString();
+    if (queryString) {
+      urlPath += "?" + queryString;
+    }
+  }
 
   const isFormData = rest.body instanceof FormData;
 
@@ -133,7 +143,7 @@ export async function request<T>(path: string, options?: RequestOptions): Promis
     if (cookieStr) headers["Cookie"] = cookieStr;
   }
 
-  const res = await apiFetch(`${BASE}/api${path}`, {
+  const res = await apiFetch(`${BASE}/api${urlPath}`, {
     ...rest,
     headers,
   });

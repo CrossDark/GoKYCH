@@ -16,6 +16,7 @@ export { search } from "./search";
 export { getHome } from "./home";
 
 export { listDiscussions, getDiscussion, createDiscussion, addDiscussionReply, deleteDiscussion } from "./discussions";
+export type { Discussion, DiscussionReply } from "./discussions";
 
 export { listThemes } from "./themes";
 

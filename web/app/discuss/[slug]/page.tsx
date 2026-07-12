@@ -113,7 +113,7 @@ export default function DiscussionDetailPage() {
       <div className="discussion-meta">
         {discussion.author_id ? (
           <span className="discussion-author">
-            <UserAvatar user={{ id: discussion.author_id, username: discussion.author_name || "", nickname: discussion.author_nickname || "", avatar: discussion.author_avatar || "", role: "user" }} size={24} />
+            <UserAvatar user={{ username: discussion.author_name || "", nickname: discussion.author_nickname || "", avatar: discussion.author_avatar || "" }} size={24} />
             <span>{discussion.author_nickname || discussion.author_name}</span>
           </span>
         ) : (
@@ -142,7 +142,7 @@ export default function DiscussionDetailPage() {
                 <div className="reply-author">
                   {r.user_id ? (
                     <>
-                      <UserAvatar user={{ id: r.user_id, username: r.author_name, nickname: r.author_nickname || "", avatar: r.author_avatar || "", role: "user" }} size={24} />
+                      <UserAvatar user={{ username: r.author_name, nickname: r.author_nickname || "", avatar: r.author_avatar || "" }} size={24} />
                       <span>{r.author_nickname || r.author_name}</span>
                     </>
                   ) : (

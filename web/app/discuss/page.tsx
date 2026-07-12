@@ -106,7 +106,7 @@ export default function DiscussionListPage() {
               <div className="discussion-meta">
                 {d.author_id ? (
                   <span className="discussion-author">
-                    <UserAvatar user={{ id: d.author_id, username: d.author_name || "", nickname: d.author_nickname || "", avatar: d.author_avatar || "", role: "user" }} size={20} />
+                    <UserAvatar user={{ username: d.author_name || "", nickname: d.author_nickname || "", avatar: d.author_avatar || "" }} size={20} />
                     <span>{d.author_nickname || d.author_name}</span>
                   </span>
                 ) : (
@@ -122,10 +122,9 @@ export default function DiscussionListPage() {
 
       {total > 20 && !loading && (
         <Pagination
-          current={page}
-          total={total}
-          pageSize={20}
-          onPageChange={(p) => setPage(p)}
+          page={page}
+          totalPages={Math.ceil(total / 20)}
+          basePath="/discuss"
         />
       )}
 
