@@ -1,0 +1,179 @@
+name: Release
+
+# Triggered when a tag matching the vX.Y.Z pattern is pushed
+# (e.g. v1.0.0, v2.3.4-rc1). The release workflow then:
+#   1. Cross-compiles 4 platform binaries (linux/{amd64,arm64} +
+#      darwin/{amd64,arm64}) into dist/;
+#   2. Computes a SHA256SUMS file;
+#   3. Creates a GitHub Release with those assets attached.
+#
+# Prerelease semantics: any tag containing a dash after the
+# version (e.g. v1.0.0-rc1, v2.0.0-beta.2) is published as
+# a GitHub "prerelease" so it doesn't show up in the default
+# "Latest" badge. Stable tags (v1.0.0) go out as full releases.
+#
+# Signing: macOS binaries are NOT code-signed in CI. First-run
+# users will see Gatekeeper's "unidentified developer" warning;
+# `xattr -d com.apple.quarantine` or right-click → Open works.
+# (Adding Apple Developer ID signing needs an Apple-issued
+# certificate + notarization token, out of scope.)
+
+on:
+  push:
+    tags:
+      - "v*"
+
+# `contents: write` is required for softprops/action-gh-release to
+# create the release + upload assets. `packages: read` is the
+# default for GITHUB_TOKEN on tag builds; we don't push to
+# ghcr.io here.
+permissions:
+  contents: write
+
+# We don't cancel a tag-triggered run — a release is meant to be
+# idempotent (a re-pushed tag of the same name is what regenerates
+# the binaries), and the steps are cheap.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Cross-compile + publish release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Full history lets `git describe` resolve cleanly
+          # (we don't actually call it, but keeps the option
+          # open for future changelog tooling).
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache: true
+
+      - name: Resolve version
+        id: version
+        # github.ref_name is the bare ref (e.g. "v1.2.3" for tag,
+        # "main" for branch push). On a tag build it's the tag
+        # name. Strip the leading "v" so the binary version
+        # embedded via ldflags is plain semver.
+        run: |
+          TAG="${{ github.ref_name }}"
+          VERSION="${TAG#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          # Prerelease detection: anything with a dash after the
+          # major.minor.patch (e.g. v1.0.0-rc1) is a prerelease.
+          if [[ "$VERSION" == *-* ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Build matrix — four platforms, all produced on a single
+      # ubuntu runner via GOOS/GOARCH cross-compilation. We
+      # don't use macos-13/14 runners because (a) Go can
+      # cross-compile to darwin/{amd64,arm64} cleanly with no
+      # cgo, and (b) macos runners are 10× the per-minute cost
+      # of ubuntu. If we ever need cgo (e.g. for sqlite with
+      # a C extension) we'll revisit.
+      - name: Build matrix
+        id: build
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          mkdir -p dist
+          BINARIES=()
+          for pair in "linux amd64" "linux arm64" "darwin amd64" "darwin arm64"; do
+            GOOS="${pair% *}"
+            GOARCH="${pair#* }"
+            OUT="dist/gokych-${GOOS}-${GOARCH}"
+            # -trimpath: remove $WORKDIR prefix from the binary
+            # so reproducible builds match across hosts.
+            # -s -w: strip DWARF + symbol table (~30% smaller).
+            # -buildvcs=false: don't embed VCS info (CI's
+            # shallow checkout would give a "+dirty" suffix
+            # otherwise).
+            CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" \
+              go build \
+                -trimpath \
+                -buildvcs=false \
+                -ldflags="-s -w -X main.version=${VERSION}" \
+                -o "$OUT" \
+                ./cmd/gokych
+            BINARIES+=("$OUT")
+            echo "Built $OUT ($(du -h "$OUT" | cut -f1))"
+          done
+          # Multi-line output for the next step.
+          {
+            echo "binaries<<EOF"
+            printf '%s\n' "${BINARIES[@]}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Generate SHA256SUMS
+        # sha256sum format: "<hash>  <filename>" — two spaces
+        # between hash and filename per sha256sum(1) convention.
+        # The release uses this file to let users verify
+        # downloaded binaries (and install-backend.sh can
+        # check it before installing).
+        working-directory: dist
+        run: |
+          sha256sum gokych-* > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Package source tarball
+        # Embeds the exact commit + tag so a `gokych --version`
+        # build from source (rather than downloading a binary)
+        # reports the right version. Not strictly required —
+        # install-backend.sh can fetch from a tag too — but it
+        # makes the release self-contained for users behind
+        # firewalls that can't reach api.github.com.
+        run: |
+          mkdir -p dist
+          git archive \
+            --format=tar.gz \
+            --prefix="gokych-${{ steps.version.outputs.version }}/" \
+            -o "dist/gokych-${{ steps.version.outputs.version }}.tar.gz" \
+            "${{ github.ref_name }}"
+
+      # softprops/action-gh-release@v2 is the de-facto standard
+      # for "create release + upload assets in CI" — handles
+      # deduplication of the release across re-runs of the same
+      # tag, has sane defaults for prerelease detection, and
+      # uses the GITHUB_TOKEN so no extra secrets are needed.
+      # Pin the major version to a SHA in production; v2 is
+      # good enough for a personal-scale repo.
+      - name: Create release + upload assets
+        uses: softprops/action-gh-release@v2
+        with:
+          # Release name format: "gokych v1.2.3". Including the
+          # product name lets the Releases page be scannable
+          # when this repo sits next to a dozen others.
+          name: "gokych v${{ steps.version.outputs.version }}"
+          # `--generate-notes` would normally go here, but
+          # softprops' action does that automatically when
+          # `generate_release_notes: true` is set below.
+          generate_release_notes: true
+          # Auto-mark rc/alpha/beta tags as prerelease so they
+          # don't show up in the "Latest" release badge. Stable
+          # tags (no dash) are full releases.
+          prerelease: ${{ steps.version.outputs.prerelease }}
+          # Fail the build if the release already exists for
+          # this tag. Re-running a release workflow only makes
+          # sense after deleting the existing release on the
+          # GitHub UI; we don't want a stale rerun to silently
+          # overwrite a hand-curated release body.
+          fail_on_unmatched_files: true
+          files: |
+            dist/gokych-linux-amd64
+            dist/gokych-linux-arm64
+            dist/gokych-darwin-amd64
+            dist/gokych-darwin-arm64
+            dist/SHA256SUMS
+            dist/gokych-${{ steps.version.outputs.version }}.tar.gz
